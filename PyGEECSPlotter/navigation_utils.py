@@ -11,6 +11,8 @@ import glob
 import json
 import datetime
 from pathlib import Path
+import platform
+import subprocess
 
 def _format_date(year, month, day):
     datetime_object = datetime.datetime.strptime('%d' % month, '%m')
@@ -61,6 +63,13 @@ def get_sfilename_from_top_dir(top_dir, scan, print_data=False):
         print('sfilename                  : %s' %sfilename)
         
     return sfilename
+
+def generate_sfilename_list_from_scans_dir(top_dir):
+    scans_list = glob.glob( os.path.join(top_dir, 'scans', 'Scan*') )
+    scans = [os.path.basename(scans_list[i]) for i in range(len(scans_list))]
+    scan_numbers = [int(re.search(r'\d+', s).group()) for s in scans]
+    sfilename_list = [os.path.join(top_dir, 'analysis', f's{scan}.txt') for scan in scan_numbers]
+    return sfilename_list
 
 def get_todays_top_dir(experiment_dir):
     # Get today's date
@@ -155,3 +164,20 @@ def get_scan_parameter(top_dir, sfile_data):
     scan_parameter = get_parameter_alias(scan_parameter_full)
     return scan_parameter, scan
     
+def open_directory_in_explorer(path):
+    """
+    Opens the given directory in the system's file explorer.
+
+    Parameters:
+    - path (str): Path to the directory.
+    """
+    if not os.path.isdir(path):
+        raise ValueError(f"The path '{path}' is not a valid directory.")
+
+    system = platform.system()
+    if system == "Windows":
+        subprocess.run(["explorer", path])
+    elif system == "Darwin":  # macOS
+        subprocess.run(["open", path])
+    else:  # Assume Linux
+        subprocess.run(["xdg-open", path])

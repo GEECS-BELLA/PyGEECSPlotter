@@ -1,6 +1,7 @@
 README.md
 setup.py
 PyGEECSPlotter/__init__.py
+PyGEECSPlotter/ecs_live_dumps.py
 PyGEECSPlotter/geecs_cmaps.py
 PyGEECSPlotter/image_analysis.py
 PyGEECSPlotter/navigation_utils.py

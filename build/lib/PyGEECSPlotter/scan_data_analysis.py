@@ -15,7 +15,10 @@ from pathlib import Path
 
 from PyGEECSPlotter.navigation_utils import *
 from PyGEECSPlotter.utils import parse_controls_from_python, write_controls_from_python
-from PyGEECSPlotter.navigation_utils import get_analysis_dir, get_analysis_diagnostic_path
+from PyGEECSPlotter.navigation_utils import get_analysis_dir, get_analysis_diagnostic_path, open_directory_in_explorer
+
+import PyGEECSPlotter.plotting as gplt
+colors = gplt.configure_plotting()
 
 class ScanDataAnalyzer:
     def __init__(self, 
@@ -127,6 +130,15 @@ class ScanDataAnalyzer:
         if scan is None:
             scan = self.scan
         self.analysis_dir = get_analysis_dir(self.top_dir, scan, make_dir=make_dir)
+
+    def get_scan_info_text(self, print_data=False):
+        with open(os.path.join(self.top_dir, 'scans', 'Scan%03d' %self.scan, 'ScanInfoScan%03d.ini' %self.scan)) as f:
+            lines = f.readlines()
+        scan_info_text = lines[2].split('"')[1]
+        
+        if print_data:
+            print('Scan Information  : %s' %scan_info_text)
+        return scan_info_text
 
         
     def add_search_replace_column_names(self, search_replace_filename, parse_from='labview'):
@@ -511,3 +523,14 @@ class ScanDataAnalyzer:
                 search_replace_pairs.append({'Search': search_term, 'Replace': replace_term})
 
         return search_replace_pairs
+
+    def open_scan_dir(self):
+        scan_dir = os.path.join(self.top_dir, 'scans', 'Scan%03d' %self.scan)
+        open_directory_in_explorer(scan_dir)
+        
+    def open_analysis_dir(self):
+        if self.analysis_dir is not None:
+            open_directory_in_explorer(self.analysis_dir)
+            
+    def open_top_dir(self):
+        open_directory_in_explorer(self.top_dir)

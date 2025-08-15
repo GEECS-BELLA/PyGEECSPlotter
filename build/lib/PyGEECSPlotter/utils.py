@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
-# from PyGEECSPlotter.ecs_live_dumps import get_ecs_live_dumps_parameter_value_from_sfilename
+from PyGEECSPlotter.ecs_live_dumps import get_ecs_live_dumps_parameter_value_from_sfilename
 
 def _convert_to_serializable(obj):
     if isinstance(obj, np.integer):
