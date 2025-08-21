@@ -109,3 +109,5 @@ def configure_plotting(fontsize=12, dpi=100, sf=1.0):
     colors = prop_cycle.by_key()['color']
 
     return colors
+
+colors = configure_plotting(fontsize=12, dpi=100, sf=1.0)
