@@ -169,11 +169,13 @@ class ImageAnalyzer:
 
         return data_out, results
 
-    def display_data(self, data, display_dict=None, title=None):
+    def display_data(self, data, display_dict=None, title=None, fig=None, ax=None):
         if display_dict is None:
             display_dict = self.display_dict
             
-        fig, ax = plt.subplots(figsize=display_dict.get('figsize', (6,5)))
+        if fig is None or ax is None:
+            fig, ax = plt.subplots(figsize=display_dict.get('figsize', (6, 5)))
+
         im = ax.imshow(data,
                         aspect=display_dict.get('aspect', 'equal'),
                         norm=display_dict.get('norm', None),
@@ -216,12 +218,14 @@ class ImageAnalyzer:
 
         return fig, ax
 
-    def display_lineout(self, x, x_lo, display_dict=None, title=None):
+    def display_lineout(self, x, x_lo, display_dict=None, title=None, fig=None, ax=None):
         if display_dict is None:
             display_dict = self.display_dict
+
+        if fig is None or ax is None:
+            fig, ax = plt.subplots(figsize=display_dict.get('figsize', (6, 5)))
             
-        fig, ax = plt.subplots(figsize=display_dict.get('figsize', (6,5)))
-        ax.plot(x, x_lo)
+        ax.plot(x, x_lo, label=display_dict.get('plot_label', None))
 
         spatial_units = display_dict.get('spatial_units', 'pixels')
         xtitle = display_dict.get('xtitle', 'x')

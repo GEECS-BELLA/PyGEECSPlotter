@@ -360,7 +360,8 @@ class ScanDataAnalyzer:
         display_data=False,
         write_columns_to_sfile=False, 
         overwrite_columns=True, 
-        analysis_label=''
+        analysis_label='',
+        add_data=False,
         ):
         """
         Processes scan data with analysis and optional display and file writing.
@@ -381,6 +382,8 @@ class ScanDataAnalyzer:
 
             data = analyzer.load_data(filename)
             data, return_dict = analyzer.analyze_data(data, bg=bg)
+            if add_data:
+                return_dict['data'] = data
 
             add_columns_df = ScanDataAnalyzer.append_to_add_columns_df(scan, shot_num, return_dict, add_columns_df)
 
@@ -534,3 +537,4 @@ class ScanDataAnalyzer:
             
     def open_top_dir(self):
         open_directory_in_explorer(self.top_dir)
+
