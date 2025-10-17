@@ -181,3 +181,17 @@ def open_directory_in_explorer(path):
         subprocess.run(["open", path])
     else:  # Assume Linux
         subprocess.run(["xdg-open", path])
+
+def get_analysed_shot_save_path(analysis_dir, analysis_diagnostic, scan, shot_num, file_ext='.txt'):
+    # Construct the basename with the specified format and file extension
+    basename = f'Scan{scan:03d}_{analysis_diagnostic}_{shot_num:03d}{file_ext}'
+    
+    # Construct the full save path
+    save_path = os.path.join(analysis_dir, analysis_diagnostic, basename)
+    
+    # Ensure the directory exists
+    dir_path = os.path.join(analysis_dir, analysis_diagnostic)
+    if not os.path.exists(dir_path):
+        os.makedirs(dir_path)
+    
+    return save_path

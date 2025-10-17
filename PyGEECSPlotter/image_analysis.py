@@ -40,8 +40,8 @@ class ImageAnalyzer:
         self.file_ext = file_ext
         self.analyzer_dict = analyzer_dict 
         self.display_dict = display_dict 
-        self.output_diagnostic = None
-        self.output_file_ext = None
+        self.output_diagnostic = output_diagnostic
+        self.output_file_ext = output_file_ext
 
     # -------------------------------------------------------------------
     # Public pipeline method

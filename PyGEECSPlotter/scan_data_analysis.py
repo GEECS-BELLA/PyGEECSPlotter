@@ -264,7 +264,7 @@ class ScanDataAnalyzer:
                 n_missing = np.sum(1 - np.array(file_exists))
                 print('Removed %d lines from scan_data for missing files' %n_missing)
 
-    def filter_scan_data(self, filter_parameter, lower_bound, upper_bound, filter_exclusive=False):
+    def filter_scan_data(self, filter_parameter, lower_bound, upper_bound, filter_exclusive=False, update_data=False):
         """
         Filter scan data based on a specified parameter and value range.
 
@@ -291,7 +291,10 @@ class ScanDataAnalyzer:
 
         print('%d / %d shots included. Filtered based on : %s ' %(len(filtered_scan_data), len(self.data), get_parameter_alias(filter_parameter)))
 
-        self.data = filtered_scan_data
+        if update_data:
+            self.data = filtered_scan_data
+
+        return filtered_scan_data
 
     def get_bg_file_path(self, diagnostic, file_ext='.png', which_scan='last'):
         """
@@ -361,6 +364,7 @@ class ScanDataAnalyzer:
         write_columns_to_sfile=False, 
         overwrite_columns=True, 
         analysis_label='',
+        write_analyzed=False,
         add_data=False,
         ):
         """
@@ -389,6 +393,11 @@ class ScanDataAnalyzer:
 
             if display_data:
                 fig, ax = analyzer.display_data(data, title=os.path.basename(filename))
+
+            if write_analyzed:
+                analysis_dir = get_analysis_dir(self.top_dir, self.scan, make_dir=True)
+                save_path = get_analysed_shot_save_path(analysis_dir, analyzer.output_diagnostic, scan, shot_num, analyzer.output_file_ext)
+                analyzer.write_analyzed_data(save_path, data)
                 
         if write_columns_to_sfile and len(self.data) > 0:
             analysis_dir = get_analysis_dir(self.top_dir, self.scan, make_dir=True)
