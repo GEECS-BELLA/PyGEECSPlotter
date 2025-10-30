@@ -1,10 +1,12 @@
 README.md
 setup.py
 PyGEECSPlotter/__init__.py
+PyGEECSPlotter/bin_data.py
 PyGEECSPlotter/ecs_live_dumps.py
 PyGEECSPlotter/geecs_cmaps.py
 PyGEECSPlotter/image_analysis.py
 PyGEECSPlotter/longitudinal_htt_analysis_himg.py
+PyGEECSPlotter/longitudinal_htt_analysis_himg_raw.py
 PyGEECSPlotter/navigation_utils.py
 PyGEECSPlotter/ni_imread.py
 PyGEECSPlotter/pix_cmaps.py

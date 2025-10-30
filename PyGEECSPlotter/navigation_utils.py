@@ -104,6 +104,12 @@ def get_analysis_dir(top_dir, scan, save_label=None, make_dir=False, print_data=
         print('Analysys Dir             : %s' %analysis_dir)
     return analysis_dir
 
+def get_scan_dir(top_dir, scan, print_data=False):
+    scan_dir = os.path.join(top_dir, 'scans', 'Scan%03d' %scan)
+    if print_data:
+        print('Analysys Dir             : %s' %scan_dir)
+    return scan_dir
+
 def get_analysis_diagnostic_path(analysis_dir, analysis_diagnostic, scan, shot_num, file_ext='.txt'):
     # Construct the basename with the specified format and file extension
     basename = f'Scan{scan:03d}_{analysis_diagnostic}_{shot_num:03d}{file_ext}'

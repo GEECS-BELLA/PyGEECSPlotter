@@ -7,6 +7,7 @@
 
 import numpy as np
 import pandas as pd
+from typing import Optional, Dict, Tuple  
 import matplotlib.pyplot as plt
 from scipy.signal import medfilt2d
 from scipy.ndimage import affine_transform
@@ -766,3 +767,37 @@ class ImageAnalyzer:
 
 
     
+class ScaledImageAnalyzer(ImageAnalyzer):
+    """
+    Base class for scaled image analysis. 
+    Derive from this class to customize analysis steps for specific image types.
+    """
+
+    def __init__(
+        self,
+        diagnostic: Optional[str] = None,
+        file_ext: Optional[str] = None,
+        analyzer_dict: Optional[Dict] = None,
+        display_dict: Optional[Dict] = None,
+        output_diagnostic: Optional[str] = None,
+        output_file_ext: Optional[str] = None,
+    ):
+        # Initialize all base-class attributes
+        super().__init__(
+            diagnostic=diagnostic,
+            file_ext=file_ext,
+            analyzer_dict=analyzer_dict,
+            display_dict=display_dict,
+            output_diagnostic=output_diagnostic,
+            output_file_ext=output_file_ext,
+        )
+
+    def load_data(self, filename):
+        data = ni_imread.read_imaq_image('%s' % filename)
+
+        with open('%s.txt' % filename[:-4]) as f:
+            lines = f.readlines()
+        scale_min = float(lines[1].split(' ')[2])
+        scale_max = float(lines[2].split(' ')[2])
+
+        return data * (scale_max - scale_min) / (2**16 - 1) + scale_min

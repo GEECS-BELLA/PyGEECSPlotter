@@ -205,6 +205,27 @@ class ScanDataAnalyzer:
             else:
                 if self.print_data:
                     print(f"Column {column_name} not added — missing input columns.")
+
+    def merge_column_math_to_sfile(self, column_math_filename, parse_from='labview'):
+        if not self.aborted:
+            if parse_from == 'labview':
+                math_clusters_list = ScanDataAnalyzer.parse_column_math_from_lv_controls(column_math_filename)
+            elif parse_from == 'python':
+                math_clusters_list = parse_controls_from_python(column_math_filename)
+            cols_to_add = ['scan', 'Shotnumber']
+            for math_cluster in math_clusters_list:
+                cols_to_add.append( math_cluster['column_name'] )
+            valid_columns = [col for col in cols_to_add if col in self.data.columns]
+            add_columns_df = self.data[valid_columns]
+            
+            self.merge_data_frame_to_sfile(add_columns_df, 
+                                    diagnostic=None,
+                                    overwrite_columns=True, 
+                                    analysis_label=None, 
+                                    )
+            return add_columns_df
+        else:
+            return None
                     
 
     def add_file_list_to_scan_data(self, diagnostic, file_ext, remove_missing_files=True):
@@ -391,21 +412,27 @@ class ScanDataAnalyzer:
 
             add_columns_df = ScanDataAnalyzer.append_to_add_columns_df(scan, shot_num, return_dict, add_columns_df)
 
-            if display_data:
-                fig, ax = analyzer.display_data(data, title=os.path.basename(filename))
+            if data is not None:
+                if display_data:
+                    fig, ax = analyzer.display_data(data, title=os.path.basename(filename))
 
-            if write_analyzed:
-                analysis_dir = get_analysis_dir(self.top_dir, self.scan, make_dir=True)
-                save_path = get_analysed_shot_save_path(analysis_dir, analyzer.output_diagnostic, scan, shot_num, analyzer.output_file_ext)
-                analyzer.write_analyzed_data(save_path, data)
+                if write_analyzed:
+                    analysis_dir = get_analysis_dir(self.top_dir, self.scan, make_dir=True)
+                    save_path = get_analysed_shot_save_path(analysis_dir, analyzer.output_diagnostic, scan, shot_num, analyzer.output_file_ext)
+                    analyzer.write_analyzed_data(save_path, data)
                 
         if write_columns_to_sfile and len(self.data) > 0:
+            if analyzer.output_diagnostic is not None:
+                diag_str = analyzer.output_diagnostic
+            else:
+                diag_str = analyzer.diagnostic
+
             analysis_dir = get_analysis_dir(self.top_dir, self.scan, make_dir=True)
-            controls_path = os.path.join(analysis_dir, '%s analyzer_controls %s.txt' % (analyzer.diagnostic, analysis_label) )
+            controls_path = os.path.join(analysis_dir, '%s analyzer_controls %s.txt' % (diag_str, analysis_label) )
             write_controls_from_python(controls_path, analyzer.analyzer_dict)
-            
+
             self.merge_data_frame_to_sfile(add_columns_df, 
-                              analyzer.diagnostic,
+                              diag_str,
                               overwrite_columns=overwrite_columns, 
                               analysis_label=analysis_label, 
                                           )
@@ -422,7 +449,7 @@ class ScanDataAnalyzer:
         sfile_data = pd.read_csv(self.sfilename, sep='\t')
         
         # Filter out any non-numeric columns in add_columns_df
-        add_columns_df = add_columns_df.select_dtypes(include=['float64', 'int64', 'bool'])
+        add_columns_df = add_columns_df.select_dtypes(include=[np.number, 'float64', 'int64', 'bool'])
 
         # Apply renaming to add_columns_df, excluding 'scan' and 'Shotnumber'
         if diagnostic or analysis_label:
@@ -467,6 +494,24 @@ class ScanDataAnalyzer:
         add_columns_df.to_csv( add_columns_path , index=False, sep='\t' )
         merged_df.to_csv(self.sfilename, index=False, sep='\t')
         print(f'Columns added to {self.sfilename}')
+
+    def scan_data_mean_std_per_bin(self):
+        """
+        Compute mean and standard deviation per 'temp Bin number' for all numeric columns.
+        Returns
+        -------
+        mean_df : pandas.DataFrame
+            Mean values per bin, including 'temp Bin number' as a column.
+        std_df : pandas.DataFrame
+            Standard deviation values per bin, including 'temp Bin number' as a column.
+        """
+        tmp_data = self.data.select_dtypes(include=[np.number, 'float64', 'int64', 'bool'])
+        
+        mean_df = tmp_data.groupby('temp Bin number').agg(lambda x: np.nanmean(x)).reset_index()
+        std_df  = tmp_data.groupby('temp Bin number').agg(lambda x: np.nanstd(x)).reset_index()
+        
+        return mean_df, std_df
+
 
     @staticmethod
     def append_to_add_columns_df(scan, shot, return_dict, add_columns_df):
