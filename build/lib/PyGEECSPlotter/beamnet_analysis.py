@@ -1,0 +1,250 @@
+# Dervied class BeamNetAnalyzer from WavefrontAnalyzer, ImageAnalyzer for PyGEECSPlotter
+# Author: Alex Picksley
+# Version 0.1
+# Created: 2025-12-02
+# Last Modified: 2025-12-02
+
+import numpy as np
+import sys, os
+from typing import Optional, Dict, Tuple 
+
+
+import sys, os
+sys.path.append('./../..')
+import wavekit_py as wkpy
+import time 
+import ctypes
+
+from PyGEECSPlotter.wavefront_analysis import WavefrontAnalyzer
+from PyGEECSPlotter.utils import super_gaussian, merge_dicts_overwrite, get_lineout_width, gaussian_2d, fit_gaussian_2d
+
+class BeamNetAnalyzer(WavefrontAnalyzer):
+    """
+    Derived class to analyze longitudinal images.
+    Leverages the improved ImageAnalyzer base class methods,
+    including the newly added 'apply_elliptical_mask'.
+    """
+    
+    def __init__(
+        self,
+        # >>> base-class params
+        diagnostic: Optional[str] = None,
+        file_ext: Optional[str] = None,
+        analyzer_dict: Optional[Dict] = None,
+        display_dict: Optional[Dict] = None,
+        output_diagnostic: Optional[str] = None,
+        output_file_ext: Optional[str] = None,
+        # >>> wavefront-specific params
+        *,
+        config_file_path: Optional[str] = None,
+        start_subpupil_size: Tuple[int, int] = (20, 20),
+        denoising_strength: float = 0.0,
+        lift_on=False,
+    ):
+        # Initialize WavefrontAnalyzer (which initializes ImageAnalyzer)
+        super().__init__(
+            diagnostic=diagnostic,
+            file_ext=file_ext,
+            analyzer_dict=analyzer_dict,
+            display_dict=display_dict,
+            output_diagnostic=output_diagnostic,
+            output_file_ext=output_file_ext,
+            config_file_path=config_file_path,
+            start_subpupil_size=start_subpupil_size,
+            denoising_strength=denoising_strength,
+            lift_on=lift_on,
+        )
+
+    def analyze_data(self, data, analyzer_dict=None, bg=None):
+        if analyzer_dict is None:
+            analyzer_dict = self.analyzer_dict
+    
+        if data is None:
+            print("Warning: analyze_data() called with None input — skipping analysis.")
+            return None, {}, {}
+            
+        if bg is not None:
+            slopes = wkpy.SlopesPostProcessor.apply_substractor(data, bg)
+        else: 
+            slopes = data
+        
+        hasodata = wkpy.HasoData(hasoslopes=slopes)
+        phase = wkpy.Compute.phase_zonal(compute_phase_set=self.compute_phase_set_zonal, hasodata=hasodata)
+        data_um, pupil = phase.get_data()
+        
+        
+        # -----------------------------------------------------
+        # Convert to radians
+        # ----------------------------------------------------- 
+        probe_wl = analyzer_dict.get('probe_wl', 390e-9)
+        data = 1e-6 * data_um * 2 * np.pi / probe_wl 
+        # fig, ax = base_self.display_data(data, display_dict)
+        
+        # -----------------------------------------------------
+        # Subtract poly BG
+        # ----------------------------------------------------- 
+        
+        x0_init, y0_init = analyzer_dict['plasma_x0'], analyzer_dict['plasma_y0']
+        dx, dy = analyzer_dict['dx'], analyzer_dict['dy']
+        d_hor, d_ver = analyzer_dict['plasma_horizontal_pixels'], analyzer_dict['plasma_vertical_pixels']
+        
+        masked_data = self.apply_elliptical_mask(
+            data,
+            x0_init, y0_init,
+            1.2*d_hor,
+            1.2*d_ver,
+            fill_value=np.nan,
+            invert=False
+        )
+        
+        masked_data = self.apply_elliptical_mask(
+            masked_data,
+            x0_init, y0_init,
+            0.5*d_hor,
+            0.5*d_ver,
+            fill_value=np.nan,
+            invert=True
+        )
+        
+        predicted_bg = self.fit_2d_polynomial(
+            masked_data,
+            roi_bounds=None,
+            exclude_nan=True,
+            degree=3
+        )
+        
+        data = data - predicted_bg
+        masked_data = masked_data - predicted_bg
+        
+        
+        # -----------------------------------------------------
+        # Find the centroid
+        # -----------------------------------------------------
+        if not analyzer_dict['drive_on']: 
+            if analyzer_dict['zero_timing']:
+                mask_pixels = 0.4*analyzer_dict['plasma_horizontal_pixels']
+            else:
+                mask_pixels = 0.6*analyzer_dict['plasma_horizontal_pixels']
+        else:
+            if analyzer_dict['zero_timing']:
+                mask_pixels = 0.5*analyzer_dict['plasma_horizontal_pixels']
+            else:
+                mask_pixels = 0.3*analyzer_dict['plasma_horizontal_pixels']
+                
+        data_for_centroid = self.apply_elliptical_mask(
+            data,
+            x0_init, 
+            y0_init, 
+            mask_pixels, 
+            mask_pixels,
+            fill_value=np.nan,
+            invert=False
+        )
+        
+        if not analyzer_dict['drive_on']:   
+            # measured_x0, measured_y0 = self._get_centroid(-data_for_centroid, thresh_min=0.4)
+            xx, yy = np.meshgrid(np.arange(data.shape[1]), np.arange(data.shape[0]))
+            fit_result = fit_gaussian_2d(xx, yy, -data_for_centroid)
+            measured_x0, measured_y0 = fit_result['center_x'], fit_result['center_y']
+            # print( fit_result )
+        else:
+            if analyzer_dict['zero_timing']:
+                half_ptp = np.mean( [np.nanmax(data_for_centroid) , np.nanmin(data_for_centroid)] )
+                binary_data = (data_for_centroid < half_ptp).astype(np.int32)
+                measured_x0, measured_y0 = self._get_centroid(binary_data)
+            else:
+                xx, yy = np.meshgrid(np.arange(data.shape[1]), np.arange(data.shape[0]))
+                fit_result = fit_gaussian_2d(xx, yy, data_for_centroid)
+                measured_x0, measured_y0 = fit_result['center_x'], fit_result['center_y']
+                
+        if np.isnan(measured_x0) or np.isnan(measured_y0):
+            measured_x0, measured_y0 = x0_init, y0_init
+        
+        # -----------------------------------------------------
+        # Lineouts
+        # -----------------------------------------------------
+        x, y, _, _ = self.get_spatial_coords(
+            data,
+            method='manual',
+            x0=measured_x0,
+            y0=measured_y0,
+            dx=dx,
+            dy=dy,
+        )
+        
+        imshow_extent = self.get_imshow_extent(x,y)
+        
+        Nlo = analyzer_dict.get('Nlo', 2)
+        lineout_method = analyzer_dict.get('lineout_method', 'center')
+        
+        x_lo, y_lo = self.get_lineouts(
+            data, measured_x0, measured_y0,
+            method=lineout_method,
+            Nlo=Nlo
+        )
+        r_lo = self.rotational_average(data, measured_x0, measured_y0, interpolate_nans=True)
+        r = np.arange(len(r_lo)) * dx
+        
+        
+        # -----------------------------------------------------
+        # Phase Shift Metrics
+        # -----------------------------------------------------
+        phase_shifts = self.compute_phase_shifts(data, shifts_when='')
+        phase_shifts_center = self.compute_phase_shifts(data_for_centroid, shifts_when='center')
+        
+        fwhm_xpix, hdx, ldx = get_lineout_width(-x_lo, measured_x0,
+                                                    from_center=True, width_at=0.5)
+        fwhm_ypix, hdy, ldy = get_lineout_width(-y_lo, measured_y0,
+                                                    from_center=True, width_at=0.5)
+        
+        
+        return_dict = {
+            'probe_wl_used' :probe_wl,
+            'imshow_extent': imshow_extent,
+            'x0_init': x0_init,
+            'y0_init': y0_init,
+            'measured_x0': measured_x0,
+            'measured_y0': measured_y0,
+            'fwhm_x (um)': fwhm_xpix * dx,
+            'fwhm_y (um)': fwhm_ypix * dy,
+        }
+
+        lineouts = {
+            'x': x,
+            'y': y,
+            'x_lo': x_lo,
+            'y_lo': y_lo,
+            'r': r,
+            'r_lo': r_lo
+        }
+
+        return_dict = merge_dicts_overwrite(return_dict, phase_shifts, phase_shifts_center)
+        return data, return_dict, lineouts
+
+    def average_file_list(self, file_list):
+        slopes_list = []
+        for filename in file_list:
+            data = self.load_data(filename)
+            if data is not None:
+                slopes_list.append(data)
+            else:
+                print(f"Skipping {filename} (load failed)")
+
+        # Check that we have at least one valid slope
+        if not slopes_list:
+            print("No valid slopes found. Returning None.")
+            return None
+
+        # Initialize average with the first valid slope
+        avg_slopes = slopes_list[0]
+
+        # Add the rest
+        for slopes in slopes_list[1:]:
+            avg_slopes = wkpy.SlopesPostProcessor.apply_adder(avg_slopes, slopes)
+
+        # Scale by the number of valid slopes
+        n_valid = len(slopes_list)
+        avg_slopes = wkpy.SlopesPostProcessor.apply_scaler(avg_slopes, 1 / n_valid)
+
+        return avg_slopes
+

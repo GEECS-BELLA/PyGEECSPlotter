@@ -1,6 +1,7 @@
 README.md
 setup.py
 PyGEECSPlotter/__init__.py
+PyGEECSPlotter/beamnet_analysis.py
 PyGEECSPlotter/bin_data.py
 PyGEECSPlotter/ecs_live_dumps.py
 PyGEECSPlotter/geecs_cmaps.py

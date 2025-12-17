@@ -3,6 +3,8 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
+from scipy.optimize import least_squares
+
 from PyGEECSPlotter.ecs_live_dumps import get_ecs_live_dumps_parameter_value_from_sfilename
 
 def _convert_to_serializable(obj):
@@ -289,3 +291,80 @@ def parse_controls_from_python(filename):
     with open(filename, 'r') as file:
         controls_dict = json.load(file)
     return controls_dict
+
+
+def gaussian_2d(xydata, amplitude, center_x, center_y, sigma_x, sigma_y, offset):
+    x, y = xydata
+    if sigma_x <= 0 or sigma_y <= 0:
+        return np.full_like(x, np.inf)
+    exponent = -0.5 * ( ((x - center_x)/sigma_x)**2 + ((y - center_y)/sigma_y)**2 )
+    return amplitude * np.exp(exponent) + offset
+
+def fit_gaussian_2d(xdata, ydata, zdata, p0=None, bounds=None,
+                    loss='linear', max_nfev=5000):
+    xdata = np.array(xdata, dtype=float)
+    ydata = np.array(ydata, dtype=float)
+    zdata = np.array(zdata, dtype=float)
+    if xdata.shape != ydata.shape or xdata.shape != zdata.shape:
+        return {'success': False,
+                'message': 'xdata, ydata, and zdata must have the same shape.'}
+
+    valid_mask = np.isfinite(xdata) & np.isfinite(ydata) & np.isfinite(zdata)
+    if not np.any(valid_mask):
+        return {'success': False, 'message': 'No valid data'}
+
+    x_valid = xdata[valid_mask]
+    y_valid = ydata[valid_mask]
+    z_valid = zdata[valid_mask]
+
+    xy_valid = (x_valid, y_valid)
+
+    def estimate_initial_params(x_arr, y_arr, z_arr):
+        z_min, z_max = np.nanmin(z_arr), np.nanmax(z_arr)
+        amp_guess = z_max - z_min
+        offset_guess = z_min
+        # center guess at the peak
+        idx_max = np.argmax(z_arr)
+        cx_guess = x_arr[idx_max]
+        cy_guess = y_arr[idx_max]
+        # rough sigma guesses
+        half_level = z_min + 0.5 * amp_guess
+        above_half = z_arr > half_level
+        if not np.any(above_half):
+            sigma_x_guess = (np.max(x_arr) - np.min(x_arr)) / 6.0
+            sigma_y_guess = (np.max(y_arr) - np.min(y_arr)) / 6.0
+        else:
+            x_half = x_arr[above_half]
+            y_half = y_arr[above_half]
+            sigma_x_guess = np.sqrt(np.mean((x_half - cx_guess)**2)) or 1e-3
+            sigma_y_guess = np.sqrt(np.mean((y_half - cy_guess)**2)) or 1e-3
+        return [amp_guess, cx_guess, cy_guess, sigma_x_guess, sigma_y_guess, offset_guess]
+
+    if p0 is None:
+        p0 = estimate_initial_params(x_valid, y_valid, z_valid)
+
+    if bounds is None:
+        lower_bounds = [0.0, -np.inf, -np.inf, 1e-12, 1e-12, -np.inf]
+        upper_bounds = [np.inf, np.inf, np.inf, np.inf, np.inf, np.inf]
+        bounds = (lower_bounds, upper_bounds)
+
+    def residual(params, xy, z):
+        model = gaussian_2d(xy, *params)
+        return z - model
+
+    res = least_squares(residual, x0=p0, args=(xy_valid, z_valid),
+                        bounds=bounds, loss=loss, max_nfev=max_nfev)
+
+    amp, cx, cy, sx, sy, offset = res.x
+    return {
+        'success':    res.success,
+        'message':    res.message,
+        'cost':       res.cost,
+        'params':     res.x,
+        'amplitude':  amp,
+        'center_x':   cx,
+        'center_y':   cy,
+        'sigma_x':    sx,
+        'sigma_y':    sy,
+        'offset':     offset
+    }

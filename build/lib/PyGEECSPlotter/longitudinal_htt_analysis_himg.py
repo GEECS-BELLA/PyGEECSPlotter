@@ -126,10 +126,17 @@ class LongitudinalHTTAnalyzerHimg(WavefrontAnalyzer):
             # -----------------------------------------------------
             # Subtract Bg Phase
             # ----------------------------------------------------- 
-            slopes = wkpy.SlopesPostProcessor.apply_substractor(data, bg)
-            hasodata = wkpy.HasoData(hasoslopes=slopes)
-            phase = wkpy.Compute.phase_zonal(compute_phase_set=self.compute_phase_set_zonal, hasodata=hasodata)
-            data, pupil = phase.get_data()
+            if 'himg' in self.file_ext:
+                if bg is None:
+                    slopes = data
+                else:
+                    slopes = wkpy.SlopesPostProcessor.apply_substractor(data, bg)
+                hasodata = wkpy.HasoData(hasoslopes=slopes)
+                phase = wkpy.Compute.phase_zonal(compute_phase_set=self.compute_phase_set_zonal, hasodata=hasodata)
+                data, pupil = phase.get_data()
+            else:
+                if bg is not None:
+                    data = data - bg
 
             # -----------------------------------------------------
             # Convert to radians

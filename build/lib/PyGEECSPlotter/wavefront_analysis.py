@@ -117,7 +117,9 @@ class WavefrontAnalyzer(ImageAnalyzer):
             scale_max = float(lines[2].split(' ')[2])
 
             return data * (scale_max - scale_min) / (2**16 - 1) + scale_min
-        else:
+        elif 'npy' in file_ext:
+            return np.load( filename )
+        else: 
             return None
 
     def load_raw_data(self, filename):
