@@ -317,6 +317,50 @@ class ScanDataAnalyzer:
 
         return filtered_scan_data
 
+    def filter_scan_data_by_array(
+            self,
+            filter_parameter,
+            values,
+            filter_exclusive=False,
+            update_data=False
+        ):
+        """
+        Filter scan data based on whether a parameter value is in a given array.
+
+        Parameters:
+        - filter_parameter (str): Column name in `self.data` to filter on.
+        - values (array-like): List, numpy array, or pandas Series of allowed values.
+        - filter_exclusive (bool, optional): If True, exclude rows where the value
+        is in `values`. If False, include only those rows. Defaults to False.
+        - update_data (bool, optional): If True, update `self.data` with the
+        filtered DataFrame.
+
+        Returns:
+        - filtered_scan_data (pd.DataFrame): Filtered DataFrame.
+        """
+
+        # Ensure array-like input
+        values = np.asarray(values)
+
+        if filter_exclusive:
+            filter_idcs = ~self.data[filter_parameter].isin(values)
+        else:
+            filter_idcs = self.data[filter_parameter].isin(values)
+
+        filtered_scan_data = self.data.loc[filter_idcs].reset_index(drop=True)
+
+        print(
+            '%d / %d shots included. Filtered based on : %s'
+            % (len(filtered_scan_data), len(self.data),
+            get_parameter_alias(filter_parameter))
+        )
+
+        if update_data:
+            self.data = filtered_scan_data
+
+        return filtered_scan_data
+
+
     def get_bg_file_path(self, diagnostic, file_ext='.png', which_scan='last'):
         """
         Retrieves the background file path for a specific diagnostic from the analysis directory.
