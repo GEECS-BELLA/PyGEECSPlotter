@@ -50,7 +50,7 @@ class ImageAnalyzer:
     def load_data(self, filename):
         return ni_imread.read_imaq_image(filename).astype('float')
     
-    def analyze_data(self, data, analyzer_dict=None, bg=None):
+    def analyze_data(self, data, analyzer_dict=None, row_dict={}, bg=None):
         if analyzer_dict is None:
             analyzer_dict = self.analyzer_dict
 
@@ -115,10 +115,11 @@ class ImageAnalyzer:
             method=analyzer_dict.get('lineout_method', 'center'),
             Nlo=analyzer_dict.get('Nlo', 2)
         )
-        results['x']    = x
-        results['y']    = y
-        results['x_lo'] = x_lo
-        results['y_lo'] = y_lo
+        lineouts = {}
+        lineouts['x']    = x
+        lineouts['y']    = y
+        lineouts['x_lo'] = x_lo
+        lineouts['y_lo'] = y_lo
         results['imshow_extent'] = ImageAnalyzer.get_imshow_extent(x,y)
 
         # 7) Fit super-Gaussian
@@ -168,7 +169,7 @@ class ImageAnalyzer:
                                           ))
 
 
-        return data_out, results
+        return data_out, results, lineouts
 
     def display_data(self, data, display_dict=None, title=None, fig=None, ax=None):
         if display_dict is None:

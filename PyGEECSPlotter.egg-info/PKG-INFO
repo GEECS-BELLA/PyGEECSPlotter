@@ -1,5 +1,17 @@
-Metadata-Version: 2.1
+Metadata-Version: 2.4
 Name: PyGEECSPlotter
 Version: 0.0.3
 Summary: GEECS Plotter Library
 Author: Alex Picksley
+Requires-Dist: numpy
+Requires-Dist: matplotlib
+Requires-Dist: pandas
+Requires-Dist: ipywidgets
+Requires-Dist: scipy
+Requires-Dist: scikit-image
+Requires-Dist: scikit-learn
+Requires-Dist: opencv-python
+Requires-Dist: pypng
+Dynamic: author
+Dynamic: requires-dist
+Dynamic: summary

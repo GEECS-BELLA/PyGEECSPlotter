@@ -17,6 +17,7 @@ PyGEECSPlotter/spectrum_analysis.py
 PyGEECSPlotter/utils.py
 PyGEECSPlotter/wavefront_analysis.py
 PyGEECSPlotter/widgets.py
+PyGEECSPlotter/windmill_analysis.py
 PyGEECSPlotter.egg-info/PKG-INFO
 PyGEECSPlotter.egg-info/SOURCES.txt
 PyGEECSPlotter.egg-info/dependency_links.txt

@@ -6,6 +6,7 @@
 
 import numpy as np
 import os, sys
+import matplotlib.pyplot as plt
 import re
 import glob
 import json
@@ -15,10 +16,24 @@ from pathlib import Path
 
 from PyGEECSPlotter.navigation_utils import *
 from PyGEECSPlotter.utils import parse_controls_from_python, write_controls_from_python
-from PyGEECSPlotter.navigation_utils import get_analysis_dir, get_analysis_diagnostic_path, open_directory_in_explorer
+from PyGEECSPlotter.navigation_utils import get_analysis_dir, get_analysis_diagnostic_path, open_directory_in_explorer, get_analysed_shot_save_path
 
 import PyGEECSPlotter.plotting as gplt
 colors = gplt.configure_plotting()
+
+display_dict = {'cbar_label': 'Phase ($\\mathrm{ \\mu m }$)',
+ 'cmap': 'RdBu',
+ 'spatial_units': 'mm',
+ 'extent': np.array([-6.35785512,  7.25609488, -5.042575  ,  5.042575  ])}
+
+display_dict_windmill = {'cbar_label': 'Phase ($\\mathrm{ \\mu m }$)',
+ 'cmap': 'RdBu',
+ 'spatial_units': 'mm',
+ 'axlims': 1.5,
+ 'tick_dx': 0.5,
+ 'extent': np.array([-6.35785512,  7.25609488, -5.042575  ,  5.042575  ])}
+
+
 
 class ScanDataAnalyzer:
     def __init__(self, 
@@ -430,7 +445,6 @@ class ScanDataAnalyzer:
         overwrite_columns=True, 
         analysis_label='',
         write_analyzed=False,
-        add_data=False,
         ):
         """
         Processes scan data with analysis and optional display and file writing.
@@ -445,25 +459,38 @@ class ScanDataAnalyzer:
         add_columns_df = None
 
         for i in range(len(self.data)):
-            scan = int(self.data['scan'][i])
-            shot_num = int(self.data['Shotnumber'][i])
-            filename = self.data['%s file_list' %analyzer.diagnostic][i]    
-
+            row_dict = self.data.iloc[i].to_dict()
+            scan, shot_num = row_dict['scan'], row_dict['Shotnumber']
+            filename = row_dict[f'{analyzer.diagnostic} file_list']
+            
             data = analyzer.load_data(filename)
-            data, return_dict = analyzer.analyze_data(data, bg=bg)
-            if add_data:
-                return_dict['data'] = data
+            data, return_dict, lineouts = analyzer.analyze_data(data, bg=bg, row_dict=row_dict)
 
             add_columns_df = ScanDataAnalyzer.append_to_add_columns_df(scan, shot_num, return_dict, add_columns_df)
 
             if data is not None:
                 if display_data:
-                    fig, ax = analyzer.display_data(data, title=os.path.basename(filename))
-
+                    fig, ax = analyzer.display_data(data['zonal_data'], display_dict=display_dict, title=os.path.basename(filename))
+                    if data['windmill_laser_pupil'] is not None:
+                        fig2, ax2 = analyzer.display_data(data['windmill_laser_pupil'], display_dict=display_dict_windmill, title=os.path.basename(filename))
+            
                 if write_analyzed:
                     analysis_dir = get_analysis_dir(self.top_dir, self.scan, make_dir=True)
-                    save_path = get_analysed_shot_save_path(analysis_dir, analyzer.output_diagnostic, scan, shot_num, analyzer.output_file_ext)
-                    analyzer.write_analyzed_data(save_path, data)
+                    analyzer.write_analyzed_data( data, analysis_dir, scan, shot_num )
+            
+                    if display_data:
+                        append_info = '_zonal_data'
+                        save_path = get_analysed_shot_save_path(analysis_dir, f'{analyzer.output_diagnostic}{append_info}', 
+                                                scan, shot_num, analyzer.output_file_ext, append_info=f'{append_info}_fig')
+                        fig.savefig( save_path, dpi=200 )
+                        plt.close()
+        
+                        if data['windmill_laser_pupil'] is not None:
+                            append_info = '_windmill_laser_pupil'
+                            save_path = get_analysed_shot_save_path(analysis_dir, f'{analyzer.output_diagnostic}{append_info}', 
+                                                scan, shot_num, analyzer.output_file_ext, append_info=f'{append_info}_fig')
+                            fig2.savefig( save_path, dpi=200 )
+                            plt.close()
                 
         if write_columns_to_sfile and len(self.data) > 0:
             if analyzer.output_diagnostic is not None:
@@ -476,12 +503,13 @@ class ScanDataAnalyzer:
             write_controls_from_python(controls_path, analyzer.analyzer_dict)
 
             self.merge_data_frame_to_sfile(add_columns_df, 
-                              diag_str,
-                              overwrite_columns=overwrite_columns, 
-                              analysis_label=analysis_label, 
-                                          )
+                            diag_str,
+                            overwrite_columns=overwrite_columns, 
+                            analysis_label=analysis_label, 
+                                        )
 
         return add_columns_df
+
 
     def merge_data_frame_to_sfile(self, 
                                   add_columns_df, 
