@@ -420,6 +420,24 @@ class ImageAnalyzer:
             x_lo = np.nanmean(data, axis=0)
             y_lo = np.nanmean(data, axis=1)
         return x_lo, y_lo
+    
+    @staticmethod
+    def display_imshow_lineouts(fig, ax, extent, x=None, y=None, x_lo=None, y_lo=None, amp=0.15, color='k', ls='-'):
+        if x is not None and x_lo is not None:
+            ax.plot(
+                x,
+                amp * x_lo * (extent[3] - extent[2]) + extent[2] ,
+                c=color,
+                ls=ls,
+            )
+        if y is not None and y_lo is not None:
+            ax.plot(
+                amp * y_lo * (extent[1] - extent[0]) + extent[0],
+                y,
+                c=color,
+                ls=ls,
+            )
+        return fig, ax
 
     @staticmethod
     def get_imshow_extent(x, y):
