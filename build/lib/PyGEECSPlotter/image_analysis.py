@@ -120,6 +120,8 @@ class ImageAnalyzer:
         lineouts['y']    = y
         lineouts['x_lo'] = x_lo
         lineouts['y_lo'] = y_lo
+        results['x0'] = x0
+        results['y0'] = y0
         results['imshow_extent'] = ImageAnalyzer.get_imshow_extent(x,y)
 
         # 7) Fit super-Gaussian

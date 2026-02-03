@@ -11,7 +11,7 @@ import ctypes
 
 from PyGEECSPlotter.wavefront_analysis import WavefrontAnalyzer
 from PyGEECSPlotter.utils import super_gaussian, merge_dicts_overwrite, get_lineout_width
-
+from PyGEECSPlotter.navigation_utils import get_analysed_shot_save_path
 
 class LongitudinalHTTAnalyzerHimg(WavefrontAnalyzer):
     """
@@ -50,14 +50,15 @@ class LongitudinalHTTAnalyzerHimg(WavefrontAnalyzer):
             lift_on=lift_on,
         )
     
-    def analyze_data(self, data, analyzer_dict=None, bg=None):
+    def analyze_data(self, data, analyzer_dict=None, row_dict=None, bg=None):
         if analyzer_dict is None:
             analyzer_dict = self.analyzer_dict
 
         if data is None:
             print("Warning: analyze_data() called with None input — skipping analysis.")
-            return None, {}
-
+            return None, {}, {}
+        
+        lineouts = {}
 
         if analyzer_dict.get('intensity_only', False):
             data_out = self.intensity_reconstruction(data)
@@ -82,13 +83,13 @@ class LongitudinalHTTAnalyzerHimg(WavefrontAnalyzer):
             )
             results['x0']    = x0
             results['y0']    = y0
-            results['x']    = x
-            results['y']    = y
-            results['x_lo'] = x_lo
-            results['y_lo'] = y_lo
+            lineouts['x']    = x
+            lineouts['y']    = y
+            lineouts['x_lo'] = x_lo
+            lineouts['y_lo'] = y_lo
             results['imshow_extent'] = self.get_imshow_extent(x,y)
 
-            return data_out, results
+            return data_out, results, lineouts
             
         else:
             # -----------------------------------------------------
@@ -229,3 +230,16 @@ class LongitudinalHTTAnalyzerHimg(WavefrontAnalyzer):
 
             return_dict = merge_dicts_overwrite(return_dict, phase_shifts, phase_shifts_bg)
             return data, return_dict
+        
+    def write_analyzed_data(self, data, analysis_dir, scan, shot_num):
+
+        # ---- intensity ----
+        append_info = '_intensity'
+        save_path = get_analysed_shot_save_path(
+            analysis_dir,
+            f'{self.output_diagnostic}{append_info}',
+            scan,
+            shot_num,
+            self.output_file_ext
+        )
+        super().write_analyzed_data(save_path, data)
