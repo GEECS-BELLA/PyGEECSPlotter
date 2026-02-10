@@ -21,6 +21,8 @@ warnings.filterwarnings("ignore", category=RuntimeWarning, message="Mean of empt
 
 import PyGEECSPlotter.ni_imread as ni_imread
 from PyGEECSPlotter.utils import super_gaussian, get_lineout_width
+from PyGEECSPlotter.navigation_utils import get_analysed_shot_save_path
+
 
 class ImageAnalyzer:
     """
@@ -173,12 +175,17 @@ class ImageAnalyzer:
 
         return data_out, results, lineouts
 
-    def display_data(self, data, display_dict=None, title=None, fig=None, ax=None):
+    def display_data(self, data, display_dict=None, return_dict=None, title=None, fig=None, ax=None):
         if display_dict is None:
             display_dict = self.display_dict
             
         if fig is None or ax is None:
-            fig, ax = plt.subplots(figsize=display_dict.get('figsize', (6, 5)))
+            fig, ax = plt.subplots(constrained_layout=True, figsize=display_dict.get('figsize', (6, 5)))
+
+        if return_dict is not None:
+            extent = return_dict.get( 'imshow_extent', None )
+        else:
+            extent = None
 
         im = ax.imshow(data,
                         aspect=display_dict.get('aspect', 'equal'),
@@ -186,7 +193,7 @@ class ImageAnalyzer:
                         cmap=display_dict.get('cmap', 'RdBu'),
                         interpolation=display_dict.get('interpolation', None),
                         origin='lower',
-                        extent=display_dict.get('extent', None),
+                        extent=extent,
                         vmin=display_dict.get('vmin', None),
                         vmax=display_dict.get('vmax', None),
                       )
@@ -257,6 +264,20 @@ class ImageAnalyzer:
             ax.set_title('%s - %s' %(title, title_append))
 
         return fig, ax
+    
+    def write_displayed_data(self, fig, analysis_dir, scan, shot_num, close_fig=True):
+        save_path = get_analysed_shot_save_path(
+            analysis_dir,
+            f'{self.output_diagnostic}{'_disp'}',
+            scan,
+            shot_num,
+            '.png', 
+            append_info='_disp'
+        )
+
+        fig.savefig( save_path, dpi=200 )
+        if close_fig:
+            plt.close()
 
 
     # -------------------------------------------------------------------
@@ -577,6 +598,98 @@ class ImageAnalyzer:
         indices = np.arange(len(data))
         data[nans] = np.interp(indices[nans], indices[notnans], data[notnans])
         return data
+    
+    @staticmethod
+    def angular_difference_deg(theta, theta0):
+        """
+        Smallest signed angular difference (theta - theta0) in degrees, wrapped to [-180, 180).
+        theta, theta0 can be scalars or arrays.
+        """
+        return (theta - theta0 + 180.0) % 360.0 - 180.0
+    
+    @staticmethod
+    def angle_deg_from_points(x0, y0, x1, y1):
+        """
+        Angle from (x0, y0) -> (x1, y1) in degrees with:
+        - 0° = up (negative y direction)
+        - +angle = clockwise
+        Returns angle in [0, 360).
+        """
+        dx = x1 - x0
+        dy = y1 - y0
+
+        # If the point is identical, angle is undefined
+        if np.isscalar(dx) and np.isscalar(dy) and dx == 0 and dy == 0:
+            return np.nan
+
+        # Start with standard: atan2(dy, dx) gives 0° on +x and CCW positive
+        theta = (np.degrees(np.arctan2(dy, dx)) + 90.0) % 360.0  # 0° at up, still CCW-ish
+        theta = (-theta) % 360.0  # make clockwise-positive
+        return theta
+
+    @staticmethod
+    def rotational_average_sector(
+        image, x0, y0,
+        dtheta=360.0, theta0=0.0,
+        interpolate_nans=True,
+        r_rounding="round",
+        return_counts=False,
+    ):
+        """
+        Radial (rotational) average over a sector (wedge) of angular width dtheta (deg),
+        centered at theta0 (deg), with:
+
+        - 0° = up (toward decreasing y)
+        - +angle = clockwise
+
+        Example: top-right quadrant -> dtheta=90, theta0=45.
+        """
+        img = np.asarray(image, dtype=float)
+
+        Y, X = np.indices(img.shape)
+        dx = X - x0
+        dy = Y - y0
+
+        # Radius
+        r = np.sqrt(dx**2 + dy**2)
+        if r_rounding == "round":
+            R = np.rint(r).astype(int)
+        elif r_rounding == "floor":
+            R = np.floor(r).astype(int)
+        elif r_rounding == "ceil":
+            R = np.ceil(r).astype(int)
+        else:
+            raise ValueError("r_rounding must be 'round', 'floor', or 'ceil'")
+
+        # Angle in degrees, with 0=up and CW positive:
+        # Start from arctan2(dy, dx) which is 0 on +x and CCW positive,
+        # then convert to (0=up, CW positive) via:
+        theta = (np.degrees(np.arctan2(dy, dx)) + 90.0) % 360.0
+        theta = (-theta) % 360.0  # flip to CW-positive while keeping 0=up
+
+        # Sector mask
+        if dtheta >= 360.0:
+            ang_mask = np.ones_like(theta, dtype=bool)
+        else:
+            d = ImageAnalyzer.angular_difference_deg(theta, theta0)
+            ang_mask = np.abs(d) <= (dtheta / 2.0)
+
+        max_r = int(np.nanmax(R))
+        avg = np.full(max_r + 1, np.nan)
+        counts = np.zeros(max_r + 1, dtype=int)
+
+        for rr in range(max_r + 1):
+            mask = (R == rr) & ang_mask
+            vals = img[mask]
+            if vals.size:
+                avg[rr] = np.nanmean(vals)
+                counts[rr] = np.count_nonzero(np.isfinite(vals))
+
+        if interpolate_nans:
+            avg = ImageAnalyzer.interpolate_nan_values(avg)
+
+        return (avg, counts) if return_counts else avg
+
 
     @staticmethod
     def fit_2d_polynomial(data, roi_bounds=None, exclude_nan=False, degree=2):

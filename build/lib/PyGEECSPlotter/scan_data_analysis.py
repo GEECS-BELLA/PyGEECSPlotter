@@ -21,18 +21,6 @@ from PyGEECSPlotter.navigation_utils import get_analysis_dir, get_analysis_diagn
 import PyGEECSPlotter.plotting as gplt
 colors = gplt.configure_plotting()
 
-display_dict = {'cbar_label': 'Phase ($\\mathrm{ \\mu m }$)',
- 'cmap': 'RdBu',
- 'spatial_units': 'mm',
- 'extent': np.array([-6.35785512,  7.25609488, -5.042575  ,  5.042575  ])}
-
-display_dict_windmill = {'cbar_label': 'Phase ($\\mathrm{ \\mu m }$)',
- 'cmap': 'RdBu',
- 'spatial_units': 'mm',
- 'axlims': 1.5,
- 'tick_dx': 0.5,
- 'extent': np.array([-6.35785512,  7.25609488, -5.042575  ,  5.042575  ])}
-
 
 
 class ScanDataAnalyzer:
@@ -45,6 +33,7 @@ class ScanDataAnalyzer:
                  day=None, 
                  scan=None
                  ):
+                 
         
         self.sfilename = sfilename
         self.top_dir = top_dir
@@ -470,28 +459,15 @@ class ScanDataAnalyzer:
 
             if data is not None:
                 if display_data:
-                    fig, ax = analyzer.display_data(data['zonal_data'], display_dict=display_dict, title=os.path.basename(filename))
-                    if data['windmill_laser_pupil'] is not None:
-                        fig2, ax2 = analyzer.display_data(data['windmill_laser_pupil'], display_dict=display_dict_windmill, title=os.path.basename(filename))
-            
+                    fig, ax = analyzer.display_data(data, return_dict=return_dict, title=os.path.basename(filename))
+
                 if write_analyzed:
                     analysis_dir = get_analysis_dir(self.top_dir, self.scan, make_dir=True)
                     analyzer.write_analyzed_data( data, analysis_dir, scan, shot_num )
-            
+
                     if display_data:
-                        append_info = '_zonal_data'
-                        save_path = get_analysed_shot_save_path(analysis_dir, f'{analyzer.output_diagnostic}{append_info}', 
-                                                scan, shot_num, analyzer.output_file_ext, append_info=f'{append_info}_fig')
-                        fig.savefig( save_path, dpi=200 )
-                        plt.close()
-        
-                        if data['windmill_laser_pupil'] is not None:
-                            append_info = '_windmill_laser_pupil'
-                            save_path = get_analysed_shot_save_path(analysis_dir, f'{analyzer.output_diagnostic}{append_info}', 
-                                                scan, shot_num, analyzer.output_file_ext, append_info=f'{append_info}_fig')
-                            fig2.savefig( save_path, dpi=200 )
-                            plt.close()
-                
+                        analyzer.write_displayed_data(fig, analysis_dir, scan, shot_num, close_fig=True)
+                            
         if write_columns_to_sfile and len(self.data) > 0:
             if analyzer.output_diagnostic is not None:
                 diag_str = analyzer.output_diagnostic

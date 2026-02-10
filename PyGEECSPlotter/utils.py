@@ -368,3 +368,95 @@ def fit_gaussian_2d(xdata, ydata, zdata, p0=None, bounds=None,
         'sigma_y':    sy,
         'offset':     offset
     }
+
+
+
+def save_lineouts_to_txt(lineouts, filename="lineouts.txt",
+                         cols=None, float_format="%.3f", na_rep="nan"):
+    """
+    Save lineouts dict (arrays of different lengths) to a tab-delimited text file,
+    padding with NaNs.
+
+    Parameters
+    ----------
+    lineouts : dict
+        Dict of 1D arrays, e.g. {'x': ..., 'x_lo': ..., 'y': ..., ...}
+        Some keys may be missing (e.g. only 'x' and 'x_lo').
+    filename : str
+        Output filename.
+    cols : list of str or None
+        Column order to use. If None, use lineouts.keys() in their existing order.
+        If provided, any names not found in lineouts are silently skipped.
+    float_format : str
+        Format for floats, e.g. '%.3f'.
+    na_rep : str
+        Representation of NaN in the file.
+    """
+    if cols is None:
+        cols = list(lineouts.keys())
+    else:
+        # Only keep columns that actually exist in lineouts
+        cols = [c for c in cols if c in lineouts]
+
+    # Convert to arrays and find max length
+    arrays = {k: np.asarray(lineouts[k]) for k in cols}
+    max_len = max(len(arr) for arr in arrays.values())
+
+    # Pad with NaN
+    padded = {
+        k: np.pad(arr, (0, max_len - len(arr)), constant_values=np.nan)
+        for k, arr in arrays.items()
+    }
+
+    df = pd.DataFrame(padded, columns=cols)
+    df.to_csv(filename, sep="\t", index=False,
+              float_format=float_format, na_rep=na_rep)
+    return df
+
+
+def load_lineouts_from_txt(filename):
+    """
+    Load lineouts from a tab-delimited file created by save_lineouts_to_txt.
+
+    Automatically detects coord/value pairs of the form:
+        <coord>, <coord> + '_lo'
+    and uses the coord column's NaNs to remove padding from both.
+
+    Returns
+    -------
+    lineouts : dict of np.ndarray
+        Dict with original-length arrays.
+    df : pandas.DataFrame
+        The raw DataFrame as read from file (still padded with NaNs).
+    """
+    df = pd.read_csv(filename, sep="\t")
+
+    cols = list(df.columns)
+    lineouts = {}
+
+    # --- Detect coord/value pairs automatically ---
+    coord_pairs = []
+    for col in cols:
+        if not col.endswith("_lo"):
+            lo_col = col + "_lo"
+            if lo_col in df.columns:
+                coord_pairs.append((col, lo_col))
+
+    # Process each coord/value pair
+    used_cols = set()
+    for coord, val in coord_pairs:
+        coord_vals = df[coord].to_numpy()
+        mask = ~np.isnan(coord_vals)  # keep only real entries, drop padded NaNs
+
+        lineouts[coord] = coord_vals[mask]
+        lineouts[val] = df[val].to_numpy()[mask]
+
+        used_cols.add(coord)
+        used_cols.add(val)
+
+    # Any remaining columns (not part of coord pairs) are returned as-is
+    for col in cols:
+        if col not in used_cols:
+            lineouts[col] = df[col].to_numpy()
+
+    return lineouts
