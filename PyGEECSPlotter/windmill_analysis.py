@@ -265,6 +265,37 @@ class WindmillWave(WavefrontAnalyzer):
         
         return data_out, return_dict, lineouts
 
+    def display_data(self, data, display_dict=None, return_dict=None, title=None, fig=None, ax=None):
+        if display_dict is None:
+            display_dict = self.display_dict
+
+        if fig is None or ax is None:
+            fig, (ax_phi, ax_I, ax_wm) = plt.subplots(1, 3, constrained_layout=True, 
+                                               figsize=display_dict.get('figsize', (16, 4)))
+         
+        fig, ax_phi = super().display_data( data['zonal_data'], 
+                                          display_dict=display_dict['zonal_data'], 
+                                          return_dict=return_dict,
+                                          title=f'{title} Zonal', 
+                                          fig=fig, ax=ax_phi
+                                         )
+
+        fig, ax_I = super().display_data( data['intensity'], 
+                                          display_dict=display_dict['intensity'], 
+                                          return_dict=return_dict,
+                                          title=f'{title} Intensity', 
+                                          fig=fig, ax=ax_I
+                                         )
+
+        fig, ax_wm = super().display_data( data['windmill_laser_pupil'], 
+                                          display_dict=display_dict['windmill_laser_pupil'], 
+                                          return_dict=return_dict,
+                                          title=f'{title} Central 3 mm', 
+                                          fig=fig, ax=ax_wm
+                                         )
+
+        return fig, (ax_phi, ax_I, ax_wm)
+
     def write_analyzed_data(self, data, analysis_dir, scan, shot_num):
 
         # ---- raw ----
