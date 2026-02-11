@@ -141,10 +141,12 @@ class WindmillWave(WavefrontAnalyzer):
         # ------------------------------------------------------------
         # 4) Aberration filter selection (same logic as your current code)
         # ------------------------------------------------------------
-        if analyzer_dict.get("filter_tilts_and_curv", False):
-            phasemap_aberration_filter = [0, 0, 0, 1, 1]
+        if analyzer_dict.get("filter_tilts", False):
+            phasemap_aberration_filter = [0, 0, 1, 1, 1]
         else:
             phasemap_aberration_filter = [1, 1, 1, 1, 1]
+        if analyzer_dict.get("filter_curv", False):
+            phasemap_aberration_filter[2] = 0
     
         # ------------------------------------------------------------
         # 5) ZONAL reconstruction (HARD GATE)
