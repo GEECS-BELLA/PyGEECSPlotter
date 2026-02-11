@@ -329,12 +329,7 @@ class WavefrontAnalyzer(ImageAnalyzer):
             for i, coeff in zip(data_indexes, data_coeffs)
         }
 
-        zernike_phase_statistics = {
-            'zernike_phase_rms (um)' : phase.get_statistics().rms,
-            'zernike_phase_pv (um)' : phase.get_statistics().pv,
-            'zernike_phase_max (um)' : phase.get_statistics().max,
-            'zernike_phase_min (um)' : phase.get_statistics().min,
-        }
+        zernike_phase_statistics = WavefrontAnalyzer.compute_phase_shifts( data, shifts_when='zernike' )
         
         return data, pupil, zernike_dict, zernike_phase_statistics
 

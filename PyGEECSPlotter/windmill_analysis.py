@@ -5,6 +5,7 @@
 # Last Modified: 2025-12-02
 
 import numpy as np
+import matplotlib.pyplot as plt
 import sys, os
 from typing import Optional, Dict, Tuple 
 
@@ -119,6 +120,7 @@ class WindmillWave(WavefrontAnalyzer):
                 if "manual_pupil_dict" in analyzer_dict:
                     self.pupil_dict = analyzer_dict["manual_pupil_dict"]
                     self.pupil = None
+                    print( 'Using Manual Pupil' )
                 else:
                     print("[WARNING] 'manual' pupil method selected but no 'manual_pupil_dict' provided. Defaulting to 'auto'.")
                     self.pupil, self.pupil_dict = self.get_pupil(hasoslopes)
@@ -217,6 +219,7 @@ class WindmillWave(WavefrontAnalyzer):
         # ------------------------------------------------------------
 
         windmill_laser_pupil = None
+        windmill_phase_statistics = {}
         try:
             windmill_laser_pupil = self.apply_elliptical_mask(
                 zonal_data,
@@ -231,7 +234,8 @@ class WindmillWave(WavefrontAnalyzer):
             fitted_tilt_curv = self.fit_2d_polynomial(windmill_laser_pupil, exclude_nan=True)
             windmill_laser_pupil = windmill_laser_pupil - fitted_tilt_curv
             windmill_laser_pupil = windmill_laser_pupil - np.nanmean(windmill_laser_pupil)
-            
+
+            windmill_phase_statistics = WavefrontAnalyzer.compute_phase_shifts( windmill_laser_pupil, shifts_when='windmill' )
         except Exception:
             pass
 
@@ -260,11 +264,11 @@ class WindmillWave(WavefrontAnalyzer):
             zernike_phase_statistics,
             geometric_properties,
             zonal_phase_statistics,
+            windmill_phase_statistics,
             results,
             plot_dict,
         )
 
-        
         return data_out, return_dict, lineouts
 
     def display_data(self, data, display_dict=None, return_dict=None, title=None, fig=None, ax=None):
