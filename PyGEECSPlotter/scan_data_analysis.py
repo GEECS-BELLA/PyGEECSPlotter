@@ -16,7 +16,7 @@ from pathlib import Path
 
 from PyGEECSPlotter.navigation_utils import *
 from PyGEECSPlotter.utils import parse_controls_from_python, write_controls_from_python
-from PyGEECSPlotter.navigation_utils import get_analysis_dir, get_analysis_diagnostic_path, open_directory_in_explorer, get_analysed_shot_save_path
+# from PyGEECSPlotter.navigation_utils import get_analysis_dir, get_analysis_diagnostic_path, open_directory_in_explorer, get_analysed_shot_save_path
 
 import PyGEECSPlotter.plotting as gplt
 colors = gplt.configure_plotting()
@@ -434,6 +434,7 @@ class ScanDataAnalyzer:
         overwrite_columns=True, 
         analysis_label='',
         write_analyzed=False,
+        close_displayed=True,
         ):
         """
         Processes scan data with analysis and optional display and file writing.
@@ -447,27 +448,32 @@ class ScanDataAnalyzer:
 
         add_columns_df = None
 
-        for i in range(len(self.data)):
+        for i in range( len(self.data) ):
             row_dict = self.data.iloc[i].to_dict()
             scan, shot_num = row_dict['scan'], row_dict['Shotnumber']
             filename = row_dict[f'{analyzer.diagnostic} file_list']
             
             data = analyzer.load_data(filename)
-            data, return_dict, lineouts = analyzer.analyze_data(data, bg=bg, row_dict=row_dict)
-
-            add_columns_df = ScanDataAnalyzer.append_to_add_columns_df(scan, shot_num, return_dict, add_columns_df)
-
+            
+            bg_i = self._resolve_bg_for_row(analyzer, bg, row_dict)
+            data, return_dict, lineouts = analyzer.analyze_data(data, bg=bg_i, row_dict=row_dict)
+            
+            add_columns_df = ScanDataAnalyzer.append_to_add_columns_df( scan, shot_num, return_dict, add_columns_df )
+            
             if data is not None:
                 if display_data:
                     fig, ax = analyzer.display_data(data, return_dict=return_dict, title=os.path.basename(filename))
-
+            
                 if write_analyzed:
-                    analysis_dir = get_analysis_dir(self.top_dir, self.scan, make_dir=True)
+                    analysis_dir = get_analysis_dir( self.top_dir, self.scan, make_dir=True )
                     analyzer.write_analyzed_data( data, analysis_dir, scan, shot_num )
-
+            
                     if display_data:
-                        analyzer.write_displayed_data(fig, analysis_dir, scan, shot_num, close_fig=True)
-                            
+                        analyzer.write_displayed_data( fig, analysis_dir, scan, shot_num )
+
+                if close_displayed and display_data:
+                    plt.close( fig )
+
         if write_columns_to_sfile and len(self.data) > 0:
             if analyzer.output_diagnostic is not None:
                 diag_str = analyzer.output_diagnostic
@@ -542,6 +548,54 @@ class ScanDataAnalyzer:
         add_columns_df.to_csv( add_columns_path , index=False, sep='\t' )
         merged_df.to_csv(self.sfilename, index=False, sep='\t')
         print(f'Columns added to {self.sfilename}')
+
+    @staticmethod
+    def _resolve_bg_for_row(analyzer, bg, row_dict, debug_bg=False, debug_once=True):
+        """
+        This function is used when the bg is not the same for every shot in the scan.
+        If bg is a function that takes the argument (row_dict), it will return the bg for that row dict.
+        You just need to write the function that selects the correct bg for that shot
+
+        bg can be:
+        - None
+        - already-loaded background (returned as-is)
+        - a path/filename (loaded via analyzer.load_data)
+        - a callable: bg(row_dict) -> None | loaded_bg | path
+        - an object with .get(row_dict) -> None | loaded_bg | path
+        """
+
+        if bg is None:
+            return None
+
+        # Provider object with .get(row_dict)
+        if hasattr(bg, "get") and callable(bg.get):
+            bg_spec = bg.get(row_dict)
+
+        # Callable provider
+        elif callable(bg):
+            bg_spec = bg(row_dict)
+
+        # Static
+        else:
+            bg_spec = bg
+
+        if bg_spec is None:
+            return None
+
+        # If it's a path-like, load it
+        if isinstance(bg_spec, (str, Path, os.PathLike)):
+            bg_path = str(bg_spec)
+
+            if debug_bg:
+                # Use an attribute on analyzer to remember if we've printed already
+                if (not debug_once) or (not getattr(analyzer, "_bg_debug_printed", False)):
+                    print(f"[BG] loading background from: {bg_path}")
+                    analyzer._bg_debug_printed = True
+
+            return analyzer.load_data(bg_path)
+
+        # Otherwise assume it's already loaded bg data
+        return bg_spec
 
     def scan_data_mean_std_per_bin(self):
         """

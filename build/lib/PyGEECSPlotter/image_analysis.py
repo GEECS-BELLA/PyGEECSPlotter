@@ -20,7 +20,7 @@ import warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning, message="Mean of empty slice")
 
 import PyGEECSPlotter.ni_imread as ni_imread
-from PyGEECSPlotter.utils import super_gaussian, get_lineout_width
+from PyGEECSPlotter.utils import super_gaussian, get_lineout_width, save_lineouts_to_txt
 from PyGEECSPlotter.navigation_utils import get_analysed_shot_save_path
 
 
@@ -265,7 +265,7 @@ class ImageAnalyzer:
 
         return fig, ax
     
-    def write_displayed_data(self, fig, analysis_dir, scan, shot_num, close_fig=True):
+    def write_displayed_data(self, fig, analysis_dir, scan, shot_num):
         save_path = get_analysed_shot_save_path(
             analysis_dir,
             f'{self.output_diagnostic}{'_disp'}',
@@ -276,8 +276,18 @@ class ImageAnalyzer:
         )
 
         fig.savefig( save_path, dpi=200 )
-        if close_fig:
-            plt.close()
+
+    def write_analyzed_lineouts(self, lineouts, analysis_dir, scan, shot_num):
+        save_path = get_analysed_shot_save_path(
+            analysis_dir,
+            f'{self.output_diagnostic}_lineouts', 
+            scan,
+            shot_num,
+            '.txt', 
+        )
+        save_lineouts_to_txt(lineouts, save_path, cols=None, float_format="%.3f", na_rep="nan")
+
+
 
 
     # -------------------------------------------------------------------

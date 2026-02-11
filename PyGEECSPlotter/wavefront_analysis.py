@@ -8,9 +8,6 @@ import numpy as np
 from typing import Optional, Dict, Tuple  
 import pandas as pd
 import matplotlib.pyplot as plt
-from scipy.signal import medfilt2d
-from scipy.ndimage import affine_transform
-from scipy.optimize import least_squares
 import imageio as imio
 import warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning, message="Mean of empty slice")
@@ -255,10 +252,6 @@ class WavefrontAnalyzer(ImageAnalyzer):
         return hasoslopes.get_intensity()
 
     @staticmethod
-    def subtract_slopesdata(data1, data2):
-        return wkpy.SlopesPostProcessor.apply_substractor(data1, data2)
-    
-    @staticmethod
     def subtract_slopes_reference(data, bg=None):
         try:
             return wkpy.SlopesPostProcessor.apply_substractor(data, bg) if bg is not None else data
@@ -392,9 +385,6 @@ class WavefrontAnalyzer(ImageAnalyzer):
         }
         return geometric_properties
 
-    @staticmethod
-    def intensity_reconstruction(hasoslopes):
-        return hasoslopes.get_intensity()
 
     
 

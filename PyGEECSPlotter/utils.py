@@ -20,6 +20,34 @@ def _convert_to_serializable(obj):
         return {key: _convert_to_serializable(value) for key, value in obj.items()}
     else:
         return obj
+    
+def find_matching_row_index(df, keys, d, tolerances=None, default_tol=1e-3):
+    """
+    Return index of row where all specified columns match dictionary values
+    within per-column tolerances. If a column has no tolerance specified,
+    `default_tol` is used.
+    """
+    if tolerances is None:
+        tolerances = {}
+
+    mask = pd.Series(True, index=df.index)
+
+    for k in keys:
+        if k not in df.columns:
+            raise KeyError(f"Column '{k}' not in DataFrame.")
+        if k not in d:
+            raise KeyError(f"Key '{k}' not found in the dictionary.")
+
+        ref_val = d[k]
+        tol = tolerances.get(k, default_tol)  # use provided or default
+
+        mask &= np.abs(df[k] - ref_val) <= tol
+
+    matches = df[mask]
+
+    if matches.empty:
+        return None
+    return matches.index
 
 def write_controls_from_python(filename, controls_dict, print_data=False):
     controls_dict_serializable = _convert_to_serializable(controls_dict)
