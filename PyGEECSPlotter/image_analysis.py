@@ -4,7 +4,7 @@
 # Created: 2024-02-26
 # Last Modified: 2025-02-19
 
-
+import os, sys
 import numpy as np
 import pandas as pd
 from typing import Optional, Dict, Tuple  
@@ -50,11 +50,17 @@ class ImageAnalyzer:
     # Public pipeline method
     # -------------------------------------------------------------------
     def load_data(self, filename):
+        if not os.path.exists( filename ):
+            return None
         return ni_imread.read_imaq_image(filename).astype('float')
     
     def analyze_data(self, data, analyzer_dict=None, row_dict={}, bg=None):
         if analyzer_dict is None:
             analyzer_dict = self.analyzer_dict
+
+        if data is None:
+            print("Warning: analyze_data() called with None input — skipping analysis.")
+            return None, {}, {}
 
         data_out = np.copy(data)
         results = {}
@@ -101,30 +107,31 @@ class ImageAnalyzer:
             data_out = medfilt2d(data_out.astype(np.float64), [N_filt, N_filt])
 
         # 6) Spatial coords + lineouts
-        x, y, x0, y0 = self.get_spatial_coords(
-            data_out,
-            method=analyzer_dict.get('centroid_method', 'center'),
-            x0=analyzer_dict.get('x0', None),
-            y0=analyzer_dict.get('y0', None),
-            dx=analyzer_dict.get('dx', 1),
-            dy=analyzer_dict.get('dy', 1),
-            centroid_thresh=analyzer_dict.get('centroid_threshold_low', 0.85)
-        )
-        x_lo, y_lo = self.get_lineouts(
-            data_out,
-            x0,
-            y0,
-            method=analyzer_dict.get('lineout_method', 'center'),
-            Nlo=analyzer_dict.get('Nlo', 2)
-        )
         lineouts = {}
-        lineouts['x']    = x
-        lineouts['y']    = y
-        lineouts['x_lo'] = x_lo
-        lineouts['y_lo'] = y_lo
-        results['x0'] = x0
-        results['y0'] = y0
-        results['imshow_extent'] = ImageAnalyzer.get_imshow_extent(x,y)
+        if analyzer_dict.get('generate_lineouts', False):
+            x, y, x0, y0 = self.get_spatial_coords(
+                data_out,
+                method=analyzer_dict.get('centroid_method', 'center'),
+                x0=analyzer_dict.get('x0', None),
+                y0=analyzer_dict.get('y0', None),
+                dx=analyzer_dict.get('dx', 1),
+                dy=analyzer_dict.get('dy', 1),
+                centroid_thresh=analyzer_dict.get('centroid_threshold_low', 0.85)
+            )
+            x_lo, y_lo = self.get_lineouts(
+                data_out,
+                x0,
+                y0,
+                method=analyzer_dict.get('lineout_method', 'center'),
+                Nlo=analyzer_dict.get('Nlo', 2)
+            )
+            lineouts['x']    = x
+            lineouts['y']    = y
+            lineouts['x_lo'] = x_lo
+            lineouts['y_lo'] = y_lo
+            results['x0'] = x0
+            results['y0'] = y0
+            results['imshow_extent'] = ImageAnalyzer.get_imshow_extent(x,y)
 
         # 7) Fit super-Gaussian
         if analyzer_dict.get('fit_super_gaussian', False):
@@ -154,10 +161,11 @@ class ImageAnalyzer:
         # Doesn't work yet
         
         # 9.5) FWHM
-        fwhm, hdx, ldx = get_lineout_width(x_lo)
-        results['fwhm x'] = fwhm*analyzer_dict.get('dx', 1)
-        fwhm, hdx, ldx = get_lineout_width(y_lo)
-        results['fwhm y'] = fwhm*analyzer_dict.get('dy', 1)
+        if analyzer_dict.get('get_fwhm', False):
+            fwhm, hdx, ldx = get_lineout_width(x_lo)
+            results['fwhm x'] = fwhm*analyzer_dict.get('dx', 1)
+            fwhm, hdx, ldx = get_lineout_width(y_lo)
+            results['fwhm y'] = fwhm*analyzer_dict.get('dy', 1)
         
         # 10) Misalignment from target
         if analyzer_dict.get('measured_misalignment', False):
@@ -937,11 +945,16 @@ class ScaledImageAnalyzer(ImageAnalyzer):
         )
 
     def load_data(self, filename):
-        data = ni_imread.read_imaq_image('%s' % filename)
+        file_ext = os.path.splitext(filename)[-1]
+        if 'png' in file_ext:
+            data = ni_imread.read_imaq_image('%s' % filename)
 
-        with open('%s.txt' % filename[:-4]) as f:
-            lines = f.readlines()
-        scale_min = float(lines[1].split(' ')[2])
-        scale_max = float(lines[2].split(' ')[2])
+            with open('%s.txt' % filename[:-4]) as f:
+                lines = f.readlines()
+            scale_min = float(lines[1].split(' ')[2])
+            scale_max = float(lines[2].split(' ')[2])
 
-        return data * (scale_max - scale_min) / (2**16 - 1) + scale_min
+            return data * (scale_max - scale_min) / (2**16 - 1) + scale_min
+        
+        elif 'npy' in file_ext:
+                return np.load( filename )

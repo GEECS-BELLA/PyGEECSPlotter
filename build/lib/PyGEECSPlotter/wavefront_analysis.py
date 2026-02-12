@@ -94,6 +94,9 @@ class WavefrontAnalyzer(ImageAnalyzer):
     # Public pipeline method
     # -------------------------------------------------------------------
     def load_data(self, filename):
+        if not os.path.exists( filename ):
+            return None
+
         file_ext = os.path.splitext(filename)[-1]
         if 'himg' in file_ext:
             try:
@@ -128,7 +131,14 @@ class WavefrontAnalyzer(ImageAnalyzer):
             return None
 
 
-    def analyze_data(self, data, analyzer_dict={}, bg=None):
+    def analyze_data(self, data, analyzer_dict=None, row_dict={}, bg=None):
+        if analyzer_dict is None:
+            analyzer_dict = self.analyzer_dict
+
+        if data is None:
+            print("Warning: analyze_data() called with None input — skipping analysis.")
+            return None, {}, {}
+
         if 'himg' in self.file_ext:
             if bg is not None:
                 slopes = wkpy.SlopesPostProcessor.apply_substractor(data, bg)
@@ -161,7 +171,7 @@ class WavefrontAnalyzer(ImageAnalyzer):
                 data = self.remove_outliers(data, threshold=3)
                 results.update( self.compute_phase_shifts(data, shifts_when='outliers removed') )
 
-        return data, results
+        return data, results, {}
 
     def average_file_list(self, file_list):
         slopes_list = []

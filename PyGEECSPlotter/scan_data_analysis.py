@@ -465,8 +465,10 @@ class ScanDataAnalyzer:
                     fig, ax = analyzer.display_data(data, return_dict=return_dict, title=os.path.basename(filename))
             
                 if write_analyzed:
-                    analysis_dir = get_analysis_dir( self.top_dir, self.scan, make_dir=True )
+                    analysis_dir = self.get_scan_data_analysis_dir( make_dir=True )
                     analyzer.write_analyzed_data( data, analysis_dir, scan, shot_num )
+
+                    analyzer.write_analyzed_lineouts( lineouts, analysis_dir, scan, shot_num )
             
                     if display_data:
                         analyzer.write_displayed_data( fig, analysis_dir, scan, shot_num )
@@ -480,7 +482,7 @@ class ScanDataAnalyzer:
             else:
                 diag_str = analyzer.diagnostic
 
-            analysis_dir = get_analysis_dir(self.top_dir, self.scan, make_dir=True)
+            analysis_dir = self.get_scan_data_analysis_dir( make_dir=True )
             controls_path = os.path.join(analysis_dir, '%s analyzer_controls %s.txt' % (diag_str, analysis_label) )
             write_controls_from_python(controls_path, analyzer.analyzer_dict)
 
@@ -491,7 +493,9 @@ class ScanDataAnalyzer:
                                         )
 
         return add_columns_df
-
+    
+    def get_scan_data_analysis_dir( self, make_dir=True ):
+        return get_analysis_dir(self.top_dir, self.scan, make_dir=True)
 
     def merge_data_frame_to_sfile(self, 
                                   add_columns_df, 
