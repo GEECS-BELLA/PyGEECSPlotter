@@ -801,7 +801,7 @@ class ImageAnalyzer:
             mask = dist_from_center > 1  # Mask outside
 
         # Copy the original array to not modify it
-        masked_array = np.copy(array)
+        masked_array = np.copy(array).astype(float)
         # Apply the mask
         masked_array[mask] = fill_value
         return masked_array
