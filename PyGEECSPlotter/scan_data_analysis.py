@@ -434,6 +434,7 @@ class ScanDataAnalyzer:
         overwrite_columns=True, 
         analysis_label='',
         write_analyzed=False,
+        write_lineouts=False,
         close_displayed=True,
         ):
         """
@@ -468,7 +469,8 @@ class ScanDataAnalyzer:
                     analysis_dir = self.get_scan_data_analysis_dir( make_dir=True )
                     analyzer.write_analyzed_data( data, analysis_dir, scan, shot_num )
 
-                    analyzer.write_analyzed_lineouts( lineouts, analysis_dir, scan, shot_num )
+                    if write_lineouts:
+                        analyzer.write_analyzed_lineouts( lineouts, analysis_dir, scan, shot_num )
             
                     if display_data:
                         analyzer.write_displayed_data( fig, analysis_dir, scan, shot_num )
