@@ -221,7 +221,7 @@ class WavefrontAnalyzer(ImageAnalyzer):
         The scaling factors (min and max) used for scaling are saved in a text file with the same name.
         """
         
-        np.save(bin_filepath + '.npy', data, allow_pickle=True, fix_imports=True)
+        np.save(bin_filepath + '.npy', data, allow_pickle=True)
 
         # Replace NaN values with the specified scalar
         data = np.nan_to_num(data, nan=nan_value)
