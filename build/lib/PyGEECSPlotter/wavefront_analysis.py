@@ -205,39 +205,6 @@ class WavefrontAnalyzer(ImageAnalyzer):
         file_list = list(scan_data.data[f'{self.diagnostic} file_list'])
         return self.average_file_list(file_list)
         
-    # def write_analyzed_data(self, bin_filepath, data, nan_value=0):
-    #     """
-    #     Write a 2D NumPy array to a binary PNG image and create a scaling information text file.
-        
-    #     Parameters:
-    #     - bin_filepath (str): The base file path for the PNG image and scaling text file.
-    #     - data (numpy.ndarray): The input 2D array to be saved.
-    #     - nan_value (float, optional): The scalar value to replace NaN values with. Default is 0.
-        
-    #     Returns:
-    #     - None
-        
-    #     The function scales the input data to fit within a 16-bit range (0-65535) and saves it as a binary PNG image. 
-    #     The scaling factors (min and max) used for scaling are saved in a text file with the same name.
-    #     """
-        
-    #     np.save(bin_filepath + '.npy', data, allow_pickle=True, fix_imports=True)
-
-    #     # Replace NaN values with the specified scalar
-    #     data = np.nan_to_num(data, nan=nan_value)
-    
-    #     # Calculate the scaling factors
-    #     data_int = (65535 * ((data - np.min(data)) / np.ptp(data))).astype(np.uint16)
-    
-    #     # Create scaling information lines
-    #     lines = ['[Scaling]', 'min = %f' % np.min(data), 'max = %f' % np.max(data)]
-    
-    #     # Write scaling information to a text file
-    #     with open(bin_filepath + '.txt', 'w') as f:
-    #         f.write('\n'.join(lines))
-    
-    #     # Save the scaled data as a binary PNG image
-    #     imio.imwrite(bin_filepath + '.png', data_int)
     
 
     # -------------------------------------------------------------------

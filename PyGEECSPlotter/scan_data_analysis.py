@@ -59,6 +59,7 @@ class ScanDataAnalyzer:
         self.analysis_dir = None
         self.data_columns = None
         self.data = None
+        self.filtered_out_data = None
         self.aborted = False
         self.print_data = False
 
@@ -122,7 +123,9 @@ class ScanDataAnalyzer:
             
             if analyzer is not None:
                 self.add_file_list_to_scan_data(analyzer.diagnostic, analyzer.file_ext, remove_missing_diagnostic_files)
-            self.set_analysis_dir()     
+            self.set_analysis_dir()
+
+            self.filtered_out_data = pd.DataFrame(columns=self.data.columns)
 
     def get_data_columns(self):
         if self.data is not None:
@@ -289,37 +292,116 @@ class ScanDataAnalyzer:
                 n_missing = np.sum(1 - np.array(file_exists))
                 print('Removed %d lines from scan_data for missing files' %n_missing)
 
-    def filter_scan_data(self, filter_parameter, lower_bound, upper_bound, filter_exclusive=False, update_data=False):
+    def filter_scan_data(self, filter_parameter, lower_bound, upper_bound,
+                        filter_exclusive=False, update_data=False):
         """
         Filter scan data based on a specified parameter and value range.
 
-        This function filters rows in a DataFrame based on whether the values of a specified parameter fall within (inclusive or exclusive) a given range. Optionally, it can print the count of rows that were included after filtering relative to the total count.
+        Instead of discarding excluded rows, this function moves them into
+        `self.filtered_out_data`, which acts as a holding DataFrame for filtered-out data.
 
-        Parameters:
-        - filter_parameter (str): The column name in `scan_data` to apply the filter on.
-        - lower_bound (float): The lower bound of the filtering range.
-        - upper_bound (float): The upper bound of the filtering range.
-        - filter_exclusive (bool, optional): If True, rows with `filter_parameter` values outside the [lower_bound, upper_bound] range are included. If False, only rows with `filter_parameter` values inside this range are included. Defaults to False.
-        
-        Returns:
-        - filtered_scan_data (pd.DataFrame): A DataFrame containing only the rows that meet the filtering criteria.
+        Parameters
+        ----------
+        filter_parameter : str
+            Column name in `self.data` to apply the filter on.
+        lower_bound : float
+            Lower bound of filtering range.
+        upper_bound : float
+            Upper bound of filtering range.
+        filter_exclusive : bool, optional
+            If True, keep rows outside the range and move rows inside the range
+            to `self.filtered_out_data`.
+            If False, keep rows inside the range and move rows outside the range
+            to `self.filtered_out_data`.
+        update_data : bool, optional
+            If True, update `self.data` in place. Defaults to False.
 
-        The function supports both inclusive and exclusive filtering and provides an option to visualize the filtering impact through printed output.
+        Returns
+        -------
+        filtered_scan_data : pd.DataFrame
+            The rows kept after filtering.
+        moved_scan_data : pd.DataFrame
+            The rows moved into `self.filtered_out_data`.
         """
 
+        if not hasattr(self, 'filtered_out_data') or self.filtered_out_data is None:
+            self.filtered_out_data = pd.DataFrame(columns=self.data.columns)
+
         if filter_exclusive:
-            filter_idcs = (self.data[filter_parameter] < lower_bound) | (self.data[filter_parameter] >  upper_bound)
+            keep_idcs = (
+                (self.data[filter_parameter] < lower_bound) |
+                (self.data[filter_parameter] > upper_bound)
+            )
         else:
-            filter_idcs = (self.data[filter_parameter] > lower_bound) & (self.data[filter_parameter] <  upper_bound)
+            keep_idcs = (
+                (self.data[filter_parameter] > lower_bound) &
+                (self.data[filter_parameter] < upper_bound)
+            )
 
-        filtered_scan_data = self.data.loc[filter_idcs].reset_index(drop=True)
+        filtered_scan_data = self.data.loc[keep_idcs].copy().reset_index(drop=True)
+        moved_scan_data = self.data.loc[~keep_idcs].copy().reset_index(drop=True)
 
-        print('%d / %d shots included. Filtered based on : %s ' %(len(filtered_scan_data), len(self.data), get_parameter_alias(filter_parameter)))
+        print(
+            '%d / %d shots included. Filtered based on : %s'
+            % (len(filtered_scan_data), len(self.data), get_parameter_alias(filter_parameter))
+        )
 
         if update_data:
+            if not moved_scan_data.empty:
+                self.filtered_out_data = pd.concat(
+                    [self.filtered_out_data, moved_scan_data],
+                    ignore_index=True
+                )
+
             self.data = filtered_scan_data
 
-        return filtered_scan_data
+        return filtered_scan_data, moved_scan_data
+
+
+    def reset_filters(self):
+        """
+        Move all previously filtered-out rows from `self.filtered_out_data`
+        back into `self.data`, then empty `self.filtered_out_data`.
+
+        Memory-efficient version: avoids copies and intermediate column expansion.
+        """
+
+        if (
+            not hasattr(self, 'filtered_out_data') or
+            self.filtered_out_data is None or
+            self.filtered_out_data.empty
+        ):
+            sort_cols = [col for col in ['scan', 'Shotnumber'] if col in self.data.columns]
+            if sort_cols:
+                self.data = self.data.sort_values(by=sort_cols).reset_index(drop=True)
+            return self.data
+
+        # Use pd.concat directly — it handles mismatched columns natively
+        # by filling missing values with NaN, without needing to pre-expand
+        # columns on either dataframe.
+        # 
+        # We do NOT call .copy() — concat already produces a new dataframe.
+        self.data = pd.concat(
+            [self.data, self.filtered_out_data],
+            ignore_index=True,
+            sort=False,  # preserve column order from self.data
+        )
+
+        # Reorder columns: self.data columns first (already guaranteed by sort=False
+        # in concat when self.data is the first argument), but let's be explicit
+        # to also ensure any filtered_out_data-only columns appear at the end.
+        # This is already the default behavior of concat with sort=False, so
+        # no additional reindex step is needed.
+
+        # Sort if possible
+        sort_cols = [col for col in ['scan', 'Shotnumber'] if col in self.data.columns]
+        if sort_cols:
+            self.data = self.data.sort_values(by=sort_cols).reset_index(drop=True)
+
+        # Empty filtered_out_data, preserving the final column structure
+        self.filtered_out_data = self.data.iloc[0:0].copy()
+
+        return self.data
 
     def filter_scan_data_by_array(
             self,
@@ -331,39 +413,64 @@ class ScanDataAnalyzer:
         """
         Filter scan data based on whether a parameter value is in a given array.
 
-        Parameters:
-        - filter_parameter (str): Column name in `self.data` to filter on.
-        - values (array-like): List, numpy array, or pandas Series of allowed values.
-        - filter_exclusive (bool, optional): If True, exclude rows where the value
-        is in `values`. If False, include only those rows. Defaults to False.
-        - update_data (bool, optional): If True, update `self.data` with the
-        filtered DataFrame.
+        Instead of discarding excluded rows, this function moves them into
+        `self.filtered_out_data`.
 
-        Returns:
-        - filtered_scan_data (pd.DataFrame): Filtered DataFrame.
+        Parameters
+        ----------
+        filter_parameter : str
+            Column name in `self.data` to filter on.
+        values : array-like
+            List, numpy array, or pandas Series of allowed values.
+        filter_exclusive : bool, optional
+            If True, keep rows whose values are NOT in `values`, and move rows
+            whose values ARE in `values` to `self.filtered_out_data`.
+            If False, keep only rows whose values ARE in `values`, and move rows
+            whose values are NOT in `values` to `self.filtered_out_data`.
+        update_data : bool, optional
+            If True, update `self.data` in place.
+
+        Returns
+        -------
+        filtered_scan_data : pd.DataFrame
+            The rows kept after filtering.
+        moved_scan_data : pd.DataFrame
+            The rows moved into `self.filtered_out_data`.
         """
+
+        if not hasattr(self, 'filtered_out_data') or self.filtered_out_data is None:
+            self.filtered_out_data = pd.DataFrame(columns=self.data.columns)
 
         # Ensure array-like input
         values = np.asarray(values)
 
         if filter_exclusive:
-            filter_idcs = ~self.data[filter_parameter].isin(values)
+            keep_idcs = ~self.data[filter_parameter].isin(values)
         else:
-            filter_idcs = self.data[filter_parameter].isin(values)
+            keep_idcs = self.data[filter_parameter].isin(values)
 
-        filtered_scan_data = self.data.loc[filter_idcs].reset_index(drop=True)
+        filtered_scan_data = self.data.loc[keep_idcs].copy().reset_index(drop=True)
+        moved_scan_data = self.data.loc[~keep_idcs].copy().reset_index(drop=True)
 
         print(
             '%d / %d shots included. Filtered based on : %s'
-            % (len(filtered_scan_data), len(self.data),
-            get_parameter_alias(filter_parameter))
+            % (
+                len(filtered_scan_data),
+                len(self.data),
+                get_parameter_alias(filter_parameter)
+            )
         )
 
         if update_data:
+            if not moved_scan_data.empty:
+                self.filtered_out_data = pd.concat(
+                    [self.filtered_out_data, moved_scan_data],
+                    ignore_index=True
+                )
+
             self.data = filtered_scan_data
 
-        return filtered_scan_data
-
+        return filtered_scan_data, moved_scan_data
 
     def get_bg_file_path(self, diagnostic, file_ext='.png', which_scan='last'):
         """
@@ -554,6 +661,77 @@ class ScanDataAnalyzer:
         add_columns_df.to_csv( add_columns_path , index=False, sep='\t' )
         merged_df.to_csv(self.sfilename, index=False, sep='\t')
         print(f'Columns added to {self.sfilename}')
+
+    def analyze_scan_data_mean_std(
+            self,
+            analyzer,
+            bg=None,
+            ignore_none=True,
+            ddof=0,
+        ):
+        """
+        Analyze all shots in self.data and return the mean and standard deviation
+        of the `data` returned by analyzer.analyze_data.
+
+        Parameters
+        ----------
+        analyzer : object
+            Analyzer object with load_data and analyze_data methods.
+        bg : optional
+            Background data or parameters for the analysis.
+        ddof : int, optional
+            Delta degrees of freedom for the standard deviation.
+            Use ddof=0 for population std, ddof=1 for sample std.
+
+        Returns
+        -------
+        mean_data : np.ndarray
+            Pixelwise mean of analyzed data over all valid shots.
+        std_data : np.ndarray
+            Pixelwise standard deviation of analyzed data over all valid shots.
+
+        Notes
+        -----
+        - All returned `data` arrays must have the same shape.
+        - This function does not display data or write output files.
+        - This function ignores `return_dict` and `lineouts`; it is only for
+        aggregating the main analyzed `data`.
+        """
+
+        data_list = []
+
+        for i in range(len(self.data)):
+            row_dict = self.data.iloc[i].to_dict()
+            filename = row_dict[f'{analyzer.diagnostic} file_list']
+
+            data = analyzer.load_data(filename)
+
+            bg_i = self._resolve_bg_for_row(analyzer, bg, row_dict)
+            data, return_dict, lineouts = analyzer.analyze_data(
+                data,
+                bg=bg_i,
+                row_dict=row_dict
+            )
+
+            if data is not None:
+                data_list.append(np.asarray(data))
+
+        if len(data_list) == 0:
+            raise ValueError("No valid analyzed data found in self.data")
+
+        first_shape = data_list[0].shape
+        for i, arr in enumerate(data_list):
+            if arr.shape != first_shape:
+                raise ValueError(
+                    f"Analyzed data shape mismatch: shot 0 has shape {first_shape}, "
+                    f"but shot {i} has shape {arr.shape}"
+                )
+
+        data_stack = np.stack(data_list, axis=0)
+        mean_data = np.nanmean(data_stack, axis=0)
+        std_data = np.nanstd(data_stack, axis=0, ddof=ddof)
+
+        return mean_data, std_data
 
     @staticmethod
     def _resolve_bg_for_row(analyzer, bg, row_dict, debug_bg=False, debug_once=True):

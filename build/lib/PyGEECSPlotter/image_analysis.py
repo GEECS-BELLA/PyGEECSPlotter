@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 from typing import Optional, Dict, Tuple  
 import matplotlib.pyplot as plt
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 from scipy.signal import medfilt2d
 from scipy.ndimage import affine_transform
 from scipy.optimize import least_squares
@@ -166,9 +167,13 @@ class ImageAnalyzer:
             results['fwhm x'] = fwhm*analyzer_dict.get('dx', 1)
             fwhm, hdx, ldx = get_lineout_width(y_lo)
             results['fwhm y'] = fwhm*analyzer_dict.get('dy', 1)
+            results['fwhm_av'] = np.nanmean([results['fwhm x'], results['fwhm y']])
+            results['fwhm_diff'] = np.abs(results['fwhm x'] - results['fwhm y'])
         
         # 10) Misalignment from target
         if analyzer_dict.get('measured_misalignment', False):
+            x0=analyzer_dict.get('x0', None)
+            y0=analyzer_dict.get('y0', None)
             results.update(self.calculate_misalignment(data_out, x0, y0, analyzer_dict=analyzer_dict))
         if analyzer_dict.get('fitted_misalignment', False) and analyzer_dict.get('fit_super_gaussian', False):
             fitted_x0 = fit_x['center']
@@ -276,7 +281,7 @@ class ImageAnalyzer:
     def write_displayed_data(self, fig, analysis_dir, scan, shot_num):
         save_path = get_analysed_shot_save_path(
             analysis_dir,
-            f'{self.output_diagnostic}{'_disp'}',
+            f'{self.output_diagnostic}_disp',
             scan,
             shot_num,
             '.png', 
@@ -808,41 +813,39 @@ class ImageAnalyzer:
     
     @staticmethod    
     def extract_subarray(array, x0, y0, n):
-        """
-        Extracts an n x n subarray centered around (x0, y0) from a 2D array.
-        
-        Parameters:
-            array (ndarray): Input 2D array of shape (N, M).
-            x0 (int): Center x-coordinate.
-            y0 (int): Center y-coordinate.
-            n (int): Size of the desired subarray (n x n).
-        
-        Returns:
-            ndarray: Extracted subarray of shape (n, n), zero-padded if necessary.
-        """
         x0, y0 = int(x0), int(y0)
         N, M = array.shape
-        half_n = n // 2
 
-        # Compute slice indices ensuring they remain within bounds
-        x_start = max(0, y0 - half_n)
-        x_end = min(N, y0 + half_n + 1)
-        y_start = max(0, x0 - half_n)
-        y_end = min(M, x0 + half_n + 1)
+        # Clip center to nearest valid pixel
+        x0 = np.clip(x0, 0, M - 1)
+        y0 = np.clip(y0, 0, N - 1)
 
-        subarray = array[x_start:x_end, y_start:y_end]
+        half_left = n // 2
+        half_right = n - half_left
 
-        # Determine the required padding
-        pad_x_before = max(0, half_n - y0)
-        pad_x_after = max(0, (y0 + half_n + 1) - N)
-        pad_y_before = max(0, half_n - x0)
-        pad_y_after = max(0, (x0 + half_n + 1) - M)
+        row_start = y0 - half_left
+        row_end   = y0 + half_right
+        col_start = x0 - half_left
+        col_end   = x0 + half_right
 
-        # Apply padding only if necessary
-        subarray = np.pad(subarray, 
-                          ((pad_x_before, pad_x_after), 
-                           (pad_y_before, pad_y_after)), 
-                          mode='constant', constant_values=0)
+        row_start_clip = max(0, row_start)
+        row_end_clip   = min(N, row_end)
+        col_start_clip = max(0, col_start)
+        col_end_clip   = min(M, col_end)
+
+        subarray = array[row_start_clip:row_end_clip, col_start_clip:col_end_clip]
+
+        pad_top    = row_start_clip - row_start
+        pad_bottom = row_end - row_end_clip
+        pad_left   = col_start_clip - col_start
+        pad_right  = col_end - col_end_clip
+
+        subarray = np.pad(
+            subarray,
+            ((pad_top, pad_bottom), (pad_left, pad_right)),
+            mode='constant',
+            constant_values=0
+        )
 
         return subarray
 
