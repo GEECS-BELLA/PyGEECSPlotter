@@ -64,6 +64,13 @@ def get_sfilename_from_top_dir(top_dir, scan, print_data=False):
         
     return sfilename
 
+def generate_sfilename_list_from_scans_dir(top_dir):
+    scans_list = glob.glob( os.path.join(top_dir, 'scans', 'Scan*') )
+    scans = [os.path.basename(scans_list[i]) for i in range(len(scans_list))]
+    scan_numbers = [int(re.search(r'\d+', s).group()) for s in scans]
+    sfilename_list = [os.path.join(top_dir, 'analysis', f's{scan}.txt') for scan in scan_numbers]
+    return sfilename_list
+
 def get_todays_top_dir(experiment_dir):
     # Get today's date
     today = pd.date_range(start=datetime.date.today(), periods=1).strftime('%Y%m%d').tolist()[0]
@@ -96,6 +103,12 @@ def get_analysis_dir(top_dir, scan, save_label=None, make_dir=False, print_data=
     if print_data:
         print('Analysys Dir             : %s' %analysis_dir)
     return analysis_dir
+
+def get_scan_dir(top_dir, scan, print_data=False):
+    scan_dir = os.path.join(top_dir, 'scans', 'Scan%03d' %scan)
+    if print_data:
+        print('Analysys Dir             : %s' %scan_dir)
+    return scan_dir
 
 def get_analysis_diagnostic_path(analysis_dir, analysis_diagnostic, scan, shot_num, file_ext='.txt'):
     # Construct the basename with the specified format and file extension
@@ -156,7 +169,7 @@ def get_scan_parameter(top_dir, sfile_data):
     scan_parameter_full = scan_parameter_with_alias(lines[3].split('"')[1], sfile_data)
     scan_parameter = get_parameter_alias(scan_parameter_full)
     return scan_parameter, scan
-
+    
 def open_directory_in_explorer(path):
     """
     Opens the given directory in the system's file explorer.
@@ -174,3 +187,20 @@ def open_directory_in_explorer(path):
         subprocess.run(["open", path])
     else:  # Assume Linux
         subprocess.run(["xdg-open", path])
+
+def get_analysed_shot_save_path(analysis_dir, analysis_diagnostic, scan, shot_num, file_ext='.txt', append_info=None):
+
+    if append_info is not None:
+        basename = f'Scan{scan:03d}_{analysis_diagnostic}{append_info}_{shot_num:03d}{file_ext}'
+    else:
+        basename = f'Scan{scan:03d}_{analysis_diagnostic}_{shot_num:03d}{file_ext}'
+    
+    # Construct the full save path
+    save_path = os.path.join(analysis_dir, analysis_diagnostic, basename)
+    
+    # Ensure the directory exists
+    dir_path = os.path.join(analysis_dir, analysis_diagnostic)
+    if not os.path.exists(dir_path):
+        os.makedirs(dir_path)
+    
+    return save_path

@@ -3,7 +3,9 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
-# from PyGEECSPlotter.ecs_live_dumps import get_ecs_live_dumps_parameter_value_from_sfilename
+from scipy.optimize import least_squares
+
+from PyGEECSPlotter.ecs_live_dumps import get_ecs_live_dumps_parameter_value_from_sfilename
 
 def _convert_to_serializable(obj):
     if isinstance(obj, np.integer):
@@ -18,6 +20,34 @@ def _convert_to_serializable(obj):
         return {key: _convert_to_serializable(value) for key, value in obj.items()}
     else:
         return obj
+    
+def find_matching_row_index(df, keys, d, tolerances=None, default_tol=1e-3):
+    """
+    Return index of row where all specified columns match dictionary values
+    within per-column tolerances. If a column has no tolerance specified,
+    `default_tol` is used.
+    """
+    if tolerances is None:
+        tolerances = {}
+
+    mask = pd.Series(True, index=df.index)
+
+    for k in keys:
+        if k not in df.columns:
+            raise KeyError(f"Column '{k}' not in DataFrame.")
+        if k not in d:
+            raise KeyError(f"Key '{k}' not found in the dictionary.")
+
+        ref_val = d[k]
+        tol = tolerances.get(k, default_tol)  # use provided or default
+
+        mask &= np.abs(df[k] - ref_val) <= tol
+
+    matches = df[mask]
+
+    if matches.empty:
+        return None
+    return matches.index
 
 def write_controls_from_python(filename, controls_dict, print_data=False):
     controls_dict_serializable = _convert_to_serializable(controls_dict)
@@ -289,3 +319,172 @@ def parse_controls_from_python(filename):
     with open(filename, 'r') as file:
         controls_dict = json.load(file)
     return controls_dict
+
+
+def gaussian_2d(xydata, amplitude, center_x, center_y, sigma_x, sigma_y, offset):
+    x, y = xydata
+    if sigma_x <= 0 or sigma_y <= 0:
+        return np.full_like(x, np.inf)
+    exponent = -0.5 * ( ((x - center_x)/sigma_x)**2 + ((y - center_y)/sigma_y)**2 )
+    return amplitude * np.exp(exponent) + offset
+
+def fit_gaussian_2d(xdata, ydata, zdata, p0=None, bounds=None,
+                    loss='linear', max_nfev=5000):
+    xdata = np.array(xdata, dtype=float)
+    ydata = np.array(ydata, dtype=float)
+    zdata = np.array(zdata, dtype=float)
+    if xdata.shape != ydata.shape or xdata.shape != zdata.shape:
+        return {'success': False,
+                'message': 'xdata, ydata, and zdata must have the same shape.'}
+
+    valid_mask = np.isfinite(xdata) & np.isfinite(ydata) & np.isfinite(zdata)
+    if not np.any(valid_mask):
+        return {'success': False, 'message': 'No valid data'}
+
+    x_valid = xdata[valid_mask]
+    y_valid = ydata[valid_mask]
+    z_valid = zdata[valid_mask]
+
+    xy_valid = (x_valid, y_valid)
+
+    def estimate_initial_params(x_arr, y_arr, z_arr):
+        z_min, z_max = np.nanmin(z_arr), np.nanmax(z_arr)
+        amp_guess = z_max - z_min
+        offset_guess = z_min
+        # center guess at the peak
+        idx_max = np.argmax(z_arr)
+        cx_guess = x_arr[idx_max]
+        cy_guess = y_arr[idx_max]
+        # rough sigma guesses
+        half_level = z_min + 0.5 * amp_guess
+        above_half = z_arr > half_level
+        if not np.any(above_half):
+            sigma_x_guess = (np.max(x_arr) - np.min(x_arr)) / 6.0
+            sigma_y_guess = (np.max(y_arr) - np.min(y_arr)) / 6.0
+        else:
+            x_half = x_arr[above_half]
+            y_half = y_arr[above_half]
+            sigma_x_guess = np.sqrt(np.mean((x_half - cx_guess)**2)) or 1e-3
+            sigma_y_guess = np.sqrt(np.mean((y_half - cy_guess)**2)) or 1e-3
+        return [amp_guess, cx_guess, cy_guess, sigma_x_guess, sigma_y_guess, offset_guess]
+
+    if p0 is None:
+        p0 = estimate_initial_params(x_valid, y_valid, z_valid)
+
+    if bounds is None:
+        lower_bounds = [0.0, -np.inf, -np.inf, 1e-12, 1e-12, -np.inf]
+        upper_bounds = [np.inf, np.inf, np.inf, np.inf, np.inf, np.inf]
+        bounds = (lower_bounds, upper_bounds)
+
+    def residual(params, xy, z):
+        model = gaussian_2d(xy, *params)
+        return z - model
+
+    res = least_squares(residual, x0=p0, args=(xy_valid, z_valid),
+                        bounds=bounds, loss=loss, max_nfev=max_nfev)
+
+    amp, cx, cy, sx, sy, offset = res.x
+    return {
+        'success':    res.success,
+        'message':    res.message,
+        'cost':       res.cost,
+        'params':     res.x,
+        'amplitude':  amp,
+        'center_x':   cx,
+        'center_y':   cy,
+        'sigma_x':    sx,
+        'sigma_y':    sy,
+        'offset':     offset
+    }
+
+
+
+def save_lineouts_to_txt(lineouts, filename="lineouts.txt",
+                         cols=None, float_format="%.3f", na_rep="nan"):
+    """
+    Save lineouts dict (arrays of different lengths) to a tab-delimited text file,
+    padding with NaNs.
+
+    Parameters
+    ----------
+    lineouts : dict
+        Dict of 1D arrays, e.g. {'x': ..., 'x_lo': ..., 'y': ..., ...}
+        Some keys may be missing (e.g. only 'x' and 'x_lo').
+    filename : str
+        Output filename.
+    cols : list of str or None
+        Column order to use. If None, use lineouts.keys() in their existing order.
+        If provided, any names not found in lineouts are silently skipped.
+    float_format : str
+        Format for floats, e.g. '%.3f'.
+    na_rep : str
+        Representation of NaN in the file.
+    """
+    if cols is None:
+        cols = list(lineouts.keys())
+    else:
+        # Only keep columns that actually exist in lineouts
+        cols = [c for c in cols if c in lineouts]
+
+    # Convert to arrays and find max length
+    arrays = {k: np.asarray(lineouts[k]) for k in cols}
+    max_len = max(len(arr) for arr in arrays.values())
+
+    # Pad with NaN
+    padded = {
+        k: np.pad(arr, (0, max_len - len(arr)), constant_values=np.nan)
+        for k, arr in arrays.items()
+    }
+
+    df = pd.DataFrame(padded, columns=cols)
+    df.to_csv(filename, sep="\t", index=False,
+              float_format=float_format, na_rep=na_rep)
+    return df
+
+
+def load_lineouts_from_txt(filename):
+    """
+    Load lineouts from a tab-delimited file created by save_lineouts_to_txt.
+
+    Automatically detects coord/value pairs of the form:
+        <coord>, <coord> + '_lo'
+    and uses the coord column's NaNs to remove padding from both.
+
+    Returns
+    -------
+    lineouts : dict of np.ndarray
+        Dict with original-length arrays.
+    df : pandas.DataFrame
+        The raw DataFrame as read from file (still padded with NaNs).
+    """
+    df = pd.read_csv(filename, sep="\t")
+
+    cols = list(df.columns)
+    lineouts = {}
+
+    # --- Detect coord/value pairs automatically ---
+    coord_pairs = []
+    for col in cols:
+        if not col.endswith("_lo"):
+            lo_col = col + "_lo"
+            if lo_col in df.columns:
+                coord_pairs.append((col, lo_col))
+
+    # Process each coord/value pair
+    used_cols = set()
+    for coord, val in coord_pairs:
+        coord_vals = df[coord].to_numpy()
+        mask = ~np.isnan(coord_vals)  # keep only real entries, drop padded NaNs
+
+        lineouts[coord] = coord_vals[mask]
+        lineouts[val] = df[val].to_numpy()[mask]
+
+        used_cols.add(coord)
+        used_cols.add(val)
+
+    # Any remaining columns (not part of coord pairs) are returned as-is
+    for col in cols:
+        if col not in used_cols:
+            lineouts[col] = df[col].to_numpy()
+
+    return lineouts

@@ -4,10 +4,12 @@
 # Created: 2024-02-26
 # Last Modified: 2025-02-19
 
-
+import os, sys
 import numpy as np
 import pandas as pd
+from typing import Optional, Dict, Tuple  
 import matplotlib.pyplot as plt
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 from scipy.signal import medfilt2d
 from scipy.ndimage import affine_transform
 from scipy.optimize import least_squares
@@ -19,7 +21,9 @@ import warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning, message="Mean of empty slice")
 
 import PyGEECSPlotter.ni_imread as ni_imread
-from PyGEECSPlotter.utils import super_gaussian, get_lineout_width
+from PyGEECSPlotter.utils import super_gaussian, get_lineout_width, save_lineouts_to_txt
+from PyGEECSPlotter.navigation_utils import get_analysed_shot_save_path
+
 
 class ImageAnalyzer:
     """
@@ -40,18 +44,24 @@ class ImageAnalyzer:
         self.file_ext = file_ext
         self.analyzer_dict = analyzer_dict 
         self.display_dict = display_dict 
-        self.output_diagnostic = None
-        self.output_file_ext = None
+        self.output_diagnostic = output_diagnostic
+        self.output_file_ext = output_file_ext
 
     # -------------------------------------------------------------------
     # Public pipeline method
     # -------------------------------------------------------------------
     def load_data(self, filename):
+        if not os.path.exists( filename ):
+            return None
         return ni_imread.read_imaq_image(filename).astype('float')
     
-    def analyze_data(self, data, analyzer_dict=None, bg=None):
+    def analyze_data(self, data, analyzer_dict=None, row_dict={}, bg=None):
         if analyzer_dict is None:
             analyzer_dict = self.analyzer_dict
+
+        if data is None:
+            print("Warning: analyze_data() called with None input — skipping analysis.")
+            return None, {}, {}
 
         data_out = np.copy(data)
         results = {}
@@ -103,27 +113,31 @@ class ImageAnalyzer:
             data_out = medfilt2d(data_out.astype(np.float64), [N_filt, N_filt])
 
         # 6) Spatial coords + lineouts
-        x, y, x0, y0 = self.get_spatial_coords(
-            data_out,
-            method=analyzer_dict.get('centroid_method', 'center'),
-            x0=analyzer_dict.get('x0', None),
-            y0=analyzer_dict.get('y0', None),
-            dx=analyzer_dict.get('dx', 1),
-            dy=analyzer_dict.get('dy', 1),
-            centroid_thresh=analyzer_dict.get('centroid_threshold_low', 0.85)
-        )
-        x_lo, y_lo = self.get_lineouts(
-            data_out,
-            x0,
-            y0,
-            method=analyzer_dict.get('lineout_method', 'center'),
-            Nlo=analyzer_dict.get('Nlo', 2)
-        )
-        results['x']    = x
-        results['y']    = y
-        results['x_lo'] = x_lo
-        results['y_lo'] = y_lo
-        results['imshow_extent'] = ImageAnalyzer.get_imshow_extent(x,y)
+        lineouts = {}
+        if analyzer_dict.get('generate_lineouts', False):
+            x, y, x0, y0 = self.get_spatial_coords(
+                data_out,
+                method=analyzer_dict.get('centroid_method', 'center'),
+                x0=analyzer_dict.get('x0', None),
+                y0=analyzer_dict.get('y0', None),
+                dx=analyzer_dict.get('dx', 1),
+                dy=analyzer_dict.get('dy', 1),
+                centroid_thresh=analyzer_dict.get('centroid_threshold_low', 0.85)
+            )
+            x_lo, y_lo = self.get_lineouts(
+                data_out,
+                x0,
+                y0,
+                method=analyzer_dict.get('lineout_method', 'center'),
+                Nlo=analyzer_dict.get('Nlo', 2)
+            )
+            lineouts['x']    = x
+            lineouts['y']    = y
+            lineouts['x_lo'] = x_lo
+            lineouts['y_lo'] = y_lo
+            results['x0'] = x0
+            results['y0'] = y0
+            results['imshow_extent'] = ImageAnalyzer.get_imshow_extent(x,y)
 
         # 7) Fit super-Gaussian
         if analyzer_dict.get('fit_super_gaussian', False):
@@ -154,13 +168,18 @@ class ImageAnalyzer:
         # Doesn't work yet
         
         # 9.5) FWHM
-        fwhm, hdx, ldx = get_lineout_width(x_lo)
-        results['fwhm x'] = fwhm*analyzer_dict.get('dx', 1)
-        fwhm, hdx, ldx = get_lineout_width(y_lo)
-        results['fwhm y'] = fwhm*analyzer_dict.get('dy', 1)
+        if analyzer_dict.get('get_fwhm', False):
+            fwhm, hdx, ldx = get_lineout_width(x_lo)
+            results['fwhm x'] = fwhm*analyzer_dict.get('dx', 1)
+            fwhm, hdx, ldx = get_lineout_width(y_lo)
+            results['fwhm y'] = fwhm*analyzer_dict.get('dy', 1)
+            results['fwhm_av'] = np.nanmean([results['fwhm x'], results['fwhm y']])
+            results['fwhm_diff'] = np.abs(results['fwhm x'] - results['fwhm y'])
         
         # 10) Misalignment from target
         if analyzer_dict.get('measured_misalignment', False):
+            x0=analyzer_dict.get('x0', None)
+            y0=analyzer_dict.get('y0', None)
             results.update(self.calculate_misalignment(data_out, x0, y0, analyzer_dict=analyzer_dict))
         if analyzer_dict.get('fitted_misalignment', False) and analyzer_dict.get('fit_super_gaussian', False):
             fitted_x0 = fit_x['center']
@@ -186,20 +205,27 @@ class ImageAnalyzer:
             results['max fluence'] = np.nanmax(data_out)
 
 
-        return data_out, results
+        return data_out, results, lineouts
 
-    def display_data(self, data, display_dict=None, title=None):
+    def display_data(self, data, display_dict=None, return_dict=None, title=None, fig=None, ax=None):
         if display_dict is None:
             display_dict = self.display_dict
             
-        fig, ax = plt.subplots(figsize=display_dict.get('figsize', (6,5)))
+        if fig is None or ax is None:
+            fig, ax = plt.subplots(constrained_layout=True, figsize=display_dict.get('figsize', (6, 5)))
+
+        if return_dict is not None:
+            extent = return_dict.get( 'imshow_extent', None )
+        else:
+            extent = None
+
         im = ax.imshow(data,
                         aspect=display_dict.get('aspect', 'equal'),
                         norm=display_dict.get('norm', None),
                         cmap=display_dict.get('cmap', 'RdBu'),
                         interpolation=display_dict.get('interpolation', None),
                         origin='lower',
-                        extent=display_dict.get('extent', None),
+                        extent=extent,
                         vmin=display_dict.get('vmin', None),
                         vmax=display_dict.get('vmax', None),
                       )
@@ -235,12 +261,14 @@ class ImageAnalyzer:
 
         return fig, ax
 
-    def display_lineout(self, x, x_lo, display_dict=None, title=None):
+    def display_lineout(self, x, x_lo, display_dict=None, title=None, fig=None, ax=None):
         if display_dict is None:
             display_dict = self.display_dict
+
+        if fig is None or ax is None:
+            fig, ax = plt.subplots(figsize=display_dict.get('figsize', (6, 5)))
             
-        fig, ax = plt.subplots(figsize=display_dict.get('figsize', (6,5)))
-        ax.plot(x, x_lo)
+        ax.plot(x, x_lo, label=display_dict.get('plot_label', None))
 
         spatial_units = display_dict.get('spatial_units', 'pixels')
         xtitle = display_dict.get('xtitle', 'x')
@@ -268,6 +296,30 @@ class ImageAnalyzer:
             ax.set_title('%s - %s' %(title, title_append))
 
         return fig, ax
+    
+    def write_displayed_data(self, fig, analysis_dir, scan, shot_num):
+        save_path = get_analysed_shot_save_path(
+            analysis_dir,
+            f'{self.output_diagnostic}_disp',
+            scan,
+            shot_num,
+            '.png', 
+            append_info='_disp'
+        )
+
+        fig.savefig( save_path, dpi=200 )
+
+    def write_analyzed_lineouts(self, lineouts, analysis_dir, scan, shot_num):
+        save_path = get_analysed_shot_save_path(
+            analysis_dir,
+            f'{self.output_diagnostic}_lineouts', 
+            scan,
+            shot_num,
+            '.txt', 
+        )
+        save_lineouts_to_txt(lineouts, save_path, cols=None, float_format="%.3f", na_rep="nan")
+
+
 
 
     # -------------------------------------------------------------------
@@ -431,6 +483,24 @@ class ImageAnalyzer:
             x_lo = np.nanmean(data, axis=0)
             y_lo = np.nanmean(data, axis=1)
         return x_lo, y_lo
+    
+    @staticmethod
+    def display_imshow_lineouts(fig, ax, extent, x=None, y=None, x_lo=None, y_lo=None, amp=0.15, color='k', ls='-'):
+        if x is not None and x_lo is not None:
+            ax.plot(
+                x,
+                amp * x_lo * (extent[3] - extent[2]) + extent[2] ,
+                c=color,
+                ls=ls,
+            )
+        if y is not None and y_lo is not None:
+            ax.plot(
+                amp * y_lo * (extent[1] - extent[0]) + extent[0],
+                y,
+                c=color,
+                ls=ls,
+            )
+        return fig, ax
 
     @staticmethod
     def adjust_data_to_fluence(image, energy, dx, dy, spatial_units='microns'):
@@ -606,6 +676,98 @@ class ImageAnalyzer:
         indices = np.arange(len(data))
         data[nans] = np.interp(indices[nans], indices[notnans], data[notnans])
         return data
+    
+    @staticmethod
+    def angular_difference_deg(theta, theta0):
+        """
+        Smallest signed angular difference (theta - theta0) in degrees, wrapped to [-180, 180).
+        theta, theta0 can be scalars or arrays.
+        """
+        return (theta - theta0 + 180.0) % 360.0 - 180.0
+    
+    @staticmethod
+    def angle_deg_from_points(x0, y0, x1, y1):
+        """
+        Angle from (x0, y0) -> (x1, y1) in degrees with:
+        - 0° = up (negative y direction)
+        - +angle = clockwise
+        Returns angle in [0, 360).
+        """
+        dx = x1 - x0
+        dy = y1 - y0
+
+        # If the point is identical, angle is undefined
+        if np.isscalar(dx) and np.isscalar(dy) and dx == 0 and dy == 0:
+            return np.nan
+
+        # Start with standard: atan2(dy, dx) gives 0° on +x and CCW positive
+        theta = (np.degrees(np.arctan2(dy, dx)) + 90.0) % 360.0  # 0° at up, still CCW-ish
+        theta = (-theta) % 360.0  # make clockwise-positive
+        return theta
+
+    @staticmethod
+    def rotational_average_sector(
+        image, x0, y0,
+        dtheta=360.0, theta0=0.0,
+        interpolate_nans=True,
+        r_rounding="round",
+        return_counts=False,
+    ):
+        """
+        Radial (rotational) average over a sector (wedge) of angular width dtheta (deg),
+        centered at theta0 (deg), with:
+
+        - 0° = up (toward decreasing y)
+        - +angle = clockwise
+
+        Example: top-right quadrant -> dtheta=90, theta0=45.
+        """
+        img = np.asarray(image, dtype=float)
+
+        Y, X = np.indices(img.shape)
+        dx = X - x0
+        dy = Y - y0
+
+        # Radius
+        r = np.sqrt(dx**2 + dy**2)
+        if r_rounding == "round":
+            R = np.rint(r).astype(int)
+        elif r_rounding == "floor":
+            R = np.floor(r).astype(int)
+        elif r_rounding == "ceil":
+            R = np.ceil(r).astype(int)
+        else:
+            raise ValueError("r_rounding must be 'round', 'floor', or 'ceil'")
+
+        # Angle in degrees, with 0=up and CW positive:
+        # Start from arctan2(dy, dx) which is 0 on +x and CCW positive,
+        # then convert to (0=up, CW positive) via:
+        theta = (np.degrees(np.arctan2(dy, dx)) + 90.0) % 360.0
+        theta = (-theta) % 360.0  # flip to CW-positive while keeping 0=up
+
+        # Sector mask
+        if dtheta >= 360.0:
+            ang_mask = np.ones_like(theta, dtype=bool)
+        else:
+            d = ImageAnalyzer.angular_difference_deg(theta, theta0)
+            ang_mask = np.abs(d) <= (dtheta / 2.0)
+
+        max_r = int(np.nanmax(R))
+        avg = np.full(max_r + 1, np.nan)
+        counts = np.zeros(max_r + 1, dtype=int)
+
+        for rr in range(max_r + 1):
+            mask = (R == rr) & ang_mask
+            vals = img[mask]
+            if vals.size:
+                avg[rr] = np.nanmean(vals)
+                counts[rr] = np.count_nonzero(np.isfinite(vals))
+
+        if interpolate_nans:
+            avg = ImageAnalyzer.interpolate_nan_values(avg)
+
+        return (avg, counts) if return_counts else avg
+
 
     @staticmethod
     def fit_2d_polynomial(data, roi_bounds=None, exclude_nan=False, degree=2):
@@ -699,48 +861,46 @@ class ImageAnalyzer:
             mask = dist_from_center > 1  # Mask outside
 
         # Copy the original array to not modify it
-        masked_array = np.copy(array)
+        masked_array = np.copy(array).astype(float)
         # Apply the mask
         masked_array[mask] = fill_value
         return masked_array
     
     @staticmethod    
     def extract_subarray(array, x0, y0, n):
-        """
-        Extracts an n x n subarray centered around (x0, y0) from a 2D array.
-        
-        Parameters:
-            array (ndarray): Input 2D array of shape (N, M).
-            x0 (int): Center x-coordinate.
-            y0 (int): Center y-coordinate.
-            n (int): Size of the desired subarray (n x n).
-        
-        Returns:
-            ndarray: Extracted subarray of shape (n, n), zero-padded if necessary.
-        """
         x0, y0 = int(x0), int(y0)
         N, M = array.shape
-        half_n = n // 2
 
-        # Compute slice indices ensuring they remain within bounds
-        x_start = max(0, y0 - half_n)
-        x_end = min(N, y0 + half_n + 1)
-        y_start = max(0, x0 - half_n)
-        y_end = min(M, x0 + half_n + 1)
+        # Clip center to nearest valid pixel
+        x0 = np.clip(x0, 0, M - 1)
+        y0 = np.clip(y0, 0, N - 1)
 
-        subarray = array[x_start:x_end, y_start:y_end]
+        half_left = n // 2
+        half_right = n - half_left
 
-        # Determine the required padding
-        pad_x_before = max(0, half_n - y0)
-        pad_x_after = max(0, (y0 + half_n + 1) - N)
-        pad_y_before = max(0, half_n - x0)
-        pad_y_after = max(0, (x0 + half_n + 1) - M)
+        row_start = y0 - half_left
+        row_end   = y0 + half_right
+        col_start = x0 - half_left
+        col_end   = x0 + half_right
 
-        # Apply padding only if necessary
-        subarray = np.pad(subarray, 
-                          ((pad_x_before, pad_x_after), 
-                           (pad_y_before, pad_y_after)), 
-                          mode='constant', constant_values=0)
+        row_start_clip = max(0, row_start)
+        row_end_clip   = min(N, row_end)
+        col_start_clip = max(0, col_start)
+        col_end_clip   = min(M, col_end)
+
+        subarray = array[row_start_clip:row_end_clip, col_start_clip:col_end_clip]
+
+        pad_top    = row_start_clip - row_start
+        pad_bottom = row_end - row_end_clip
+        pad_left   = col_start_clip - col_start
+        pad_right  = col_end - col_end_clip
+
+        subarray = np.pad(
+            subarray,
+            ((pad_top, pad_bottom), (pad_left, pad_right)),
+            mode='constant',
+            constant_values=0
+        )
 
         return subarray
 
@@ -817,3 +977,42 @@ class ImageAnalyzer:
 
 
     
+class ScaledImageAnalyzer(ImageAnalyzer):
+    """
+    Base class for scaled image analysis. 
+    Derive from this class to customize analysis steps for specific image types.
+    """
+
+    def __init__(
+        self,
+        diagnostic: Optional[str] = None,
+        file_ext: Optional[str] = None,
+        analyzer_dict: Optional[Dict] = None,
+        display_dict: Optional[Dict] = None,
+        output_diagnostic: Optional[str] = None,
+        output_file_ext: Optional[str] = None,
+    ):
+        # Initialize all base-class attributes
+        super().__init__(
+            diagnostic=diagnostic,
+            file_ext=file_ext,
+            analyzer_dict=analyzer_dict,
+            display_dict=display_dict,
+            output_diagnostic=output_diagnostic,
+            output_file_ext=output_file_ext,
+        )
+
+    def load_data(self, filename):
+        file_ext = os.path.splitext(filename)[-1]
+        if 'png' in file_ext:
+            data = ni_imread.read_imaq_image('%s' % filename)
+
+            with open('%s.txt' % filename[:-4]) as f:
+                lines = f.readlines()
+            scale_min = float(lines[1].split(' ')[2])
+            scale_max = float(lines[2].split(' ')[2])
+
+            return data * (scale_max - scale_min) / (2**16 - 1) + scale_min
+        
+        elif 'npy' in file_ext:
+                return np.load( filename )
