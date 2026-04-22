@@ -29,20 +29,23 @@ class DataDirAnalyzer(ScanDataAnalyzer):
         self.scan = scan
         self.scan_parameter = 'Shotnumber'
 
-        file_list = sorted( glob.glob( os.path.join( data_dir , f'*{file_ext}'  )  )  )
-        shotnumbers = np.arange( len(file_list)  ) + 1
+        file_list = sorted(glob.glob(os.path.join(data_dir, f'*{file_ext}')))
+        shotnumbers = np.arange(len(file_list)) + 1
 
         df = pd.DataFrame()
-        df['scan'] = np.int64( self.scan * np.ones( len(file_list) ) )
+        df['scan'] = np.int64(self.scan * np.ones(len(file_list)))
         df['Shotnumber'] = shotnumbers
         df['diagnostic file_list'] = file_list
-        df['diagnostic file_exists'] = np.ones( len(file_list) )
+        df['diagnostic file_exists'] = np.ones(len(file_list))
 
         self.data = df
 
-        self.analysis_dir = os.path.join( data_dir, 'analysis' )
-        os.makedirs( self.analysis_dir , exist_ok=True )
-        self.data_out_filename = os.path.join( self.analysis_dir , 'scalar_analysis.txt' )
+        self.analysis_dir = os.path.join(data_dir, 'analysis')
+        os.makedirs(self.analysis_dir, exist_ok=True)
+        self.data_out_filename = os.path.join(self.analysis_dir, 'scalar_analysis.txt')
+
+        # Initialise mask after self.data is built
+        self._init_mask()
 
 
     def __repr__(self):
