@@ -139,7 +139,7 @@ class WavefrontAnalyzer(ImageAnalyzer):
             print("Warning: analyze_data() called with None input — skipping analysis.")
             return None, {}, {}
 
-        if 'himg' in self.file_ext:
+        if 'himg' in self.file_ext or 'has' in self.file_ext:
             if bg is not None:
                 slopes = wkpy.SlopesPostProcessor.apply_substractor(data, bg)
             else: 

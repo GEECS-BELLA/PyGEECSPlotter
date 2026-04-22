@@ -1,12 +1,11 @@
-# Dervied class WavefrontAnalyzerHimg from WavefrontAnalyzer, ImageAnalyzer for PyGEECSPlotter
+# Dervied class WindmillWave from WavefrontAnalyzer, ImageAnalyzer for PyGEECSPlotter
 # Author: Alex Picksley
 # Version 0.1
 # Created: 2025-12-02
-# Last Modified: 2026-02-11
+# Last Modified: 2025-12-02
 
 import numpy as np
 import sys, os
-import matplotlib.pyplot as plt
 from typing import Optional, Dict, Tuple 
 
 
@@ -15,13 +14,33 @@ sys.path.append('./../..')
 import wavekit_py as wkpy
 import time 
 import ctypes
+import imageio.v3 as imio
+
 
 from PyGEECSPlotter.wavefront_analysis import WavefrontAnalyzer
-from PyGEECSPlotter.utils import super_gaussian, merge_dicts_overwrite, get_lineout_width, gaussian_2d, fit_gaussian_2d
+from PyGEECSPlotter.utils import find_matching_row_index
 from PyGEECSPlotter.navigation_utils import get_analysed_shot_save_path
 
+def make_bg_selector(bg_mean_df, bg_dir, match_cols, tolerances=None, default_tol=1e-3, print_path=True):
+    """
+    Returns a function bg_selector(row_dict) -> bg_filename or None
+    """
+    def bg_selector(row_dict):
+        bg_idx = find_matching_row_index(
+            bg_mean_df,
+            match_cols,
+            row_dict,
+            tolerances=tolerances,
+            default_tol=default_tol,
+        )
+        if bg_idx is None or len(bg_idx) == 0:
+            return None
 
-class WavefrontAnalyzerHimg(WavefrontAnalyzer):
+        return os.path.join(bg_dir, f"averaged_reference_{int(bg_idx[0]):03d}.has")
+
+    return bg_selector
+
+class HimgAnalyzer(WavefrontAnalyzer):
     """
     Derived class to analyze longitudinal images.
     Leverages the improved ImageAnalyzer base class methods,
@@ -61,6 +80,8 @@ class WavefrontAnalyzerHimg(WavefrontAnalyzer):
 
     def analyze_data(self, data, analyzer_dict=None, row_dict=None, bg=None):
         """
+        Robust wavefront pipeline (WindmillWave-style error handling).
+    
         Returns:
             (zonal_data, return_dict, lineouts) on success
             (None, {}, {}) on any known WaveKit failure mode (e.g. bad pupil / all subapertures off),
@@ -76,7 +97,6 @@ class WavefrontAnalyzerHimg(WavefrontAnalyzer):
         raw_stats_dict = self.compute_data_counts(raw_data) 
         data_out["raw_data"] = raw_data
     
-        return_dict = {'units' : None}
         lineouts = {}
     
         if data is None:
@@ -102,54 +122,15 @@ class WavefrontAnalyzerHimg(WavefrontAnalyzer):
             hasodata = wkpy.HasoData(hasoslopes=hasoslopes)
         except Exception:
             return None, {}, {}
-        
-        
-        # ------------------------------------------------------------
-        # 3) Pupil selection (safe-ish)
-        # ------------------------------------------------------------
-        pupil_method = analyzer_dict.get("pupil_method", "auto")
     
-        try:
-            if pupil_method == "auto":
-                self.pupil, self.pupil_dict = self.get_pupil(hasoslopes)
-    
-            elif pupil_method == "auto_first_shot":
-                if self.pupil is None or self.pupil_dict is None:
-                    self.pupil, self.pupil_dict = self.get_pupil(hasoslopes)
-    
-            elif pupil_method == "manual":
-                if "manual_pupil_dict" in analyzer_dict:
-                    self.pupil_dict = analyzer_dict["manual_pupil_dict"]
-                    self.pupil = None
-                    print( 'Using Manual Pupil' )
-                else:
-                    print("[WARNING] 'manual' pupil method selected but no 'manual_pupil_dict' provided. Defaulting to 'auto'.")
-                    self.pupil, self.pupil_dict = self.get_pupil(hasoslopes)
-    
-            else:
-                print(f"[WARNING] Invalid pupil_method '{pupil_method}'. Defaulting to 'auto'.")
-                self.pupil, self.pupil_dict = self.get_pupil(hasoslopes)
-    
-        except Exception as e:
-            if self._is_wavekit_recoverable_exception(e):
-                return None, {}, {}
-            raise
-    
-        if self.pupil_dict is None:
-            return None, {}, {}
-    
-        pupil_center = wkpy.float2D(self.pupil_dict["pupil_center_x"], self.pupil_dict["pupil_center_y"])
-        pupil_radius = self.pupil_dict["pupil_radius"]
     
         # ------------------------------------------------------------
-        # Aberration filter selection 
+        # Aberration filter selection (same logic as your current code)
         # ------------------------------------------------------------
-        if analyzer_dict.get("filter_tilts", False):
-            phasemap_aberration_filter = [0, 0, 1, 1, 1]
+        if analyzer_dict.get("filter_tilts_and_curv", False):
+            phasemap_aberration_filter = [0, 0, 0, 1, 1]
         else:
             phasemap_aberration_filter = [1, 1, 1, 1, 1]
-        if analyzer_dict.get("filter_curv", False):
-            phasemap_aberration_filter[2] = 0
     
         # ------------------------------------------------------------
         # ZONAL reconstruction 
@@ -161,6 +142,9 @@ class WavefrontAnalyzerHimg(WavefrontAnalyzer):
                 phasemap_aberration_filter=phasemap_aberration_filter[:-2],
                 nan_to_zero=analyzer_dict.get("set_nan_to_zero", False),
             )
+            zonal_data_rad = 1e-6 * zonal_data_um * 2 * np.pi / analyzer_dict['probe_wl'] 
+            data_out['zonal_data_rad'] = zonal_data_rad
+
         except Exception as e:
             if self._is_wavekit_recoverable_exception(e):
                 return None, {}, {}
@@ -168,9 +152,6 @@ class WavefrontAnalyzerHimg(WavefrontAnalyzer):
     
         if zonal_data_um is None:
             return None, {}, {}
-        
-        return_dict['units'] = 'um'
-        data_out['zonal_data'] = zonal_data_um
 
         # ------------------------------------------------------------
         # Reconstruct intensity
@@ -182,54 +163,11 @@ class WavefrontAnalyzerHimg(WavefrontAnalyzer):
                 data_out["intensity"] = intensity
             except Exception:
                 pass
-            
-        # ------------------------------------------------------------
-        # 6) ZERNIKE reconstruction (OPTIONAL / best-effort)
-        #    Only attempted if zonal succeeded.
-        # ------------------------------------------------------------
-        zernike_dict = {}
-        zernike_phase_statistics = {}
-        try:
-            _zernike_data, _zernike_pupil, zernike_dict, zernike_phase_statistics = self.zernike_reconstruction(
-                hasoslopes,
-                hasodata,
-                pupil_center,
-                pupil_radius,
-                nb_modes=analyzer_dict.get("nb_modes", 32),
-                coefs_to_filter=analyzer_dict.get("zernike_coefs_to_filter", []),
-                phasemap_aberration_filter=phasemap_aberration_filter,
-                nan_to_zero=analyzer_dict.get("set_nan_to_zero", False),
-            )
-        except Exception as e:
-            if not self._is_wavekit_recoverable_exception(e):
-                raise
-    
-        # ------------------------------------------------------------
-        # 7) Downstream metrics (safe)
-        # ------------------------------------------------------------
-        try:
-            geometric_properties = self.slopes_geometric_properties(hasoslopes)
-        except Exception:
-            geometric_properties = {}
 
         
-        # ------------------------------------------------------------
-        # Merge return_dict (same pattern as your current code)
-        # ------------------------------------------------------------
+        return data_out, raw_stats_dict, {}
 
-        return_dict = merge_dicts_overwrite(
-            raw_stats_dict,
-            zonal_phase_statistics,
-            zernike_dict,
-            zernike_phase_statistics,
-            geometric_properties,
-            return_dict
-        )
-
-        
-        return data_out, return_dict, lineouts
-
-    def write_analyzed_data(self, data, analysis_dir, scan, shot_num):
+    def write_analyzed_data(self, data, analysis_dir, scan, shot_num, context_dict=None):
 
         # ---- raw ----
         append_info = '_raw'
@@ -254,7 +192,7 @@ class WavefrontAnalyzerHimg(WavefrontAnalyzer):
         super().write_analyzed_data(save_path, data['intensity'])
 
         # ---- zonal ----
-        append_info = '_zonal_data'
+        append_info = '_zonal_data_rad'
         save_path = get_analysed_shot_save_path(
             analysis_dir,
             f'{self.output_diagnostic}{append_info}',
@@ -262,8 +200,19 @@ class WavefrontAnalyzerHimg(WavefrontAnalyzer):
             shot_num,
             self.output_file_ext,
         )
-        super().write_analyzed_data(save_path, data['zonal_data'])
+        super().write_analyzed_data(save_path, data['zonal_data_rad'])
 
+        append_info = '_readable'
+        save_path = get_analysed_shot_save_path(
+            analysis_dir,
+            f'{self.output_diagnostic}{append_info}',
+            scan,
+            shot_num,
+            self.output_file_ext,
+        )
+        stack = np.stack((data['zonal_data_rad'], data['intensity']), axis=0, dtype=np.float32)
+        imio.imwrite(save_path, stack, metadata=context_dict)
+    
 
     def display_data(self, data, display_dict=None, return_dict=None, title=None, fig=None, ax=None):
         if display_dict is None:
@@ -273,21 +222,18 @@ class WavefrontAnalyzerHimg(WavefrontAnalyzer):
             fig, (ax_phi, ax_I) = plt.subplots(1, 2, constrained_layout=True, 
                                                figsize=display_dict.get('figsize', (11, 4)))
          
-        fig, ax_phi = super().display_data( data['zonal_data'], 
-                                          display_dict=display_dict.get('zonal_data', {}), 
+        fig, ax_phi = super().display_data( data['zonal_data_rad'], 
+                                          display_dict=display_dict['zonal_data_rad'], 
                                           return_dict=return_dict,
                                           title=f'{title} Zonal', 
                                           fig=fig, ax=ax_phi
                                          )
 
         fig, ax_I = super().display_data( data['intensity'], 
-                                          display_dict=display_dict.get('intensity', {}), 
+                                          display_dict=display_dict['intensity'], 
                                           return_dict=return_dict,
                                           title=f'{title} Intensity', 
                                           fig=fig, ax=ax_I
                                          )
 
         return fig, (ax_phi, ax_I)
-
-    
-    

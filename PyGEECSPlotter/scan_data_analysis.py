@@ -59,9 +59,11 @@ class ScanDataAnalyzer:
         self.analysis_dir = None
         self.data_columns = None
         self.data = None
-        self.filtered_out_data = None
         self.aborted = False
         self.print_data = False
+
+        self.scan_title = self.scan_data_title()
+        self._mask = None
 
     def _init_from_sfilename(self):
         top_dir, year, month, day = get_top_dir_from_sfilename(self.sfilename)
@@ -89,6 +91,24 @@ class ScanDataAnalyzer:
                 f"date={self.year}-{self.month:02d}-{self.day:02d}, "
                 f"experiment_dir={self.experiment_dir})")
     
+    
+    def _init_mask(self):
+        """Initialize the inclusion mask to include all rows."""
+        self._mask = np.ones(len(self.data), dtype=bool)
+
+
+    @property
+    def active_data(self):
+        """Return only the rows currently included by the mask."""
+        return self.data[self._mask].reset_index(drop=True)
+    
+    def scan_data_title(self, append_text=None):
+        if append_text is not None:
+            title = f'{self.year}-{self.month:02d}-{self.day:02d} - {os.path.basename(self.sfilename)} - {append_text}'
+        else:
+            title = f'{self.year}-{self.month:02d}-{self.day:02d} - {os.path.basename(self.sfilename)}'
+        return title
+    
 
     def load_scan_data(self, 
         search_replace_filename=None, 
@@ -110,6 +130,7 @@ class ScanDataAnalyzer:
             self.scan_parameter = scan_parameter
 
             self.data = sfile_data.copy()
+            self._init_mask()
             for col in self.data.columns:
                 self.data.rename(columns={col: get_parameter_alias(col)}, inplace=True)
 
@@ -124,8 +145,6 @@ class ScanDataAnalyzer:
             if analyzer is not None:
                 self.add_file_list_to_scan_data(analyzer.diagnostic, analyzer.file_ext, remove_missing_diagnostic_files)
             self.set_analysis_dir()
-
-            self.filtered_out_data = pd.DataFrame(columns=self.data.columns)
 
     def get_data_columns(self):
         if self.data is not None:
@@ -239,238 +258,158 @@ class ScanDataAnalyzer:
         if diagnostic is None or file_ext is None:
             print('No diagnostic selected')
             return
-        
-        if os.path.exists( os.path.join(self.top_dir, 'scans', 'Scan%03d' %self.scan, diagnostic) ):
-            diagnostic_dir = os.path.join(self.top_dir, 'scans', 'Scan%03d' %self.scan, diagnostic)
+
+        # Determine diagnostic directory and type
+        scan_diag_dir = os.path.join(self.top_dir, 'scans', 'Scan%03d' % self.scan, diagnostic)
+        analysis_diag_dir = os.path.join(self.top_dir, 'analysis', 'Scan%03d' % self.scan, diagnostic)
+
+        if os.path.exists(scan_diag_dir):
             analysis_diagnostic = False
-        elif os.path.exists( os.path.join(self.top_dir, 'analysis', 'Scan%03d' %self.scan, diagnostic) ):
-            diagnostic_dir = os.path.join(self.top_dir, 'analysis', 'Scan%03d' %self.scan, diagnostic)
+        elif os.path.exists(analysis_diag_dir):
             analysis_diagnostic = True
         else:
             print('No directory found')
-
-            self.data['%s file_list' %diagnostic] = ''
-            self.data['%s file_exists' %diagnostic] = 0
-
+            self.data['%s file_list' % diagnostic] = ''
+            self.data['%s file_exists' % diagnostic] = 0
             if remove_missing_files:
-                self.data = self.data[self.data['%s file_exists' %diagnostic] != 0].reset_index(drop=True)
+                missing_condition = self.data['%s file_exists' % diagnostic] == 0
+                self._mask = self._mask & ~missing_condition.to_numpy()
                 if self.print_data:
-                    n_missing = np.sum(1 - np.array(file_exists))
-                    print('Removed %d lines from scan_data for missing files' %n_missing)
-
+                    print('Masked out %d lines from scan_data for missing files' % missing_condition.sum())
             return
 
-        file_list = []
-        file_exists = []
-        for i in range(len(self.data)):
-            scan = self.data['scan'][i]
-            shot_num = self.data['Shotnumber'][i]
+        # Build all filenames at once using vectorised string formatting
+        base_dir = 'analysis' if analysis_diagnostic else 'scans'
 
-            if analysis_diagnostic:
-                diagnostic_dir = os.path.join(self.top_dir, 'analysis', 'Scan%03d' %scan, diagnostic)
-            else:
-                diagnostic_dir = os.path.join(self.top_dir, 'scans', 'Scan%03d' %scan, diagnostic)
+        self.data['%s file_list' % diagnostic] = (
+            self.data.apply(
+                lambda row: os.path.join(
+                    self.top_dir, base_dir,
+                    'Scan%03d' % row['scan'],
+                    diagnostic,
+                    'Scan%03d_%s_%03d%s' % (row['scan'], diagnostic, row['Shotnumber'], file_ext)
+                ),
+                axis=1
+            )
+        )
 
-            basename = r'Scan%03d_%s_%03d%s' %(scan, diagnostic, shot_num, file_ext)
-            filename = os.path.join(diagnostic_dir, basename)
+        # Collect all unique directories that appear in the file list,
+        # scan each once with os.scandir, and build a set of known existing files.
+        unique_dirs = self.data['%s file_list' % diagnostic].apply(os.path.dirname).unique()
 
-            file_list.append( filename )
-            file_exists.append( os.path.exists( filename ) )    
+        existing_files = set()
+        for d in unique_dirs:
+            if os.path.exists(d):
+                existing_files.update(entry.path for entry in os.scandir(d))
 
-            if not os.path.exists( filename ) and self.print_data:
-                print('Did not save : %s' %os.path.basename(filename))
+        self.data['%s file_exists' % diagnostic] = (
+            self.data['%s file_list' % diagnostic].isin(existing_files).astype(int)
+        )
 
         if self.print_data:
-            print('Files to analyse : %d' %len(file_list) )
-
-        self.data['%s file_list' %diagnostic] = file_list
-        self.data['%s file_exists' %diagnostic] = file_exists
+            n_missing = (self.data['%s file_exists' % diagnostic] == 0).sum()
+            missing_files = self.data.loc[
+                self.data['%s file_exists' % diagnostic] == 0,
+                '%s file_list' % diagnostic
+            ]
+            for f in missing_files:
+                print('Did not find: %s' % os.path.basename(f))
+            print('Files found: %d / %d' % (len(self.data) - n_missing, len(self.data)))
 
         if remove_missing_files:
-            self.data = self.data[self.data['%s file_exists' %diagnostic] != 0].reset_index(drop=True)
+            missing_condition = self.data['%s file_exists' % diagnostic] == 0
+            n_missing = missing_condition.sum()
+            self._mask = self._mask & ~missing_condition.to_numpy()
             if self.print_data:
-                n_missing = np.sum(1 - np.array(file_exists))
-                print('Removed %d lines from scan_data for missing files' %n_missing)
+                print('Masked out %d lines from scan_data for missing files' % n_missing)
+
+
 
     def filter_scan_data(self, filter_parameter, lower_bound, upper_bound,
-                        filter_exclusive=False, update_data=False):
+                        filter_exclusive=False):
         """
         Filter scan data based on a specified parameter and value range.
 
-        Instead of discarding excluded rows, this function moves them into
-        `self.filtered_out_data`, which acts as a holding DataFrame for filtered-out data.
+        Updates the internal boolean mask so that subsequent filters are
+        combined with AND logic. The underlying `self.data` is never modified.
 
         Parameters
         ----------
         filter_parameter : str
             Column name in `self.data` to apply the filter on.
         lower_bound : float
-            Lower bound of filtering range.
+            Lower bound of the filtering range.
         upper_bound : float
-            Upper bound of filtering range.
+            Upper bound of the filtering range.
         filter_exclusive : bool, optional
-            If True, keep rows outside the range and move rows inside the range
-            to `self.filtered_out_data`.
-            If False, keep rows inside the range and move rows outside the range
-            to `self.filtered_out_data`.
-        update_data : bool, optional
-            If True, update `self.data` in place. Defaults to False.
-
-        Returns
-        -------
-        filtered_scan_data : pd.DataFrame
-            The rows kept after filtering.
-        moved_scan_data : pd.DataFrame
-            The rows moved into `self.filtered_out_data`.
+            If True, keep rows outside the range (exclude rows inside).
+            If False, keep rows inside the range (exclude rows outside).
         """
 
-        if not hasattr(self, 'filtered_out_data') or self.filtered_out_data is None:
-            self.filtered_out_data = pd.DataFrame(columns=self.data.columns)
+        if not hasattr(self, '_mask') or self._mask is None:
+            self._init_mask()
 
         if filter_exclusive:
-            keep_idcs = (
+            new_condition = (
                 (self.data[filter_parameter] < lower_bound) |
                 (self.data[filter_parameter] > upper_bound)
             )
         else:
-            keep_idcs = (
+            new_condition = (
                 (self.data[filter_parameter] > lower_bound) &
                 (self.data[filter_parameter] < upper_bound)
             )
 
-        filtered_scan_data = self.data.loc[keep_idcs].copy().reset_index(drop=True)
-        moved_scan_data = self.data.loc[~keep_idcs].copy().reset_index(drop=True)
+        self._mask = self._mask & new_condition.to_numpy()
 
         print(
-            '%d / %d shots included. Filtered based on : %s'
-            % (len(filtered_scan_data), len(self.data), get_parameter_alias(filter_parameter))
+            '%d / %d shots included. Filtered based on: %s'
+            % (self._mask.sum(), len(self.data), get_parameter_alias(filter_parameter))
         )
 
-        if update_data:
-            if not moved_scan_data.empty:
-                self.filtered_out_data = pd.concat(
-                    [self.filtered_out_data, moved_scan_data],
-                    ignore_index=True
-                )
 
-            self.data = filtered_scan_data
-
-        return filtered_scan_data, moved_scan_data
-
-
-    def reset_filters(self):
-        """
-        Move all previously filtered-out rows from `self.filtered_out_data`
-        back into `self.data`, then empty `self.filtered_out_data`.
-
-        Memory-efficient version: avoids copies and intermediate column expansion.
-        """
-
-        if (
-            not hasattr(self, 'filtered_out_data') or
-            self.filtered_out_data is None or
-            self.filtered_out_data.empty
-        ):
-            sort_cols = [col for col in ['scan', 'Shotnumber'] if col in self.data.columns]
-            if sort_cols:
-                self.data = self.data.sort_values(by=sort_cols).reset_index(drop=True)
-            return self.data
-
-        # Use pd.concat directly — it handles mismatched columns natively
-        # by filling missing values with NaN, without needing to pre-expand
-        # columns on either dataframe.
-        # 
-        # We do NOT call .copy() — concat already produces a new dataframe.
-        self.data = pd.concat(
-            [self.data, self.filtered_out_data],
-            ignore_index=True,
-            sort=False,  # preserve column order from self.data
-        )
-
-        # Reorder columns: self.data columns first (already guaranteed by sort=False
-        # in concat when self.data is the first argument), but let's be explicit
-        # to also ensure any filtered_out_data-only columns appear at the end.
-        # This is already the default behavior of concat with sort=False, so
-        # no additional reindex step is needed.
-
-        # Sort if possible
-        sort_cols = [col for col in ['scan', 'Shotnumber'] if col in self.data.columns]
-        if sort_cols:
-            self.data = self.data.sort_values(by=sort_cols).reset_index(drop=True)
-
-        # Empty filtered_out_data, preserving the final column structure
-        self.filtered_out_data = self.data.iloc[0:0].copy()
-
-        return self.data
-
-    def filter_scan_data_by_array(
-            self,
-            filter_parameter,
-            values,
-            filter_exclusive=False,
-            update_data=False
-        ):
+    def filter_scan_data_by_array(self, filter_parameter, values,
+                                filter_exclusive=False):
         """
         Filter scan data based on whether a parameter value is in a given array.
 
-        Instead of discarding excluded rows, this function moves them into
-        `self.filtered_out_data`.
+        Updates the internal boolean mask so that subsequent filters are
+        combined with AND logic. The underlying `self.data` is never modified.
 
         Parameters
         ----------
         filter_parameter : str
             Column name in `self.data` to filter on.
         values : array-like
-            List, numpy array, or pandas Series of allowed values.
+            List, numpy array, or pandas Series of allowed (or excluded) values.
         filter_exclusive : bool, optional
-            If True, keep rows whose values are NOT in `values`, and move rows
-            whose values ARE in `values` to `self.filtered_out_data`.
-            If False, keep only rows whose values ARE in `values`, and move rows
-            whose values are NOT in `values` to `self.filtered_out_data`.
-        update_data : bool, optional
-            If True, update `self.data` in place.
-
-        Returns
-        -------
-        filtered_scan_data : pd.DataFrame
-            The rows kept after filtering.
-        moved_scan_data : pd.DataFrame
-            The rows moved into `self.filtered_out_data`.
+            If True, keep rows whose values are NOT in `values`.
+            If False, keep rows whose values ARE in `values`.
         """
 
-        if not hasattr(self, 'filtered_out_data') or self.filtered_out_data is None:
-            self.filtered_out_data = pd.DataFrame(columns=self.data.columns)
+        if not hasattr(self, '_mask') or self._mask is None:
+            self._init_mask()
 
-        # Ensure array-like input
         values = np.asarray(values)
 
         if filter_exclusive:
-            keep_idcs = ~self.data[filter_parameter].isin(values)
+            new_condition = ~self.data[filter_parameter].isin(values)
         else:
-            keep_idcs = self.data[filter_parameter].isin(values)
+            new_condition = self.data[filter_parameter].isin(values)
 
-        filtered_scan_data = self.data.loc[keep_idcs].copy().reset_index(drop=True)
-        moved_scan_data = self.data.loc[~keep_idcs].copy().reset_index(drop=True)
+        self._mask = self._mask & new_condition.to_numpy()
 
         print(
-            '%d / %d shots included. Filtered based on : %s'
-            % (
-                len(filtered_scan_data),
-                len(self.data),
-                get_parameter_alias(filter_parameter)
-            )
+            '%d / %d shots included. Filtered based on: %s'
+            % (self._mask.sum(), len(self.data), get_parameter_alias(filter_parameter))
         )
 
-        if update_data:
-            if not moved_scan_data.empty:
-                self.filtered_out_data = pd.concat(
-                    [self.filtered_out_data, moved_scan_data],
-                    ignore_index=True
-                )
-
-            self.data = filtered_scan_data
-
-        return filtered_scan_data, moved_scan_data
+    def reset_filters(self):
+        """
+        Reset the inclusion mask so that all rows in `self.data` are included.
+        """
+        self._init_mask()
+        print('Filters reset. %d shots included.' % self._mask.sum())
 
     def get_bg_file_path(self, diagnostic, file_ext='.png', which_scan='last'):
         """
@@ -556,15 +495,16 @@ class ScanDataAnalyzer:
 
         add_columns_df = None
 
-        for i in range( len(self.data) ):
-            row_dict = self.data.iloc[i].to_dict()
-            scan, shot_num = row_dict['scan'], row_dict['Shotnumber']
-            filename = row_dict[f'{analyzer.diagnostic} file_list']
+        for i, row in self.active_data.iterrows():
+            context = row.to_dict()
+            scan, shot_num = context['scan'], context['Shotnumber']
+            filename = context[f'{analyzer.diagnostic} file_list']
             
             data = analyzer.load_data(filename)
+            _, metadata = data #QUICK FIX
             
-            bg_i = self._resolve_bg_for_row(analyzer, bg, row_dict)
-            data, return_dict, lineouts = analyzer.analyze_data(data, bg=bg_i, row_dict=row_dict)
+            bg_i = self._resolve_bg_for_row(analyzer, bg, context)
+            data, return_dict, lineouts = analyzer.analyze_data(data, bg=bg_i, context=context)
             
             add_columns_df = ScanDataAnalyzer.append_to_add_columns_df( scan, shot_num, return_dict, add_columns_df )
             
@@ -574,7 +514,7 @@ class ScanDataAnalyzer:
             
                 if write_analyzed:
                     analysis_dir = self.get_scan_data_analysis_dir( make_dir=True )
-                    analyzer.write_analyzed_data( data, analysis_dir, scan, shot_num )
+                    analyzer.write_analyzed_data( data, analysis_dir, scan, shot_num , context=metadata ) #QUICK_FIX
 
                     if write_lineouts:
                         analyzer.write_analyzed_lineouts( lineouts, analysis_dir, scan, shot_num )
@@ -701,16 +641,16 @@ class ScanDataAnalyzer:
         data_list = []
 
         for i in range(len(self.data)):
-            row_dict = self.data.iloc[i].to_dict()
-            filename = row_dict[f'{analyzer.diagnostic} file_list']
+            context = self.data.iloc[i].to_dict()
+            filename = context[f'{analyzer.diagnostic} file_list']
 
             data = analyzer.load_data(filename)
 
-            bg_i = self._resolve_bg_for_row(analyzer, bg, row_dict)
+            bg_i = self._resolve_bg_for_row(analyzer, bg, context)
             data, return_dict, lineouts = analyzer.analyze_data(
                 data,
                 bg=bg_i,
-                row_dict=row_dict
+                context=context
             )
 
             if data is not None:
@@ -734,30 +674,30 @@ class ScanDataAnalyzer:
         return mean_data, std_data
 
     @staticmethod
-    def _resolve_bg_for_row(analyzer, bg, row_dict, debug_bg=False, debug_once=True):
+    def _resolve_bg_for_row(analyzer, bg, context, debug_bg=False, debug_once=True):
         """
         This function is used when the bg is not the same for every shot in the scan.
-        If bg is a function that takes the argument (row_dict), it will return the bg for that row dict.
+        If bg is a function that takes the argument (context), it will return the bg for that row dict.
         You just need to write the function that selects the correct bg for that shot
 
         bg can be:
         - None
         - already-loaded background (returned as-is)
         - a path/filename (loaded via analyzer.load_data)
-        - a callable: bg(row_dict) -> None | loaded_bg | path
-        - an object with .get(row_dict) -> None | loaded_bg | path
+        - a callable: bg(context) -> None | loaded_bg | path
+        - an object with .get(context) -> None | loaded_bg | path
         """
 
         if bg is None:
             return None
 
-        # Provider object with .get(row_dict)
+        # Provider object with .get(context)
         if hasattr(bg, "get") and callable(bg.get):
-            bg_spec = bg.get(row_dict)
+            bg_spec = bg.get(context)
 
         # Callable provider
         elif callable(bg):
-            bg_spec = bg(row_dict)
+            bg_spec = bg(context)
 
         # Static
         else:
@@ -780,23 +720,40 @@ class ScanDataAnalyzer:
 
         # Otherwise assume it's already loaded bg data
         return bg_spec
+    
+    def compute_bin_summary(self, mode='mean'):
+        valid_modes = ('mean', 'median', 'std_err', 'max', 'min')
+        if mode not in valid_modes:
+            raise ValueError(f"Invalid mode '{mode}'. Must be one of {valid_modes}.")
 
-    def scan_data_mean_std_per_bin(self):
-        """
-        Compute mean and standard deviation per 'temp Bin number' for all numeric columns.
-        Returns
-        -------
-        mean_df : pandas.DataFrame
-            Mean values per bin, including 'temp Bin number' as a column.
-        std_df : pandas.DataFrame
-            Standard deviation values per bin, including 'temp Bin number' as a column.
-        """
-        tmp_data = self.data.select_dtypes(include=[np.number, 'float64', 'int64', 'bool'])
-        
-        mean_df = tmp_data.groupby('temp Bin number').agg(lambda x: np.nanmean(x)).reset_index()
-        std_df  = tmp_data.groupby('temp Bin number').agg(lambda x: np.nanstd(x)).reset_index()
-        
-        return mean_df, std_df
+        numeric_cols = self.data.select_dtypes(include=np.number)
+        grouped = numeric_cols.groupby('temp Bin number')
+
+        if mode == 'mean':
+            center_df = grouped.mean().reset_index()
+            spread_df = grouped.std(ddof=1).reset_index()
+
+        elif mode == 'median':
+            center_df = grouped.median().reset_index()
+            q25 = grouped.quantile(0.25)
+            q75 = grouped.quantile(0.75)
+            spread_df = (q75 - q25).reset_index()
+
+        elif mode == 'std_err':
+            center_df = grouped.mean().reset_index()
+            spread_df = grouped.sem().reset_index()
+
+        elif mode == 'max':
+            center_df = grouped.max().reset_index()
+            spread_df = center_df.copy()
+            spread_df[spread_df.columns.difference(['temp Bin number'])] = 0
+
+        elif mode == 'min':
+            center_df = grouped.min().reset_index()
+            spread_df = center_df.copy()
+            spread_df[spread_df.columns.difference(['temp Bin number'])] = 0
+
+        return center_df, spread_df
 
 
     @staticmethod

@@ -72,9 +72,12 @@ class WavefrontAnalyzerHimg(WavefrontAnalyzer):
         data_out = {}
 
         filename = row_dict[f'{self.diagnostic} file_list']
-        raw_data = self.load_raw_data(filename)
-        raw_stats_dict = self.compute_data_counts(raw_data) 
-        data_out["raw_data"] = raw_data
+        if 'himg' in self.file_ext:
+            raw_data = self.load_raw_data(filename)
+            raw_stats_dict = self.compute_data_counts(raw_data) 
+            data_out["raw_data"] = raw_data
+        else:
+            raw_stats_dict = {}
     
         return_dict = {'units' : None}
         lineouts = {}
@@ -176,12 +179,15 @@ class WavefrontAnalyzerHimg(WavefrontAnalyzer):
         # Reconstruct intensity
         # ------------------------------------------------------------
     
-        if analyzer_dict.get("reconstruct_intensity", True):
+        if analyzer_dict.get("reconstruct_intensity", True) and 'himg' in self.file_ext:
             try:
                 intensity = self.intensity_reconstruction(hasoslopes)
                 data_out["intensity"] = intensity
             except Exception:
                 pass
+
+        else:
+            data_out["intensity"] = np.zeros(zonal_data_um.shape)
             
         # ------------------------------------------------------------
         # 6) ZERNIKE reconstruction (OPTIONAL / best-effort)
@@ -226,7 +232,6 @@ class WavefrontAnalyzerHimg(WavefrontAnalyzer):
             return_dict
         )
 
-        
         return data_out, return_dict, lineouts
 
     def write_analyzed_data(self, data, analysis_dir, scan, shot_num):
