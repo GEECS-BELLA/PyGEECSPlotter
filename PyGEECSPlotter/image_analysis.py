@@ -98,6 +98,11 @@ class ImageAnalyzer:
                 mask=analyzer_dict.get('outlier_mask', None)
             )
 
+        # 3.75) Threshold high outliers
+        threshold_high = analyzer_dict.get('threshold_high', 0.995)
+        if threshold_high > 0:
+            data_out = self.apply_threshold(data_out, -1, threshold_high)
+
         # 4) Data stats
         if analyzer_dict.get('return_data_counts', True):
             results.update(self.compute_data_counts(data_out))
@@ -157,6 +162,7 @@ class ImageAnalyzer:
         threshold_high = analyzer_dict.get('threshold_high', -1)
         if threshold_low >= 0 or threshold_high > 0:
             data_out = self.apply_threshold(data_out, threshold_low, threshold_high)
+
             
         # 9) Second moment
         # Doesn't work yet
@@ -184,6 +190,19 @@ class ImageAnalyzer:
                                            analyzer_dict={},
                                            offset_type='fitted'
                                           ))
+
+        if analyzer_dict.get('calibrate_to_fluence', False):
+            energy = analyzer_dict.get('pulse_energy', 41.2)
+            
+            data_out, fluence = self.adjust_data_to_fluence(
+                data_out,
+                energy,
+                analyzer_dict.get('dx', 1),
+                analyzer_dict.get('dy', 1),
+                spatial_units=analyzer_dict.get('spatial_units', 'microns'),
+            )
+            results['fluence_per_count'] = fluence
+            results['max fluence'] = np.nanmax(data_out)
 
 
         return data_out, results, lineouts
@@ -482,6 +501,42 @@ class ImageAnalyzer:
                 ls=ls,
             )
         return fig, ax
+
+    @staticmethod
+    def adjust_data_to_fluence(image, energy, dx, dy, spatial_units='microns'):
+        """
+        Adjust image data to represent fluence in J/cm² based on total energy and pixel size.
+
+        Parameters:
+            image (ndarray): 2D image array.
+            energy (float): Total energy of the laser pulse (Joules).
+            dx (float): Pixel size in x (microns).
+            dy (float): Pixel size in y (microns).
+
+        Returns:
+            calibrated_image (ndarray): Image calibrated to J/cm².
+            fluence (float): Calibration factor in J/cm² per count.
+        """
+
+        if spatial_units == 'microns' or spatial_units == 'um':
+            dx_cm = dx / 10000.0
+            dy_cm = dy / 10000.0
+        else:
+            dx_cm = dx / 10.0
+            dy_cm = dy / 10.0
+
+
+        # Compute energy per count
+        energy_per_count = energy / np.sum(image)
+
+        # Convert to fluence
+        fluence = energy_per_count / (dx_cm * dy_cm)
+
+        # Apply scaling
+        calibrated_image = image * fluence
+
+        return calibrated_image, fluence
+
 
     @staticmethod
     def get_imshow_extent(x, y):
