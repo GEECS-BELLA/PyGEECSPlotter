@@ -974,6 +974,120 @@ class ImageAnalyzer:
         line_x, line_y = ImageAnalyzer.add_lineout_to_imshow(ax, x, y, x_lo/max_x, y_lo/max_y, axlims, normalize=False, style_dict=style_dict)
         line_fitx, line_fity = ImageAnalyzer.add_lineout_to_imshow(ax, x, y, fitted_x/max_x, fitted_y/max_y, axlims, normalize=False, style_dict={'color' : 'r'})
         return line_x, line_y
+    
+    def display_split_data(self, data1, data2,
+                           display_dict1=None, display_dict2=None,
+                           return_dict=None, title=None,
+                           split='horizontal',
+                           fig=None, ax=None):
+
+        if display_dict1 is None:
+            display_dict1 = self.display_dict
+        if display_dict2 is None:
+            display_dict2 = self.display_dict
+
+        if fig is None or ax is None:
+            fig, ax = plt.subplots(constrained_layout=True,
+                                   figsize=display_dict1.get('figsize', (6, 5)))
+
+        if return_dict is not None:
+            extent = return_dict.get('imshow_extent', None)
+        else:
+            extent = None
+
+        rows, cols = data1.shape
+
+        if extent is not None:
+            left, right, bottom, top = extent
+        else:
+            left, right, bottom, top = 0, cols, 0, rows
+
+        if split == 'horizontal':
+            mid = (top + bottom) / 2
+            extent1 = [left, right, mid, top]
+            extent2 = [left, right, bottom, mid]
+            slice1 = data1[:rows // 2, :]
+            slice2 = data2[rows // 2:, :]
+        elif split == 'vertical':
+            mid = (left + right) / 2
+            extent1 = [left, mid, bottom, top]
+            extent2 = [mid, right, bottom, top]
+            slice1 = data1[:, :cols // 2]
+            slice2 = data2[:, cols // 2:]
+        else:
+            raise ValueError("split must be 'horizontal' or 'vertical'.")
+
+        im1 = ax.imshow(slice1,
+                        aspect=display_dict1.get('aspect', 'equal'),
+                        norm=display_dict1.get('norm', None),
+                        cmap=display_dict1.get('cmap', 'RdBu'),
+                        interpolation=display_dict1.get('interpolation', None),
+                        origin='upper',
+                        extent=extent1,
+                        vmin=display_dict1.get('vmin', None),
+                        vmax=display_dict1.get('vmax', None),
+                        )
+
+        im2 = ax.imshow(slice2,
+                        aspect=display_dict2.get('aspect', 'equal'),
+                        norm=display_dict2.get('norm', None),
+                        cmap=display_dict2.get('cmap', 'RdBu'),
+                        interpolation=display_dict2.get('interpolation', None),
+                        origin='upper',
+                        extent=extent2,
+                        vmin=display_dict2.get('vmin', None),
+                        vmax=display_dict2.get('vmax', None),
+                        )
+
+        # if split == 'horizontal':
+        #     ax.axhline(y=mid, color='white', linewidth=1, linestyle='--')
+        # elif split == 'vertical':
+        #     ax.axvline(x=mid, color='white', linewidth=1, linestyle='--')
+
+        cax1 = inset_axes(ax, width='5%', height='45%', loc='lower left',
+                          bbox_to_anchor=(1.02, 0.55, 1, 1),
+                          bbox_transform=ax.transAxes, borderpad=0)
+
+        cax2 = inset_axes(ax, width='5%', height='45%', loc='lower left',
+                          bbox_to_anchor=(1.02, 0, 1, 1),
+                          bbox_transform=ax.transAxes, borderpad=0)
+
+        cbar1 = fig.colorbar(im1, cax=cax1)
+        cbar1.set_label(display_dict1.get('cbar_label', 'Counts'))
+
+        cbar2 = fig.colorbar(im2, cax=cax2)
+        cbar2.set_label(display_dict2.get('cbar_label', 'Counts'))
+
+        spatial_units = display_dict1.get('spatial_units', 'pixels')
+        xtitle = display_dict1.get('xtitle', 'x')
+        ytitle = display_dict1.get('ytitle', 'y')
+
+        ax.set_xlabel(r'$%s \ (\mathrm{%s})$' % (xtitle, spatial_units))
+        ax.set_ylabel(r'$%s \ (\mathrm{%s})$' % (ytitle, spatial_units))
+
+        axlims = display_dict1.get('axlims', None)
+        tick_dx = display_dict1.get('tick_dx', None)
+        if tick_dx is not None and axlims is not None:
+            ax.set_xticks(np.arange(-axlims, axlims + tick_dx, tick_dx))
+            ax.set_yticks(np.arange(-axlims, axlims + tick_dx, tick_dx))
+
+        if axlims is not None:
+            ax.set_xlim([-axlims, axlims])
+            ax.set_ylim([-axlims, axlims])
+        else:
+            ax.set_xlim([left, right])
+            ax.set_ylim([bottom, top])
+
+        for v_line in display_dict1.get('v_lines', []):
+            ax.axvline(x=v_line, color='k', linestyle='--')
+
+        for h_line in display_dict1.get('h_lines', []):
+            ax.axhline(y=h_line, color='k', linestyle='--')
+
+        if title is not None:
+            ax.set_title(title)
+
+        return fig, ax
 
 
     

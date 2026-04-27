@@ -191,9 +191,9 @@ def open_directory_in_explorer(path):
 def get_analysed_shot_save_path(analysis_dir, analysis_diagnostic, scan, shot_num, file_ext='.txt', append_info=None):
 
     if append_info is not None:
-        basename = f'Scan{scan:03d}_{analysis_diagnostic}{append_info}_{shot_num:03d}{file_ext}'
+        basename = f'Scan{int(scan):03d}_{analysis_diagnostic}{append_info}_{int(shot_num):03d}{file_ext}'
     else:
-        basename = f'Scan{scan:03d}_{analysis_diagnostic}_{shot_num:03d}{file_ext}'
+        basename = f'Scan{int(scan):03d}_{analysis_diagnostic}_{int(shot_num):03d}{file_ext}'
     
     # Construct the full save path
     save_path = os.path.join(analysis_dir, analysis_diagnostic, basename)
