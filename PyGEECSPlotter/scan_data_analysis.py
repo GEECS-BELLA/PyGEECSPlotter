@@ -13,6 +13,7 @@ import json
 import datetime
 import pandas as pd
 from pathlib import Path
+from tqdm import tqdm
 
 from PyGEECSPlotter.navigation_utils import *
 from PyGEECSPlotter.utils import parse_controls_from_python, write_controls_from_python
@@ -495,7 +496,7 @@ class ScanDataAnalyzer:
 
         add_columns_df = None
 
-        for i, row in self.active_data.iterrows():
+        for i, row in tqdm(self.active_data.iterrows(), total=len(self.active_data)):
             context = row.to_dict()
             scan, shot_num = context['scan'], context['Shotnumber']
             filename = context[f'{analyzer.diagnostic} file_list']
