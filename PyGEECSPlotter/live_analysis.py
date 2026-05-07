@@ -47,6 +47,7 @@ class DirectoryWatcherSFile(FileSystemEventHandler):
         self.current_status = ""
         self.current_sfile_info_name = None  # Full path to the detected file
         self.current_sfilename = None        # Full path to the transformed filename
+        self.current_scan_analyzer = None    # The ScanDataAnalyzer instance for the current file
 
     def _update_status(self, message):
         """Update the current status and print the message."""
@@ -95,6 +96,8 @@ class DirectoryWatcherSFile(FileSystemEventHandler):
         if not event.is_directory and event.src_path.endswith('info.txt'):
             self.current_sfile_info_name = event.src_path
             self.current_sfilename = self.transform_to_sfilename(self.current_sfile_info_name)
+            self.current_scan_analyzer = ScanDataAnalyzer(sfilename=self.current_sfilename)
+            self.current_scan_analyzer.load_scan_data()
             self._update_status(f"New file detected: {self.current_sfile_info_name}")
             
             # Run analysis and plotting for each diagnostic in diagnostics_info
@@ -136,15 +139,15 @@ class DirectoryWatcherSFile(FileSystemEventHandler):
         analyzer_dict = analyzer.analyzer_dict
         display_dict = analyzer.display_dict
         diagnostic = analyzer.diagnostic
-
-        scan_analyzer = ScanDataAnalyzer(sfilename=sfilename)
-        scan_analyzer.load_scan_data(analyzer=analyzer)
+        
+        # Load data files names into ScanDataAnalyzer instance
+        self.current_scan_analyzer.add_file_list_to_scan_data(diagnostic, file_ext)
         
         if analyzer_dict.get("use_bg", False):
-            bg = scan_analyzer.get_bg_file_path(analyzer.diagnostic, analyzer.file_ext)
+            bg = self.current_scan_analyzer.get_bg_file_path(diagnostic, file_ext)
         else:
             bg = None
-        add_columns_df = scan_analyzer.analyze_scan(analyzer, 
+        add_columns_df = self.current_scan_analyzer.analyze_scan(analyzer, 
             bg=bg, 
             display_data=display_dict.get("display_data", False),
             write_columns_to_sfile=False, 
@@ -171,7 +174,7 @@ class DirectoryWatcherSFile(FileSystemEventHandler):
             else:
                 prefix = None
             with lock:
-                merged_sfile = scan_analyzer.merge_data_frame_to_sfile(add_columns_df, analyzer.diagnostic,
+                merged_sfile = self.current_scan_analyzer.merge_data_frame_to_sfile(add_columns_df, analyzer.diagnostic,
                                                                        overwrite_columns=True,
                                                                        analysis_label=analyzer_dict.get("analysis_label", None))
             print("Added columns to masterlog")
@@ -192,13 +195,13 @@ class DirectoryWatcherSFile(FileSystemEventHandler):
             with lock:
                 # Workaround to set the file we are saving to a different location
                 # compared to where sfiles are usually saved
-                old_sfilename = scan_analyzer.sfilename
-                scan_analyzer.sfilename = scan_data_fname
-                merged_sfile = scan_analyzer.merge_data_frame_to_sfile(add_columns_df, analyzer.diagnostic,
+                old_sfilename = self.current_scan_analyzer.sfilename
+                self.current_scan_analyzer.sfilename = scan_data_fname
+                merged_sfile = self.current_scan_analyzer.merge_data_frame_to_sfile(add_columns_df, analyzer.diagnostic,
                                                                        overwrite_columns=True,
                                                                        analysis_label=analyzer_dict.get("analysis_label", None))
                 # Change the sfilename back to the original one in case we need to save more files
-                scan_analyzer.sfilename = old_sfilename
+                self.current_scan_analyzer.sfilename = old_sfilename
             print("Added columns to scan data file")
         print("-"*50, "\n")
             
@@ -257,6 +260,8 @@ class SFileReanalyzer(DirectoryWatcherSFile):
         sfile_list = nav_utils.generate_sfilename_list_from_scans_dir(self.top_dir)
         print(sfile_list)
         for sfile in sfile_list:
+            self.current_scan_analyzer = ScanDataAnalyzer(sfilename=sfile)
+            self.current_scan_analyzer.load_scan_data()
             print("-"*50)
             print(f"Analyzing file {sfile}")
             print("-"*50)
