@@ -13,6 +13,7 @@ import datetime
 from pathlib import Path
 import platform
 import subprocess
+import pandas as pd
 
 def _format_date(year, month, day):
     datetime_object = datetime.datetime.strptime('%d' % month, '%m')
@@ -64,6 +65,8 @@ def get_sfilename_from_top_dir(top_dir, scan, print_data=False):
         
     return sfilename
 
+# TODO add functionality to only choose scans within a certain range, and to remove
+# masterlog from the list, and to check that the sfiles are not empty
 def generate_sfilename_list_from_scans_dir(top_dir):
     scans_list = glob.glob( os.path.join(top_dir, 'scans', 'Scan*') )
     scans = [os.path.basename(scans_list[i]) for i in range(len(scans_list))]
