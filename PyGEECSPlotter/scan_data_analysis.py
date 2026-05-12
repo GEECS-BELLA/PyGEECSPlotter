@@ -26,19 +26,22 @@ colors = gplt.configure_plotting()
 
 class ScanDataAnalyzer:
     def __init__(self, 
-                 sfilename=None, 
-                 top_dir=None, 
-                 experiment_dir=None,
-                 year=None, 
-                 month=None, 
-                 day=None, 
-                 scan=None
-                 ):
-                 
-        
+                sfilename=None, 
+                top_dir=None, 
+                experiment_dir=None,
+                year=None, 
+                month=None, 
+                day=None, 
+                scan=None
+                ):
+                
         self.sfilename = sfilename
         self.top_dir = top_dir
         self.experiment_dir = experiment_dir
+        self._year = None
+        self._month = None
+        self._day = None
+        self._scan = None
         self.year = year
         self.month = month
         self.day = day
@@ -53,9 +56,9 @@ class ScanDataAnalyzer:
             self._init_from_experiment_path()
         else:
             raise ValueError("Invalid initialization arguments. Use one of:\n"
-                             "1. sfilename\n"
-                             "2. top_dir and scan\n"
-                             "3. experiment_dir, year, month, day, scan")
+                            "1. sfilename\n"
+                            "2. top_dir and scan\n"
+                            "3. experiment_dir, year, month, day, scan")
             
         self.analysis_dir = None
         self.data_columns = None
@@ -85,6 +88,47 @@ class ScanDataAnalyzer:
         self.top_dir = get_top_dir(self.experiment_dir, self.year, self.month, self.day)
         self.sfilename = get_sfilename_from_top_dir(self.top_dir, self.scan)
 
+    @staticmethod
+    def _to_int(value, name):
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            raise TypeError(f"'{name}' must be an integer or integer-castable value, got {type(value).__name__!r}: {value!r}")
+
+    @property
+    def year(self):
+        return self._year
+
+    @year.setter
+    def year(self, value):
+        self._year = self._to_int(value, 'year')
+
+    @property
+    def month(self):
+        return self._month
+
+    @month.setter
+    def month(self, value):
+        self._month = self._to_int(value, 'month')
+
+    @property
+    def day(self):
+        return self._day
+
+    @day.setter
+    def day(self, value):
+        self._day = self._to_int(value, 'day')
+
+    @property
+    def scan(self):
+        return self._scan
+
+    @scan.setter
+    def scan(self, value):
+        self._scan = self._to_int(value, 'scan')
+
 
 
     def __repr__(self):
@@ -96,6 +140,14 @@ class ScanDataAnalyzer:
     def _init_mask(self):
         """Initialize the inclusion mask to include all rows."""
         self._mask = np.ones(len(self.data), dtype=bool)
+
+    def save_mask(self):
+        """Save the current mask state."""
+        return self._mask.copy()
+
+    def restore_mask(self, saved_mask):
+        """Restore a previously saved mask state."""
+        self._mask = saved_mask
 
 
     @property
@@ -605,11 +657,10 @@ class ScanDataAnalyzer:
         merged_df.to_csv(self.sfilename, index=False, sep='\t')
         print(f'Columns added to {self.sfilename}')
 
-    def analyze_scan_data_mean_std(
+    def mean_std_diagnostic(
             self,
             analyzer,
             bg=None,
-            ignore_none=True,
             ddof=0,
         ):
         """
@@ -643,17 +694,15 @@ class ScanDataAnalyzer:
 
         data_list = []
 
-        for i in range(len(self.data)):
-            context = self.data.iloc[i].to_dict()
+        for i, row in self.active_data.iterrows():
+            context = row.to_dict()
+            scan, shot_num = context['scan'], context['Shotnumber']
+            filename = context[f'{analyzer.diagnostic} file_list']
 
-            if analyzer.diagnostic is not None:
-                filename = context.get(f'{analyzer.diagnostic} file_list')
-                data = analyzer.load_data(filename)
-            else:
-                data = None
+            data = analyzer.load_data(filename)
 
             bg_i = self._resolve_bg_for_row(analyzer, bg, context)
-            data, return_dict, lineouts = analyzer.analyze_data(
+            data, _, _ = analyzer.analyze_data(
                 data,
                 bg=bg_i,
                 context=context
@@ -663,7 +712,7 @@ class ScanDataAnalyzer:
                 data_list.append(np.asarray(data))
 
         if len(data_list) == 0:
-            raise ValueError("No valid analyzed data found in self.data")
+            return None, None
 
         first_shape = data_list[0].shape
         for i, arr in enumerate(data_list):
