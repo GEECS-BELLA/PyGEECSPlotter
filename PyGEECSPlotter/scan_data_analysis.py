@@ -499,10 +499,13 @@ class ScanDataAnalyzer:
         for i, row in tqdm(self.active_data.iterrows(), total=self.active_data.shape[0]):
             context = row.to_dict()
             scan, shot_num = context['scan'], context['Shotnumber']
-            filename = context[f'{analyzer.diagnostic} file_list']
-            
-            data = analyzer.load_data(filename)
-            
+
+            if analyzer.diagnostic is not None:
+                filename = context.get(f'{analyzer.diagnostic} file_list')
+                data = analyzer.load_data(filename)
+            else:
+                data = None
+
             bg_i = self._resolve_bg_for_row(analyzer, bg, context)
             data, return_dict, lineouts = analyzer.analyze_data(data, bg=bg_i, context=context)
             
@@ -642,9 +645,12 @@ class ScanDataAnalyzer:
 
         for i in range(len(self.data)):
             context = self.data.iloc[i].to_dict()
-            filename = context[f'{analyzer.diagnostic} file_list']
 
-            data = analyzer.load_data(filename)
+            if analyzer.diagnostic is not None:
+                filename = context.get(f'{analyzer.diagnostic} file_list')
+                data = analyzer.load_data(filename)
+            else:
+                data = None
 
             bg_i = self._resolve_bg_for_row(analyzer, bg, context)
             data, return_dict, lineouts = analyzer.analyze_data(
