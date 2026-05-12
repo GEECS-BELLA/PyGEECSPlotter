@@ -13,6 +13,7 @@ import json
 import datetime
 import pandas as pd
 from pathlib import Path
+from tqdm import tqdm
 
 from PyGEECSPlotter.navigation_utils import *
 from PyGEECSPlotter.utils import parse_controls_from_python, write_controls_from_python
@@ -495,14 +496,16 @@ class ScanDataAnalyzer:
 
         add_columns_df = None
 
-        for i, row in self.active_data.iterrows():
+        for i, row in tqdm(self.active_data.iterrows(), total=self.active_data.shape[0]):
             context = row.to_dict()
             scan, shot_num = context['scan'], context['Shotnumber']
-            filename = context[f'{analyzer.diagnostic} file_list']
-            
-            data = analyzer.load_data(filename)
-            _, metadata = data #QUICK FIX
-            
+
+            if analyzer.diagnostic is not None:
+                filename = context.get(f'{analyzer.diagnostic} file_list')
+                data = analyzer.load_data(filename)
+            else:
+                data = None
+
             bg_i = self._resolve_bg_for_row(analyzer, bg, context)
             data, return_dict, lineouts = analyzer.analyze_data(data, bg=bg_i, context=context)
             
@@ -514,7 +517,7 @@ class ScanDataAnalyzer:
             
                 if write_analyzed:
                     analysis_dir = self.get_scan_data_analysis_dir( make_dir=True )
-                    analyzer.write_analyzed_data( data, analysis_dir, scan, shot_num , context=metadata ) #QUICK_FIX
+                    analyzer.write_analyzed_data( data, analysis_dir, scan, shot_num , context=context)
 
                     if write_lineouts:
                         analyzer.write_analyzed_lineouts( lineouts, analysis_dir, scan, shot_num )
@@ -642,9 +645,12 @@ class ScanDataAnalyzer:
 
         for i in range(len(self.data)):
             context = self.data.iloc[i].to_dict()
-            filename = context[f'{analyzer.diagnostic} file_list']
 
-            data = analyzer.load_data(filename)
+            if analyzer.diagnostic is not None:
+                filename = context.get(f'{analyzer.diagnostic} file_list')
+                data = analyzer.load_data(filename)
+            else:
+                data = None
 
             bg_i = self._resolve_bg_for_row(analyzer, bg, context)
             data, return_dict, lineouts = analyzer.analyze_data(

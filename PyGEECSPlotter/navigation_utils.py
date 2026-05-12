@@ -13,6 +13,7 @@ import datetime
 from pathlib import Path
 import platform
 import subprocess
+import pandas as pd
 
 def _format_date(year, month, day):
     datetime_object = datetime.datetime.strptime('%d' % month, '%m')
@@ -64,10 +65,15 @@ def get_sfilename_from_top_dir(top_dir, scan, print_data=False):
         
     return sfilename
 
-def generate_sfilename_list_from_scans_dir(top_dir):
+def generate_sfilename_list_from_scans_dir(top_dir, start_scan=0, end_scan=1e999):
+    """
+    Generates a list of sfilename paths for all scans in the top_dir
+    between start_scan and end_scan, inclusive
+    """
     scans_list = glob.glob( os.path.join(top_dir, 'scans', 'Scan*') )
     scans = [os.path.basename(scans_list[i]) for i in range(len(scans_list))]
     scan_numbers = [int(re.search(r'\d+', s).group()) for s in scans]
+    scan_numbers = [scan for scan in scan_numbers if start_scan <= scan <= end_scan]
     sfilename_list = [os.path.join(top_dir, 'analysis', f's{scan}.txt') for scan in scan_numbers]
     return sfilename_list
 
