@@ -15,6 +15,7 @@ setup(
         "scikit-image",
         "scikit-learn",
         "opencv-python",
-        "pypng"
+        "pypng",
+        "tqdm"
     ],
 )
