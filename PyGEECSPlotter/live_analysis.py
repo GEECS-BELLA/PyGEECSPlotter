@@ -257,7 +257,7 @@ class SFileReanalyzer(DirectoryWatcherSFile):
         """
         Analyzes all scans inside the current analysis folder
         """
-        sfile_list = nav_utils.generate_sfilename_list_from_scans_dir(self.top_dir)
+        sfile_list = nav_utils.generate_sfilename_list_from_scans_dir(self.top_dir, start_scan=start_scan, end_scan=end_scan)
         print(sfile_list)
         for sfile in sfile_list:
             self.current_scan_analyzer = ScanDataAnalyzer(sfilename=sfile)
