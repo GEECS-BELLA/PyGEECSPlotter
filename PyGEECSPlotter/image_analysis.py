@@ -23,29 +23,31 @@ warnings.filterwarnings("ignore", category=RuntimeWarning, message="Mean of empt
 import PyGEECSPlotter.ni_imread as ni_imread
 from PyGEECSPlotter.utils import super_gaussian, get_lineout_width, save_lineouts_to_txt
 from PyGEECSPlotter.navigation_utils import get_analysed_shot_save_path
+from PyGEECSPlotter.diagnostic_analyzer import DiagnosticAnalyzer
 
 
-class ImageAnalyzer:
+class ImageAnalyzer(DiagnosticAnalyzer):
     """
-    Base class for image analysis. 
+    Base class for image analysis.
     Derive from this class to customize analysis steps for specific image types.
     """
 
-    def __init__(self, 
-                 diagnostic=None, 
-                 file_ext=None, 
-                 analyzer_dict={}, 
-                 display_dict={},
+    def __init__(self,
+                 diagnostic=None,
+                 file_ext=None,
+                 analyzer_dict=None,
+                 display_dict=None,
                  output_diagnostic=None,
-                 output_file_ext=None
+                 output_file_ext=None,
                 ):
-        
-        self.diagnostic = diagnostic
-        self.file_ext = file_ext
-        self.analyzer_dict = analyzer_dict 
-        self.display_dict = display_dict 
-        self.output_diagnostic = output_diagnostic
-        self.output_file_ext = output_file_ext
+        super().__init__(
+            diagnostic=diagnostic,
+            file_ext=file_ext,
+            analyzer_dict=analyzer_dict,
+            display_dict=display_dict,
+            output_diagnostic=output_diagnostic,
+            output_file_ext=output_file_ext,
+        )
 
     # -------------------------------------------------------------------
     # Public pipeline method
@@ -55,7 +57,7 @@ class ImageAnalyzer:
             return None
         return ni_imread.read_imaq_image(filename).astype('float')
     
-    def analyze_data(self, data, analyzer_dict=None, row_dict={}, bg=None):
+    def analyze_data(self, data, *, bg=None, context=None, analyzer_dict=None):
         if analyzer_dict is None:
             analyzer_dict = self.analyzer_dict
 
@@ -229,8 +231,9 @@ class ImageAnalyzer:
                         vmin=display_dict.get('vmin', None),
                         vmax=display_dict.get('vmax', None),
                       )
-        cbar = fig.colorbar(im, ax=ax)
-        cbar.set_label(display_dict.get('cbar_label', 'Counts'))
+        if not display_dict.get('cbar_off', False):
+            cbar = fig.colorbar(im, ax=ax)
+            cbar.set_label(display_dict.get('cbar_label', 'Counts'))
 
         spatial_units = display_dict.get('spatial_units', 'pixels')
         xtitle = display_dict.get('xtitle', 'x')
