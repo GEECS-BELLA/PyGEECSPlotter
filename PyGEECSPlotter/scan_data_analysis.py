@@ -17,6 +17,7 @@ from tqdm import tqdm
 
 from PyGEECSPlotter.navigation_utils import *
 from PyGEECSPlotter.utils import parse_controls_from_python, write_controls_from_python
+from PyGEECSPlotter.binning import compute_bin_numbers
 # from PyGEECSPlotter.navigation_utils import get_analysis_dir, get_analysis_diagnostic_path, open_directory_in_explorer, get_analysed_shot_save_path
 
 import PyGEECSPlotter.plotting as gplt
@@ -463,6 +464,76 @@ class ScanDataAnalyzer:
         """
         self._init_mask()
         print('Filters reset. %d shots included.' % self._mask.sum())
+
+    def rebin(self, method='unique', scan_parameter=None, **kwargs):
+        """
+        Re-compute ``temp Bin number`` from a column of ``self.data``.
+
+        Bins drive ``compute_bin_summary`` and ``aggregate_per_bin``. By
+        default ``temp Bin number`` is initialized from the sfile's
+        ``Bin #`` column at load time. Call ``rebin`` to redefine bins
+        based on any column — typically when you want to bin by a
+        measured/post-analyzed value rather than the DAQ's commanded
+        bin index.
+
+        The mask (filters) is unaffected.
+
+        Parameters
+        ----------
+        method : str or callable, optional
+            One of ``'unique'``, ``'rounding'``, ``'zscore'``,
+            ``'kmeans'``, ``'edges'``, ``'quantile'``, ``'width'``, or
+            a callable ``f(values, **kwargs) -> ndarray`` that returns
+            bin numbers. Default ``'unique'``.
+        scan_parameter : str, optional
+            Column name in ``self.data`` to bin on. Defaults to
+            ``self.scan_parameter``.
+        **kwargs
+            Forwarded to the binning method:
+              - ``rounding_factor`` for ``method='rounding'``
+              - ``z_threshold``     for ``method='zscore'``
+              - ``n_bins``          for ``method='kmeans'`` /
+                                    ``'quantile'`` / ``'width'``
+              - ``bin_edges``       for ``method='edges'``
+              - ``bin_width``       for ``method='width'`` (number or
+                                    ``np.histogram_bin_edges`` keyword)
+
+        Returns
+        -------
+        ndarray of int
+            The new bin numbers (same length as ``self.data``).
+        """
+        if scan_parameter is None:
+            scan_parameter = self.scan_parameter
+
+        if scan_parameter not in self.data.columns:
+            raise KeyError(
+                f"Column {scan_parameter!r} not in self.data. "
+                f"Use load_scan_data first, or analyze_scan to add a measured column."
+            )
+
+        values = self.data[scan_parameter].values
+        bin_numbers = compute_bin_numbers(values, method=method, **kwargs)
+        self.data['temp Bin number'] = bin_numbers
+
+        n_bins = len(np.unique(bin_numbers[bin_numbers > 0]))
+        n_unbinned = int((bin_numbers == 0).sum())
+        method_name = method if isinstance(method, str) else getattr(method, '__name__', 'callable')
+        print(
+            "Re-binned by '%s' (method=%s): %d bins, %d unbinned (NaN) shots."
+            % (scan_parameter, method_name, n_bins, n_unbinned)
+        )
+        return bin_numbers
+
+    def reset_bins(self):
+        """
+        Reset ``temp Bin number`` to the sfile's original ``Bin #`` column.
+        """
+        if 'Bin #' not in self.data.columns:
+            raise KeyError("'Bin #' column not found in self.data — cannot reset bins.")
+        self.data['temp Bin number'] = self.data['Bin #']
+        n_bins = self.data['temp Bin number'].nunique()
+        print("Bins reset to sfile 'Bin #' (%d bins)." % n_bins)
 
     def get_bg_file_path(self, diagnostic, file_ext='.png', which_scan='last'):
         """
