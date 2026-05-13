@@ -60,7 +60,6 @@ class DiagnosticAnalyzer:
     def analyze_data(
         self,
         data,
-        *,
         bg=None,
         context: Optional[Dict[str, Any]] = None,
     ) -> Tuple[Any, Dict[str, Any], Dict[str, Any]]:
@@ -78,13 +77,12 @@ class DiagnosticAnalyzer:
             Auxiliary outputs (e.g. lineouts) for optional disk writes.
         """
         raise NotImplementedError(
-            f"{type(self).__name__} must implement analyze_data(data, *, bg, context)."
+            f"{type(self).__name__} must implement analyze_data(data, bg, context)."
         )
 
     def display_data(
         self,
         data,
-        *,
         return_dict: Optional[Dict[str, Any]] = None,
         title: Optional[str] = None,
         fig=None,
@@ -100,7 +98,6 @@ class DiagnosticAnalyzer:
         analysis_dir,
         scan,
         shot_num,
-        *,
         context: Optional[Dict[str, Any]] = None,
     ):
         raise NotImplementedError(
