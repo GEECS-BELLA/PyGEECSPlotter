@@ -229,8 +229,9 @@ class ImageAnalyzer:
                         vmin=display_dict.get('vmin', None),
                         vmax=display_dict.get('vmax', None),
                       )
-        cbar = fig.colorbar(im, ax=ax)
-        cbar.set_label(display_dict.get('cbar_label', 'Counts'))
+        if not display_dict.get('cbar_off', False):
+            cbar = fig.colorbar(im, ax=ax)
+            cbar.set_label(display_dict.get('cbar_label', 'Counts'))
 
         spatial_units = display_dict.get('spatial_units', 'pixels')
         xtitle = display_dict.get('xtitle', 'x')
