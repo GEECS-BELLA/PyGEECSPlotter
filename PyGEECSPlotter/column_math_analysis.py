@@ -34,6 +34,6 @@ class ColumnMathAnalyzer(DiagnosticAnalyzer):
     def load_data(self, filename):
         return None
 
-    def analyze_data(self, data, *, bg=None, context=None):
+    def analyze_data(self, data, bg=None, context=None):
         """Override in subclasses to compute new columns from ``context``."""
         return None, {}, {}

@@ -526,7 +526,7 @@ class ScanDataAnalyzer:
             print(f"An error occurred while retrieving the background file path: {e}")
             return None
 
-    def _iter_shots(self, analyzer, bg=None, *, show_progress=True):
+    def _iter_shots(self, analyzer, bg=None, show_progress=True):
         """
         Yield ``(context, data, results, aux)`` for each active shot.
 
@@ -661,7 +661,7 @@ class ScanDataAnalyzer:
     def get_scan_data_analysis_dir( self, make_dir=True ):
         return get_analysis_dir(self.top_dir, self.scan, make_dir=True)
 
-    def display_scan(self, displayer, *, save=False, suffix='', fig=None, ax=None, **kwargs):
+    def display_scan(self, displayer, save=False, suffix='', fig=None, ax=None, **kwargs):
         """
         Render a scan-level figure using a ``ScanDisplayer``.
 
@@ -743,7 +743,7 @@ class ScanDataAnalyzer:
         merged_df.to_csv(self.sfilename, index=False, sep='\t')
         print(f'Columns added to {self.sfilename}')
 
-    def mean_std_diagnostic(self, analyzer, bg=None, ddof=0, *, show_progress=False):
+    def mean_std_diagnostic(self, analyzer, bg=None, ddof=0, show_progress=False):
         """
         Pixel-wise mean / std of analyzed data across all active shots.
 
