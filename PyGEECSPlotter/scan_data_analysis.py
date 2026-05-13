@@ -26,19 +26,22 @@ colors = gplt.configure_plotting()
 
 class ScanDataAnalyzer:
     def __init__(self, 
-                 sfilename=None, 
-                 top_dir=None, 
-                 experiment_dir=None,
-                 year=None, 
-                 month=None, 
-                 day=None, 
-                 scan=None
-                 ):
-                 
-        
+                sfilename=None, 
+                top_dir=None, 
+                experiment_dir=None,
+                year=None, 
+                month=None, 
+                day=None, 
+                scan=None
+                ):
+                
         self.sfilename = sfilename
         self.top_dir = top_dir
         self.experiment_dir = experiment_dir
+        self._year = None
+        self._month = None
+        self._day = None
+        self._scan = None
         self.year = year
         self.month = month
         self.day = day
@@ -53,9 +56,9 @@ class ScanDataAnalyzer:
             self._init_from_experiment_path()
         else:
             raise ValueError("Invalid initialization arguments. Use one of:\n"
-                             "1. sfilename\n"
-                             "2. top_dir and scan\n"
-                             "3. experiment_dir, year, month, day, scan")
+                            "1. sfilename\n"
+                            "2. top_dir and scan\n"
+                            "3. experiment_dir, year, month, day, scan")
             
         self.analysis_dir = None
         self.data_columns = None
@@ -85,6 +88,47 @@ class ScanDataAnalyzer:
         self.top_dir = get_top_dir(self.experiment_dir, self.year, self.month, self.day)
         self.sfilename = get_sfilename_from_top_dir(self.top_dir, self.scan)
 
+    @staticmethod
+    def _to_int(value, name):
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            raise TypeError(f"'{name}' must be an integer or integer-castable value, got {type(value).__name__!r}: {value!r}")
+
+    @property
+    def year(self):
+        return self._year
+
+    @year.setter
+    def year(self, value):
+        self._year = self._to_int(value, 'year')
+
+    @property
+    def month(self):
+        return self._month
+
+    @month.setter
+    def month(self, value):
+        self._month = self._to_int(value, 'month')
+
+    @property
+    def day(self):
+        return self._day
+
+    @day.setter
+    def day(self, value):
+        self._day = self._to_int(value, 'day')
+
+    @property
+    def scan(self):
+        return self._scan
+
+    @scan.setter
+    def scan(self, value):
+        self._scan = self._to_int(value, 'scan')
+
 
 
     def __repr__(self):
@@ -96,6 +140,14 @@ class ScanDataAnalyzer:
     def _init_mask(self):
         """Initialize the inclusion mask to include all rows."""
         self._mask = np.ones(len(self.data), dtype=bool)
+
+    def save_mask(self):
+        """Save the current mask state."""
+        return self._mask.copy()
+
+    def restore_mask(self, saved_mask):
+        """Restore a previously saved mask state."""
+        self._mask = saved_mask
 
 
     @property
@@ -474,31 +526,45 @@ class ScanDataAnalyzer:
             print(f"An error occurred while retrieving the background file path: {e}")
             return None
 
-    def analyze_scan(self, analyzer, 
-        bg=None, 
-        display_data=False,
-        write_columns_to_sfile=False, 
-        overwrite_columns=True, 
-        analysis_label='',
-        write_analyzed=False,
-        write_lineouts=False,
-        close_displayed=True,
-        ):
+    def _iter_shots(self, analyzer, bg=None, *, show_progress=True):
         """
-        Processes scan data with analysis and optional display and file writing.
+        Yield ``(context, data, results, aux)`` for each active shot.
 
-        Parameters:
-            analyzer (object): Analyzer object with load_data, analyze_data, write_analyzed_data, and display_data methods.
-            bg (optional): Background data or parameters for the analysis.
-        Returns:
-            add_columns_df (DataFrame) 
+        Centralizes the per-shot iteration shell:
+          1) iterate ``active_data``
+          2) load the diagnostic file (if any)
+          3) resolve the per-row background
+          4) call ``analyzer.analyze_data``
+
+        Used by ``analyze_scan`` and any per-shot aggregation
+        (``mean_std_diagnostic``, ``aggregate_per_bin``, custom workflows).
+
+        Parameters
+        ----------
+        analyzer : DiagnosticAnalyzer
+        bg : optional
+            Background spec passed through ``_resolve_bg_for_row``.
+        show_progress : bool, optional
+            Wrap iteration in a tqdm progress bar.
+
+        Yields
+        ------
+        context : dict
+            Row as a dict (includes ``scan``, ``Shotnumber``, etc.).
+        data : Any
+            Analyzed shot data, or ``None`` if no diagnostic / missing file.
+        results : dict
+            Scalar outputs.
+        aux : dict
+            Auxiliary outputs (lineouts, etc.).
         """
+        rows = self.active_data
+        it = rows.iterrows()
+        if show_progress:
+            it = tqdm(it, total=rows.shape[0])
 
-        add_columns_df = None
-
-        for i, row in tqdm(self.active_data.iterrows(), total=self.active_data.shape[0]):
+        for _, row in it:
             context = row.to_dict()
-            scan, shot_num = context['scan'], context['Shotnumber']
 
             if analyzer.diagnostic is not None:
                 filename = context.get(f'{analyzer.diagnostic} file_list')
@@ -507,47 +573,119 @@ class ScanDataAnalyzer:
                 data = None
 
             bg_i = self._resolve_bg_for_row(analyzer, bg, context)
-            data, return_dict, lineouts = analyzer.analyze_data(data, bg=bg_i, context=context)
-            
-            add_columns_df = ScanDataAnalyzer.append_to_add_columns_df( scan, shot_num, return_dict, add_columns_df )
-            
-            if data is not None:
+            data, results, aux = analyzer.analyze_data(data, bg=bg_i, context=context)
+
+            yield context, data, results, aux
+
+    def analyze_scan(self, analyzer,
+        bg=None,
+        display_data=False,
+        write_columns_to_sfile=False,
+        overwrite_columns=True,
+        analysis_label='',
+        write_analyzed=False,
+        write_lineouts=False,
+        close_displayed=True,
+        ):
+        """
+        Run the per-shot pipeline over active shots and handle side effects.
+
+        Iteration is delegated to ``_iter_shots``. This method applies the
+        optional per-shot side effects (display, write_analyzed,
+        write_lineouts, write_displayed), accumulates scalar results, and
+        optionally merges them back into the sfile.
+
+        Parameters
+        ----------
+        analyzer : DiagnosticAnalyzer
+            Provides ``load_data``, ``analyze_data``, and optionally
+            ``display_data`` / ``write_analyzed_data`` /
+            ``write_analyzed_lineouts`` / ``write_displayed_data``.
+        bg : optional
+            Background spec; see ``_resolve_bg_for_row``.
+
+        Returns
+        -------
+        add_columns_df : DataFrame or None
+        """
+        rows = []
+        analysis_dir = None
+
+        for context, data, results, aux in self._iter_shots(analyzer, bg=bg):
+            scan, shot_num = context['scan'], context['Shotnumber']
+            rows.append({'scan': scan, 'Shotnumber': shot_num, **results})
+
+            if data is None:
+                continue
+
+            fig = None
+            if display_data:
+                filename = context.get(f'{analyzer.diagnostic} file_list', '')
+                fig, _ = analyzer.display_data(
+                    data, return_dict=results, title=os.path.basename(filename)
+                )
+
+            if write_analyzed:
+                if analysis_dir is None:
+                    analysis_dir = self.get_scan_data_analysis_dir(make_dir=True)
+                analyzer.write_analyzed_data(data, analysis_dir, scan, shot_num, context=context)
+                if write_lineouts:
+                    analyzer.write_analyzed_lineouts(aux, analysis_dir, scan, shot_num)
                 if display_data:
-                    fig, ax = analyzer.display_data(data, return_dict=return_dict, title=os.path.basename(filename))
-            
-                if write_analyzed:
-                    analysis_dir = self.get_scan_data_analysis_dir( make_dir=True )
-                    analyzer.write_analyzed_data( data, analysis_dir, scan, shot_num , context=context)
+                    analyzer.write_displayed_data(fig, analysis_dir, scan, shot_num)
 
-                    if write_lineouts:
-                        analyzer.write_analyzed_lineouts( lineouts, analysis_dir, scan, shot_num )
-            
-                    if display_data:
-                        analyzer.write_displayed_data( fig, analysis_dir, scan, shot_num )
+            if close_displayed and fig is not None:
+                plt.close(fig)
 
-                if close_displayed and display_data:
-                    plt.close( fig )
+        add_columns_df = pd.DataFrame(rows) if rows else None
 
-        if write_columns_to_sfile and len(self.data) > 0:
-            if analyzer.output_diagnostic is not None:
-                diag_str = analyzer.output_diagnostic
-            else:
-                diag_str = analyzer.diagnostic
-
-            analysis_dir = self.get_scan_data_analysis_dir( make_dir=True )
-            controls_path = os.path.join(analysis_dir, '%s analyzer_controls %s.txt' % (diag_str, analysis_label) )
+        if write_columns_to_sfile and add_columns_df is not None and len(self.data) > 0:
+            diag_str = analyzer.output_diagnostic if analyzer.output_diagnostic is not None \
+                else analyzer.diagnostic
+            if analysis_dir is None:
+                analysis_dir = self.get_scan_data_analysis_dir(make_dir=True)
+            controls_path = os.path.join(
+                analysis_dir, '%s analyzer_controls %s.txt' % (diag_str, analysis_label)
+            )
             write_controls_from_python(controls_path, analyzer.analyzer_dict)
 
-            self.merge_data_frame_to_sfile(add_columns_df, 
-                            diag_str,
-                            overwrite_columns=overwrite_columns, 
-                            analysis_label=analysis_label, 
-                                        )
+            self.merge_data_frame_to_sfile(
+                add_columns_df,
+                diag_str,
+                overwrite_columns=overwrite_columns,
+                analysis_label=analysis_label,
+            )
 
         return add_columns_df
     
     def get_scan_data_analysis_dir( self, make_dir=True ):
         return get_analysis_dir(self.top_dir, self.scan, make_dir=True)
+
+    def display_scan(self, displayer, *, save=False, suffix='', fig=None, ax=None, **kwargs):
+        """
+        Render a scan-level figure using a ``ScanDisplayer``.
+
+        Parameters
+        ----------
+        displayer : ScanDisplayer
+            Display object implementing ``display(scan, *, fig, ax)``.
+        save : bool, optional
+            If True, save the resulting figure via ``displayer.save``.
+        suffix : str, optional
+            Suffix appended to the saved filename.
+        fig, ax : optional
+            Existing matplotlib figure / axis to draw into.
+        **kwargs
+            Forwarded to ``displayer.display``.
+
+        Returns
+        -------
+        (fig, ax)
+        """
+        fig, ax = displayer.display(self, fig=fig, ax=ax, **kwargs)
+        if save:
+            displayer.save(fig, self, suffix=suffix)
+        return fig, ax
 
     def merge_data_frame_to_sfile(self, 
                                   add_columns_df, 
@@ -605,79 +743,99 @@ class ScanDataAnalyzer:
         merged_df.to_csv(self.sfilename, index=False, sep='\t')
         print(f'Columns added to {self.sfilename}')
 
-    def analyze_scan_data_mean_std(
-            self,
-            analyzer,
-            bg=None,
-            ignore_none=True,
-            ddof=0,
-        ):
+    def mean_std_diagnostic(self, analyzer, bg=None, ddof=0, *, show_progress=False):
         """
-        Analyze all shots in self.data and return the mean and standard deviation
-        of the `data` returned by analyzer.analyze_data.
+        Pixel-wise mean / std of analyzed data across all active shots.
 
         Parameters
         ----------
-        analyzer : object
-            Analyzer object with load_data and analyze_data methods.
-        bg : optional
-            Background data or parameters for the analysis.
+        analyzer : DiagnosticAnalyzer
+        bg : optional, forwarded to ``_iter_shots``.
         ddof : int, optional
-            Delta degrees of freedom for the standard deviation.
-            Use ddof=0 for population std, ddof=1 for sample std.
+            Delta degrees of freedom (0 = population std, 1 = sample std).
+        show_progress : bool, optional
+            Show a tqdm bar over shots.
 
         Returns
         -------
-        mean_data : np.ndarray
-            Pixelwise mean of analyzed data over all valid shots.
-        std_data : np.ndarray
-            Pixelwise standard deviation of analyzed data over all valid shots.
-
-        Notes
-        -----
-        - All returned `data` arrays must have the same shape.
-        - This function does not display data or write output files.
-        - This function ignores `return_dict` and `lineouts`; it is only for
-        aggregating the main analyzed `data`.
+        mean_data, std_data : np.ndarray or (None, None) if no shots produced data.
         """
-
-        data_list = []
-
-        for i in range(len(self.data)):
-            context = self.data.iloc[i].to_dict()
-
-            if analyzer.diagnostic is not None:
-                filename = context.get(f'{analyzer.diagnostic} file_list')
-                data = analyzer.load_data(filename)
-            else:
-                data = None
-
-            bg_i = self._resolve_bg_for_row(analyzer, bg, context)
-            data, return_dict, lineouts = analyzer.analyze_data(
-                data,
-                bg=bg_i,
-                context=context
+        arrs = [
+            np.asarray(d) for _, d, _, _ in self._iter_shots(
+                analyzer, bg=bg, show_progress=show_progress
             )
+            if d is not None
+        ]
+        if not arrs:
+            return None, None
 
-            if data is not None:
-                data_list.append(np.asarray(data))
-
-        if len(data_list) == 0:
-            raise ValueError("No valid analyzed data found in self.data")
-
-        first_shape = data_list[0].shape
-        for i, arr in enumerate(data_list):
+        first_shape = arrs[0].shape
+        for i, arr in enumerate(arrs):
             if arr.shape != first_shape:
                 raise ValueError(
                     f"Analyzed data shape mismatch: shot 0 has shape {first_shape}, "
                     f"but shot {i} has shape {arr.shape}"
                 )
 
-        data_stack = np.stack(data_list, axis=0)
-        mean_data = np.nanmean(data_stack, axis=0)
-        std_data = np.nanstd(data_stack, axis=0, ddof=ddof)
+        stack = np.stack(arrs, axis=0)
+        return np.nanmean(stack, axis=0), np.nanstd(stack, axis=0, ddof=ddof)
 
-        return mean_data, std_data
+    def aggregate_per_bin(self, analyzer, bg=None, bins=None, ddof=0):
+        """
+        Compute per-bin mean / std of analyzed data arrays.
+
+        Parameters
+        ----------
+        analyzer : DiagnosticAnalyzer
+        bg : optional, forwarded to ``mean_std_diagnostic``.
+        bins : iterable of int, optional
+            Bin numbers to include. Defaults to all unique values in
+            ``active_data['temp Bin number']``.
+        ddof : int, optional
+            Delta degrees of freedom for the std.
+
+        Returns
+        -------
+        bins : np.ndarray, shape (B,)
+            Bin numbers used.
+        mean_per_bin : np.ndarray, shape (B, *data_shape) or None
+            NaN-filled for bins that produced no data.
+        std_per_bin : np.ndarray, shape (B, *data_shape) or None
+
+        Notes
+        -----
+        Restores the scan's filter mask after running, regardless of error.
+        """
+        if bins is None:
+            bins = np.unique(self.active_data['temp Bin number'])
+        bins = np.asarray(list(bins))
+
+        mean_per_bin = [None] * len(bins)
+        std_per_bin = [None] * len(bins)
+        saved = self.save_mask()
+        data_shape = None
+
+        try:
+            for i, b in enumerate(bins):
+                self.restore_mask(saved)
+                self.filter_scan_data('temp Bin number', b - 0.1, b + 0.1)
+                mean_data, std_data = self.mean_std_diagnostic(analyzer, bg=bg, ddof=ddof)
+                if mean_data is None:
+                    continue
+                data_shape = mean_data.shape
+                mean_per_bin[i] = mean_data
+                std_per_bin[i] = std_data
+        finally:
+            self.restore_mask(saved)
+
+        if data_shape is None:
+            return bins, None, None
+
+        nan_fill = np.full(data_shape, np.nan)
+        mean_per_bin = [x if x is not None else nan_fill for x in mean_per_bin]
+        std_per_bin = [x if x is not None else nan_fill for x in std_per_bin]
+
+        return bins, np.asarray(mean_per_bin), np.asarray(std_per_bin)
 
     @staticmethod
     def _resolve_bg_for_row(analyzer, bg, context, debug_bg=False, debug_once=True):
@@ -760,18 +918,6 @@ class ScanDataAnalyzer:
             spread_df[spread_df.columns.difference(['temp Bin number'])] = 0
 
         return center_df, spread_df
-
-
-    @staticmethod
-    def append_to_add_columns_df(scan, shot, return_dict, add_columns_df):
-        data = {'scan': scan, 'Shotnumber': shot}
-        data.update(return_dict) 
-
-        if add_columns_df is None:
-            add_columns_df = pd.DataFrame([data])
-        else:
-            add_columns_df = pd.concat([add_columns_df, pd.DataFrame([data])], ignore_index=True)
-        return add_columns_df
 
     @staticmethod
     def parse_column_math_from_lv_controls(file_path):
