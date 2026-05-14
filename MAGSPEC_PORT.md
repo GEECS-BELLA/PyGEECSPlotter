@@ -18,13 +18,13 @@ field (read from the sfile), produce one stitched 2-D array with **energy
 
 ## Scope (phased)
 
-| phase | contents | PR |
-|---|---|---|
-| **0** | This planning doc; agree boundaries / open questions. | this one |
-| **1** | Calibration loaders + axis/geometry. Pure data-in → numbers-out, verifiable against matlab. New package `PyGEECSPlotter/magspec/`. | next |
-| **2** | Per-camera image processing — bg, rotate, ROI, low-pass, vignette, c2c, incident-angle compensation. | following |
-| **3** | Multi-camera stitch + B-field scaling. `MagSpecAnalyzer(MultiDiagnosticAnalyzer)`. Backwards-compatible outputs. | following |
-| **4** | ICT / phosphor / live-watcher. Later, not in this porting effort. | later |
+| phase | contents | PR | status |
+|---|---|---|---|
+| **0** | Planning doc; agree boundaries / open questions. | merged with Phase 1 | ✓ |
+| **1** | Calibration loaders + axis/geometry. New package `PyGEECSPlotter/magspec/`. | #11 | ✓ |
+| **2** | Per-camera image processing — bg, rotate, ROI, low-pass, vignette, c2c, incident-angle compensation. | this one | ✓ |
+| **3** | Multi-camera stitch + B-field scaling. `MagSpecAnalyzer(MultiDiagnosticAnalyzer)`. Backwards-compatible outputs. | next | — |
+| **4** | ICT / phosphor / live-watcher. Later, not in this porting effort. | later | — |
 
 ## Key design decisions
 
