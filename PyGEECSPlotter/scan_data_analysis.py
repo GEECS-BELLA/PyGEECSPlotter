@@ -961,7 +961,7 @@ class ScanDataAnalyzer:
         if mode not in valid_modes:
             raise ValueError(f"Invalid mode '{mode}'. Must be one of {valid_modes}.")
 
-        numeric_cols = self.data.select_dtypes(include=np.number)
+        numeric_cols = self.active_data.select_dtypes(include=np.number)
         grouped = numeric_cols.groupby('temp Bin number')
 
         if mode == 'mean':
