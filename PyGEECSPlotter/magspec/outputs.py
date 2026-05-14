@@ -43,7 +43,7 @@ def write_energy_spectrum_txt(
     window: UniformMomentumWindow,
     image_aC: np.ndarray,
     field_T: float,
-    fmt: str = '%.6g',
+    fmt: str = '%.8g',
 ) -> None:
     """
     Write the 1-D energy spectrum text file. 7 columns:
@@ -101,7 +101,7 @@ def write_angle_distribution_txt(
     path: str,
     uniform_angle: UniformAngleAxis,
     image_aC: np.ndarray,
-    fmt: str = '%.6g',
+    fmt: str = '%.8g',
 ) -> None:
     """
     Write the 1-D angular distribution text file. 3 columns:
