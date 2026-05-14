@@ -22,8 +22,8 @@ field (read from the sfile), produce one stitched 2-D array with **energy
 |---|---|---|---|
 | **0** | Planning doc; agree boundaries / open questions. | merged with Phase 1 | ✓ |
 | **1** | Calibration loaders + axis/geometry. New package `PyGEECSPlotter/magspec/`. | #11 | ✓ |
-| **2** | Per-camera image processing — bg, rotate, ROI, low-pass, vignette, c2c, incident-angle compensation. | this one | ✓ |
-| **3** | Multi-camera stitch + B-field scaling. `MagSpecAnalyzer(MultiDiagnosticAnalyzer)`. Backwards-compatible outputs. | next | — |
+| **2** | Per-camera image processing — bg, rotate, ROI, low-pass, vignette, c2c, incident-angle compensation. | #12 | ✓ |
+| **3** | Multi-camera stitch + B-field scaling. `MagSpecAnalyzer(MultiDiagnosticAnalyzer)`. Backwards-compatible outputs. | this one | ✓ |
 | **4** | ICT / phosphor / live-watcher. Later, not in this porting effort. | later | — |
 
 ## Key design decisions
