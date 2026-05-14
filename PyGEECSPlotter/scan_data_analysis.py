@@ -18,6 +18,7 @@ from tqdm import tqdm
 from PyGEECSPlotter.navigation_utils import *
 from PyGEECSPlotter.utils import parse_controls_from_python, write_controls_from_python
 from PyGEECSPlotter.binning import compute_bin_numbers
+from PyGEECSPlotter.multi_diagnostic_analyzer import MultiDiagnosticAnalyzer
 # from PyGEECSPlotter.navigation_utils import get_analysis_dir, get_analysis_diagnostic_path, open_directory_in_explorer, get_analysed_shot_save_path
 
 import PyGEECSPlotter.plotting as gplt
@@ -197,7 +198,7 @@ class ScanDataAnalyzer:
                 self.add_column_math(column_math_filename, parse_from=parse_from)
             
             if analyzer is not None:
-                self.add_file_list_to_scan_data(analyzer.diagnostic, analyzer.file_ext, remove_missing_diagnostic_files)
+                analyzer.register_with_scan(self, remove_missing_diagnostic_files)
             self.set_analysis_dir()
 
     def get_data_columns(self):
@@ -634,16 +635,23 @@ class ScanDataAnalyzer:
         if show_progress:
             it = tqdm(it, total=rows.shape[0])
 
+        is_multi = isinstance(analyzer, MultiDiagnosticAnalyzer)
+
         for _, row in it:
             context = row.to_dict()
 
-            if analyzer.diagnostic is not None:
+            if is_multi:
+                paths = {name: context.get(f'{name} file_list') for name, _ in analyzer.inputs}
+                data = analyzer.load_data(paths)
+                bg_i = self._resolve_bg_for_multi(analyzer, bg, context)
+            elif analyzer.diagnostic is not None:
                 filename = context.get(f'{analyzer.diagnostic} file_list')
                 data = analyzer.load_data(filename)
+                bg_i = self._resolve_bg_for_row(analyzer, bg, context)
             else:
                 data = None
+                bg_i = self._resolve_bg_for_row(analyzer, bg, context)
 
-            bg_i = self._resolve_bg_for_row(analyzer, bg, context)
             data, results, aux = analyzer.analyze_data(data, bg=bg_i, context=context)
 
             yield context, data, results, aux
@@ -907,6 +915,32 @@ class ScanDataAnalyzer:
         std_per_bin = [x if x is not None else nan_fill for x in std_per_bin]
 
         return bins, np.asarray(mean_per_bin), np.asarray(std_per_bin)
+
+    def _resolve_bg_for_multi(self, analyzer, bg, context):
+        """
+        Resolve the per-row background for a ``MultiDiagnosticAnalyzer``.
+
+        ``bg`` can be:
+          - ``None`` — returned as-is.
+          - a dict ``{diagnostic_name: bg_spec}`` — each ``bg_spec`` is
+            resolved through ``_resolve_bg_for_row`` using that input's
+            sub-analyzer as the loader. Entries without a registered
+            sub-analyzer are returned as-is (assumed pre-loaded).
+          - anything else — passed through; the multi analyzer's
+            ``analyze_data`` is responsible for interpreting it.
+        """
+        if bg is None or not isinstance(bg, dict):
+            return bg
+
+        out = {}
+        for name, _ in analyzer.inputs:
+            sub = analyzer.sub_analyzers.get(name)
+            sub_bg = bg.get(name)
+            if sub is None:
+                out[name] = sub_bg
+            else:
+                out[name] = self._resolve_bg_for_row(sub, sub_bg, context)
+        return out
 
     @staticmethod
     def _resolve_bg_for_row(analyzer, bg, context, debug_bg=False, debug_once=True):

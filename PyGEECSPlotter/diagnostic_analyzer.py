@@ -103,3 +103,20 @@ class DiagnosticAnalyzer:
         raise NotImplementedError(
             f"{type(self).__name__} must implement write_analyzed_data(...)."
         )
+
+    # ------------------------------------------------------------------
+    # Scan-level integration
+    # ------------------------------------------------------------------
+    def register_with_scan(self, scan, remove_missing_files=True):
+        """
+        Add the ``<diagnostic> file_list`` / ``<diagnostic> file_exists``
+        columns this analyzer expects to ``scan.data``.
+
+        Default implementation registers a single ``(diagnostic, file_ext)``
+        pair. ``MultiDiagnosticAnalyzer`` overrides this to iterate over its
+        declared inputs. Subclasses with no diagnostic (e.g.
+        ``ColumnMathAnalyzer``) become a no-op automatically.
+        """
+        if self.diagnostic is None or self.file_ext is None:
+            return
+        scan.add_file_list_to_scan_data(self.diagnostic, self.file_ext, remove_missing_files)
