@@ -27,8 +27,11 @@ from PyGEECSPlotter.magspec.calibrations import CameraCalibration
 # Primitives
 # ----------------------------------------------------------------------
 def count_saturated_pixels(image: np.ndarray, threshold: int = 4095) -> int:
-    """Count pixels at or above the saturation threshold (default 4095 for 12-bit)."""
-    return int(np.count_nonzero(image >= threshold))
+    """
+    Count pixels equal to the saturation threshold (default 4095 for 12-bit).
+    Matches matlab ``sum(sum(imgR == 4095))`` from ``fBellaImgV02``.
+    """
+    return int(np.count_nonzero(image == threshold))
 
 
 def subtract_background_iterative(
