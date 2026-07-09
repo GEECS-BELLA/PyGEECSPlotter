@@ -9,6 +9,7 @@ concrete class either directly from its module or from this package:
         ScalarVsParameter,
         CorrelationHeatmap,
         MeanImagePerBin,
+        SampledImages,
         MultiDiagnosticAlignment,
     )
 """
@@ -17,6 +18,7 @@ from PyGEECSPlotter.displayers.scan_displayer import ScanDisplayer
 from PyGEECSPlotter.displayers.scalar_vs_parameter import ScalarVsParameter
 from PyGEECSPlotter.displayers.correlation_heatmap import CorrelationHeatmap
 from PyGEECSPlotter.displayers.mean_image_per_bin import MeanImagePerBin
+from PyGEECSPlotter.displayers.sampled_images import SampledImages
 from PyGEECSPlotter.displayers.multi_diagnostic_alignment import MultiDiagnosticAlignment
 
 __all__ = [
@@ -24,5 +26,6 @@ __all__ = [
     "ScalarVsParameter",
     "CorrelationHeatmap",
     "MeanImagePerBin",
+    "SampledImages",
     "MultiDiagnosticAlignment",
 ]
