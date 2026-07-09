@@ -598,12 +598,12 @@ class ScanDataAnalyzer:
             print(f"An error occurred while retrieving the background file path: {e}")
             return None
 
-    def _iter_shots(self, analyzer, bg=None, show_progress=True):
+    def _iter_shots(self, analyzer, bg=None, show_progress=True, rows=None):
         """
-        Yield ``(context, data, results, aux)`` for each active shot.
+        Yield ``(context, data, results, aux)`` for each shot.
 
         Centralizes the per-shot iteration shell:
-          1) iterate ``active_data``
+          1) iterate the rows (``active_data`` by default)
           2) load the diagnostic file (if any)
           3) resolve the per-row background
           4) call ``analyzer.analyze_data``
@@ -618,6 +618,10 @@ class ScanDataAnalyzer:
             Background spec passed through ``_resolve_bg_for_row``.
         show_progress : bool, optional
             Wrap iteration in a tqdm progress bar.
+        rows : DataFrame, optional
+            Subset of rows to iterate, typically a slice/sample of
+            ``active_data``. Defaults to the full ``active_data``. Lets
+            callers process only selected shots without loading the rest.
 
         Yields
         ------
@@ -630,7 +634,8 @@ class ScanDataAnalyzer:
         aux : dict
             Auxiliary outputs (lineouts, etc.).
         """
-        rows = self.active_data
+        if rows is None:
+            rows = self.active_data
         it = rows.iterrows()
         if show_progress:
             it = tqdm(it, total=rows.shape[0])
