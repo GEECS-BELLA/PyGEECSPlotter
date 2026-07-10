@@ -27,7 +27,7 @@ def update_masterlog(masterlog_data, scan_data):
     merged = masterlog_data.merge(
         scan_data,
         on=['scan', 'Shotnumber'],
-        how='left',
+        how='outer',
         suffixes=('', '_update')
     )
 
