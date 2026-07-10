@@ -67,8 +67,9 @@ def update_masterlog_with_sfiles(top_dir, columns="all", masterlog_name=None):
             columns.append('Shotnumber')
 
     all_sfiles = generate_sfilename_list_from_scans_dir(top_dir)
+    if not all_sfiles:
+        raise FileNotFoundError(f"No sfiles found under {os.path.join(top_dir, 'scans')}")
     _, year, month, day = get_top_dir_from_sfilename(all_sfiles[0])
-
     if masterlog_name is None:
         masterlog_name = f"{str(year)[-2:]}_{month:02d}{day:02d}masterlog-t.txt"
 
