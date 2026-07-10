@@ -612,7 +612,7 @@ class ScanDataAnalyzer:
         analysis_dir = None
 
         for context, data, results, aux in self._iter_shots(analyzer, bg=bg):
-            scan, shot_num = context['scan'], context['Shotnumber']
+            scan, shot_num = int(context['scan']), int(context['Shotnumber'])
             rows.append({'scan': scan, 'Shotnumber': shot_num, **results})
 
             if data is None:
