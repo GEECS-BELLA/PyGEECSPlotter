@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.colors as mcolors
+import matplotlib.pyplot as plt
 
 def litos_grey():
     litos_grey = np.array([[0.250000, 0.250000, 0.250000, 1.0], 

@@ -111,3 +111,27 @@ def configure_plotting(fontsize=12, dpi=100, sf=1.0):
     return colors
 
 colors = configure_plotting(fontsize=12, dpi=100, sf=1.0)
+
+# Use this to format log colorbar ticks in matplotlib with mathtext (e.g., $10^{-2}$)
+# This is a workaround to CMU Sans Serif not having the "-" (U+2212) character that matplotlib
+# uses by default for the minus sign in mathtext.
+# We use the default '-' character instead, which is available in CMU Sans Serif.
+def log_mathtext_formatter(x, pos=None):
+    if x <= 0:
+        return ""
+    exponent = int(np.round(np.log10(x)))
+    if exponent == 0:
+        return r"$1$"
+    return rf"$10^{{{exponent}}}$"
+
+# Same as above function but insstead of display as 10^{x} display a decimal instead
+def log_decimal_formatter(x, pos=None):
+    """Format log tick values as plain decimals: 0.01, 0.1, 1, 10, 100."""
+    if x <= 0:
+        return ""
+    if x >= 1:
+        s = f"{x:g}"                      # 1, 10, 100
+    else:
+        decimals = max(0, -int(np.floor(np.log10(x))))
+        s = f"{x:.{decimals}f}"          # 0.1, 0.01, ...
+    return rf"${s}$"                      # mathtext-wrapped, no U+2212 issue
