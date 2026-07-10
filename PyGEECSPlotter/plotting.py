@@ -135,3 +135,9 @@ def log_decimal_formatter(x, pos=None):
         decimals = max(0, -int(np.floor(np.log10(x))))
         s = f"{x:.{decimals}f}"          # 0.1, 0.01, ...
     return rf"${s}$"                      # mathtext-wrapped, no U+2212 issue
+
+# Example usage for these formatters:
+"""
+from matplotlib.ticker import FuncFormatter
+fig.colorbar(img, cax=cax, label="Charge Density [pC/GeV]", format=FuncFormatter(plotting.log_decimal_formatter))
+"""
