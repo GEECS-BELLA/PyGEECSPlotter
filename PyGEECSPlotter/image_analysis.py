@@ -219,7 +219,7 @@ class ImageAnalyzer(DiagnosticAnalyzer):
         if return_dict is not None:
             extent = return_dict.get( 'imshow_extent', None )
         else:
-            extent = None
+            extent = display_dict.get('extent', None)
 
         im = ax.imshow(data,
                         aspect=display_dict.get('aspect', 'equal'),
