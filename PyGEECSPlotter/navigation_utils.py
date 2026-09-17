@@ -28,6 +28,19 @@ def get_top_dir(experiment_dir, year, month, day, print_data=False):
         print('Top Dir                  : %s' %top_dir)
         
     return top_dir
+
+def get_top_dir_list(experiment_dir, date_list, print_data=False):
+    top_dirs = []
+    for date in date_list:
+        top_dir = get_top_dir(
+            experiment_dir,
+            date.year,
+            date.month,
+            date.day,
+            print_data=print_data
+        )
+        top_dirs.append(top_dir)
+    return top_dirs
     
 def get_top_dir_from_sfilename(sfilename, print_data=False):
     date_part = re.search(r'(\d{2}_\d{4})', sfilename)
@@ -65,16 +78,30 @@ def get_sfilename_from_top_dir(top_dir, scan, print_data=False):
         
     return sfilename
 
-def generate_sfilename_list_from_scans_dir(top_dir, start_scan=0, end_scan=1e999):
+def generate_sfilename_list_from_scans_dir(top_dir, start_scan=0, end_scan=1e999, check_exists=True):
     """
     Generates a list of sfilename paths for all scans in the top_dir
-    between start_scan and end_scan, inclusive
+    between start_scan and end_scan, inclusive.
+    If check_exists is True, drops any sfilename that doesn't exist on disk.
     """
-    scans_list = glob.glob( os.path.join(top_dir, 'scans', 'Scan*') )
-    scans = [os.path.basename(scans_list[i]) for i in range(len(scans_list))]
+    scans_list = glob.glob(os.path.join(top_dir, 'scans', 'Scan*'))
+    scans = [os.path.basename(s) for s in scans_list]
     scan_numbers = [int(re.search(r'\d+', s).group()) for s in scans]
     scan_numbers = [scan for scan in scan_numbers if start_scan <= scan <= end_scan]
-    sfilename_list = [os.path.join(top_dir, 'analysis', f's{scan}.txt') for scan in scan_numbers]
+    sfilename_list = [os.path.join(top_dir, 'analysis', f's{scan}.txt')
+                      for scan in scan_numbers]
+
+    if check_exists:
+        analysis_dir = os.path.join(top_dir, 'analysis')
+        try:
+            existing = set(os.listdir(analysis_dir))
+        except FileNotFoundError:
+            existing = set()
+        sfilename_list = [
+            f for f in sfilename_list
+            if os.path.basename(f) in existing
+        ]
+
     return sfilename_list
 
 def get_todays_top_dir(experiment_dir):
@@ -169,12 +196,15 @@ def get_parameter_alias(parameter):
 
 def get_scan_parameter(top_dir, sfile_data):
     scan = sfile_data['scan'][0]
-    file_path = os.path.join(top_dir, 'scans', 'Scan%03d' % scan, 'ScanInfoScan%03d.ini' % scan)
-    with open(file_path, 'r') as f:
-        lines = f.readlines()
-    scan_parameter_full = scan_parameter_with_alias(lines[3].split('"')[1], sfile_data)
-    scan_parameter = get_parameter_alias(scan_parameter_full)
-    return scan_parameter, scan
+    if scan == 0:
+        return 'Shotnumber', 0
+    else:
+        file_path = os.path.join(top_dir, 'scans', 'Scan%03d' % scan, 'ScanInfoScan%03d.ini' % scan)
+        with open(file_path, 'r') as f:
+            lines = f.readlines()
+        scan_parameter_full = scan_parameter_with_alias(lines[3].split('"')[1], sfile_data)
+        scan_parameter = get_parameter_alias(scan_parameter_full)
+        return scan_parameter, scan
     
 def open_directory_in_explorer(path):
     """

@@ -669,6 +669,7 @@ class ScanDataAnalyzer:
         analysis_label='',
         write_analyzed=False,
         write_lineouts=False,
+        write_displayed=False,
         close_displayed=True,
         ):
         """
@@ -715,8 +716,10 @@ class ScanDataAnalyzer:
                 analyzer.write_analyzed_data(data, analysis_dir, scan, shot_num, context=context)
                 if write_lineouts:
                     analyzer.write_analyzed_lineouts(aux, analysis_dir, scan, shot_num)
-                if display_data:
-                    analyzer.write_displayed_data(fig, analysis_dir, scan, shot_num)
+            if display_data and write_displayed:
+                if analysis_dir is None:
+                    analysis_dir = self.get_scan_data_analysis_dir(make_dir=True)
+                analyzer.write_displayed_data(fig, analysis_dir, scan, shot_num)
 
             if close_displayed and fig is not None:
                 plt.close(fig)
