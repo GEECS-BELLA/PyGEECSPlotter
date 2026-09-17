@@ -13,6 +13,8 @@ concrete class either directly from its module or from this package:
         SampledImages,
         RepresentativeImagePerBin,
         MultiDiagnosticAlignment,
+        TraceWaterfall,
+        TraceMeanPerBin,
     )
 
 Image-grid family
@@ -22,6 +24,15 @@ Image-grid family
 each bin; ``ShotSelectionGrid`` subclasses pick one real shot per panel —
 ``SampledImages`` (evenly spaced across the scan) and
 ``RepresentativeImagePerBin`` (first / last / max / min per bin).
+
+Trace family
+------------
+The 1-D counterparts, for analyzers whose per-shot output is a dict of
+trace DataFrames rather than an image (e.g. ``FrogAnalyzer``).
+``TraceWaterfall`` stacks every shot's trace into one image to show drift
+across a scan; ``TraceMeanPerBin`` is the 1-D analogue of
+``MeanImagePerBin``. Both need the shots on a common axis, so give the
+analyzer a resampling grid.
 """
 
 from PyGEECSPlotter.displayers.scan_displayer import ScanDisplayer
@@ -33,6 +44,8 @@ from PyGEECSPlotter.displayers.mean_image_per_bin import MeanImagePerBin
 from PyGEECSPlotter.displayers.sampled_images import SampledImages
 from PyGEECSPlotter.displayers.representative_image_per_bin import RepresentativeImagePerBin
 from PyGEECSPlotter.displayers.multi_diagnostic_alignment import MultiDiagnosticAlignment
+from PyGEECSPlotter.displayers.trace_waterfall import TraceWaterfall
+from PyGEECSPlotter.displayers.trace_mean_per_bin import TraceMeanPerBin
 
 __all__ = [
     "ScanDisplayer",
@@ -44,4 +57,6 @@ __all__ = [
     "SampledImages",
     "RepresentativeImagePerBin",
     "MultiDiagnosticAlignment",
+    "TraceWaterfall",
+    "TraceMeanPerBin",
 ]
