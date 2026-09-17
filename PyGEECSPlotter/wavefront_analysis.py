@@ -13,9 +13,7 @@ import warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning, message="Mean of empty slice")
 
 import sys, os
-sys.path.append(r'N:\Software\Installs and Manuals\Imagine Optic\wavekit_dlls')
-import wavekit_py as wkpy
-import time 
+import time
 import ctypes
 
 import PyGEECSPlotter.ni_imread as ni_imread
@@ -23,6 +21,36 @@ from PyGEECSPlotter.navigation_utils import get_analysed_shot_save_path
 
 
 from PyGEECSPlotter.image_analysis import ImageAnalyzer
+
+# The Imagine Optic WaveKit SDK lives on the shared drive and is only needed
+# when wavefront data is actually analysed. Import it lazily so this module
+# stays importable on machines without the drive mapped. Override the location
+# with the PYGEECS_WAVEKIT_PATH environment variable.
+DEFAULT_WAVEKIT_PATH = r'N:\Software\Installs and Manuals\Imagine Optic\wavekit_dlls'
+
+wkpy = None
+
+def load_wavekit():
+    """Import wavekit_py on first use and cache it in the module global."""
+    global wkpy
+    if wkpy is not None:
+        return wkpy
+
+    sdk_path = os.environ.get('PYGEECS_WAVEKIT_PATH', DEFAULT_WAVEKIT_PATH)
+    if sdk_path and sdk_path not in sys.path:
+        sys.path.append(sdk_path)
+
+    try:
+        import wavekit_py
+    except ImportError as e:
+        raise ImportError(
+            'Could not import wavekit_py (the Imagine Optic WaveKit SDK), '
+            f'looked in {sdk_path!r}. Set PYGEECS_WAVEKIT_PATH to the '
+            'wavekit_dlls directory if it lives elsewhere.'
+        ) from e
+
+    wkpy = wavekit_py
+    return wkpy
 
 class WavefrontAnalyzer(ImageAnalyzer):
     """
@@ -40,7 +68,6 @@ class WavefrontAnalyzer(ImageAnalyzer):
         output_diagnostic: Optional[str] = None,
         output_file_ext: Optional[str] = None,
         # >>> wavefront-specific params
-        *,
         config_file_path: Optional[str] = None,
         set_pupil_manually=True,
         start_subpupil: Tuple[int, int] = (20, 20),
@@ -74,22 +101,28 @@ class WavefrontAnalyzer(ImageAnalyzer):
         self.pupil_dict = None
 
         if config_file_path is not None:
-            self.hasoengine = wkpy.HasoEngine(config_file_path=config_file_path)
+            wk = load_wavekit()
+            self.hasoengine = wk.HasoEngine(config_file_path=config_file_path)
             self.hasoengine.set_preferences(
-                wkpy.uint2D(*start_subpupil),
+                wk.uint2D(*start_subpupil),
                 denoising_strength,
                 False,
             )
 
             # Set lift option
             if self.lift_on:
-                self.hasoengine.set_lift_option(self.lift_on, self.analyzer_dict['probe_wl']*1e9)
+                probe_wl = (self.analyzer_dict or {}).get('probe_wl', None)
+                if probe_wl is None:
+                    raise ValueError(
+                        "lift_on=True requires 'probe_wl' (in metres) in analyzer_dict."
+                    )
+                self.hasoengine.set_lift_option(self.lift_on, probe_wl*1e9)
 
-            self.compute_phase_set_zernike = wkpy.ComputePhaseSet(
-                type_phase=wkpy.E_COMPUTEPHASESET.MODAL_ZERNIKE
+            self.compute_phase_set_zernike = wk.ComputePhaseSet(
+                type_phase=wk.E_COMPUTEPHASESET.MODAL_ZERNIKE
             )
-            self.compute_phase_set_zonal = wkpy.ComputePhaseSet(
-                type_phase=wkpy.E_COMPUTEPHASESET.ZONAL
+            self.compute_phase_set_zonal = wk.ComputePhaseSet(
+                type_phase=wk.E_COMPUTEPHASESET.ZONAL
             )
             # Tweak as in your original
             self.compute_phase_set_zonal.set_zonal_prefs(self.zonal_prefs[0], self.zonal_prefs[1], self.zonal_prefs[2])
@@ -104,15 +137,16 @@ class WavefrontAnalyzer(ImageAnalyzer):
 
         file_ext = os.path.splitext(filename)[-1]
         if 'himg' in file_ext:
+            wk = load_wavekit()
             try:
-                image = wkpy.Image(image_file_path=filename)
+                image = wk.Image(image_file_path=filename)
                 hasoslopes = self.hasoengine.compute_slopes(image, False)[1]
                 return hasoslopes
             except Exception as e:
                 print(f"Failed to compute slopes for {filename}: {e}")
                 return None
         elif 'has' in file_ext:
-            return wkpy.HasoSlopes(has_file_path = filename)
+            return load_wavekit().HasoSlopes(has_file_path = filename)
         elif 'png' in file_ext:
             data = ni_imread.read_imaq_image('%s' % filename)
 
@@ -130,45 +164,44 @@ class WavefrontAnalyzer(ImageAnalyzer):
     def load_raw_data(self, filename):
         file_ext = os.path.splitext(filename)[-1]
         if 'himg' in file_ext:
-            image = wkpy.Image(image_file_path = filename)
+            image = load_wavekit().Image(image_file_path = filename)
             return image.get_data()
         else:
             return None
 
 
-    def analyze_data(self, data, analyzer_dict=None, row_dict={}, bg=None):
+    def analyze_data(self, data, bg=None, context=None, analyzer_dict=None):
         if analyzer_dict is None:
-            analyzer_dict = self.analyzer_dict
+            analyzer_dict = self.analyzer_dict or {}
 
         if data is None:
             print("Warning: analyze_data() called with None input — skipping analysis.")
             return None, {}, {}
 
         if 'himg' in self.file_ext or 'has' in self.file_ext:
+            wk = load_wavekit()
             if bg is not None:
-                slopes = wkpy.SlopesPostProcessor.apply_substractor(data, bg)
-            else: 
+                slopes = wk.SlopesPostProcessor.apply_substractor(data, bg)
+            else:
                 slopes = data
-            
-            hasodata = wkpy.HasoData(hasoslopes=slopes)
-            phase = wkpy.Compute.phase_zonal(compute_phase_set=self.compute_phase_set_zonal, hasodata=hasodata)
+
+            hasodata = wk.HasoData(hasoslopes=slopes)
+            phase = wk.Compute.phase_zonal(compute_phase_set=self.compute_phase_set_zonal, hasodata=hasodata)
             data, pupil = phase.get_data()
 
             results = self.compute_phase_shifts(data, shifts_when='')
-            
+
 
 
         else:
+            # copy rather than subtract in place: bg is shared across shots
+            data = np.array(data, dtype=float)
+
             if analyzer_dict.get('bg_file', False) and bg is not None:
-                data -= bg
+                data = data - bg
 
             if analyzer_dict.get('set_max_to_nan', True):
                 data[data == np.nanmax(data)] = np.nan
-
-            if analyzer_dict.get('filter_tilts_and_curv', False):
-                fitted_tilt_curv = self.fit_2d_polynomial(data, 
-                                                        roi_bounds=analyzer_dict.get('tilts_and_curv_roi', None), 
-                                                        exclude_nan=True)
 
             results = self.compute_phase_shifts(data, shifts_when='')
 
@@ -192,16 +225,18 @@ class WavefrontAnalyzer(ImageAnalyzer):
             print("No valid slopes found. Returning None.")
             return None
 
+        wk = load_wavekit()
+
         # Initialize average with the first valid slope
         avg_slopes = slopes_list[0]
 
         # Add the rest
         for slopes in slopes_list[1:]:
-            avg_slopes = wkpy.SlopesPostProcessor.apply_adder(avg_slopes, slopes)
+            avg_slopes = wk.SlopesPostProcessor.apply_adder(avg_slopes, slopes)
 
         # Scale by the number of valid slopes
         n_valid = len(slopes_list)
-        avg_slopes = wkpy.SlopesPostProcessor.apply_scaler(avg_slopes, 1 / n_valid)
+        avg_slopes = wk.SlopesPostProcessor.apply_scaler(avg_slopes, 1 / n_valid)
 
         return avg_slopes
 
@@ -210,40 +245,47 @@ class WavefrontAnalyzer(ImageAnalyzer):
         file_list = list(scan_data.data[f'{self.diagnostic} file_list'])
         return self.average_file_list(file_list)
     
-    def write_analyzed_data(self, bin_filepath, data, nan_value=0):
-        #### THIS NEEDS TO BE FIXED!!! NOT STABLE !!!
+    def write_analyzed_data(self, data, analysis_dir, scan, shot_num, context=None, nan_value=0):
         """
-        Write a 2D NumPy array to a binary PNG image and create a scaling information text file.
-        
-        Parameters:
-        - bin_filepath (str): The base file path for the PNG image and scaling text file.
-        - data (numpy.ndarray): The input 2D array to be saved.
-        - nan_value (float, optional): The scalar value to replace NaN values with. Default is 0.
-        
-        Returns:
-        - None
-        
-        The function scales the input data to fit within a 16-bit range (0-65535) and saves it as a binary PNG image. 
-        The scaling factors (min and max) used for scaling are saved in a text file with the same name.
+        Write one analyzed shot as three files sharing a base name:
+
+        - ``.npy``  the float phase map, unscaled (lossless)
+        - ``.png``  the same data rescaled to 16-bit, for quick viewing
+        - ``.txt``  the min/max used for that rescaling
+
+        The ``.png`` + ``.txt`` pair is what ``load_data``'s png branch reads
+        back, so the three stay in step.
         """
-        
-        np.save(bin_filepath + '.npy', data, allow_pickle=True)
+        save_path = get_analysed_shot_save_path(
+            analysis_dir,
+            self.output_diagnostic or self.diagnostic,
+            scan,
+            shot_num,
+            '',
+        )
+
+        np.save(save_path + '.npy', data, allow_pickle=True)
 
         # Replace NaN values with the specified scalar
         data = np.nan_to_num(data, nan=nan_value)
-    
-        # Calculate the scaling factors
-        data_int = (65535 * ((data - np.min(data)) / np.ptp(data))).astype(np.uint16)
-    
+
+        # Scale to the full 16-bit range; a flat frame has nothing to scale
+        data_min, data_max = np.min(data), np.max(data)
+        span = data_max - data_min
+        if span > 0:
+            data_int = (65535 * ((data - data_min) / span)).astype(np.uint16)
+        else:
+            data_int = np.zeros_like(data, dtype=np.uint16)
+
         # Create scaling information lines
-        lines = ['[Scaling]', 'min = %f' % np.min(data), 'max = %f' % np.max(data)]
-    
+        lines = ['[Scaling]', 'min = %f' % data_min, 'max = %f' % data_max]
+
         # Write scaling information to a text file
-        with open(bin_filepath + '.txt', 'w') as f:
+        with open(save_path + '.txt', 'w') as f:
             f.write('\n'.join(lines))
-    
+
         # Save the scaled data as a binary PNG image
-        imio.imwrite(bin_filepath + '.png', data_int)
+        imio.imwrite(save_path + '.png', data_int)
 
 
 
@@ -273,7 +315,7 @@ class WavefrontAnalyzer(ImageAnalyzer):
     @staticmethod
     def subtract_slopes_reference(data, bg=None):
         try:
-            return wkpy.SlopesPostProcessor.apply_substractor(data, bg) if bg is not None else data
+            return load_wavekit().SlopesPostProcessor.apply_substractor(data, bg) if bg is not None else data
         except Exception:
             return None
 
@@ -311,23 +353,25 @@ class WavefrontAnalyzer(ImageAnalyzer):
                                nan_to_zero=False
                               ):
         
-        modal_coef = wkpy.ModalCoef(modal_type = wkpy.E_MODAL.ZERNIKE)
+        wk = load_wavekit()
+
+        modal_coef = wk.ModalCoef(modal_type = wk.E_MODAL.ZERNIKE)
         modal_coef.set_zernike_prefs(
-            wkpy.E_ZERNIKE_NORM.STD,
+            wk.E_ZERNIKE_NORM.STD,
             nb_modes,
             coefs_to_filter,
-            wkpy.ZernikePupil_t(
+            wk.ZernikePupil_t(
                 pupil_center,
                 pupil_radius
                 ),
         )
 
-        wkpy.Compute.coef_from_hasodata(self.compute_phase_set_zernike, hasodata, modal_coef)
+        wk.Compute.coef_from_hasodata(self.compute_phase_set_zernike, hasodata, modal_coef)
 
         size = modal_coef.get_dim()
         data_coeffs, data_indexes, pupil = modal_coef.get_data()
 
-        phase = wkpy.Phase(
+        phase = wk.Phase(
                 hasoslopes=hasoslopes,  # Pass the HasoSlopes object
                 type_=2,                # Set type_ to 2 for Zernike reconstruction
                 filter_=phasemap_aberration_filter,        # Aberration filter list
@@ -336,8 +380,6 @@ class WavefrontAnalyzer(ImageAnalyzer):
         data, pupil = phase.get_data()
         if nan_to_zero:
             data[np.isnan(data)] = 0.0
-
-        zernike_dict = {f'zernike_{index}': coeff for index, coeff in zip(data_indexes, data_coeffs)}
 
         names = ['tilt_0', 'tilt_90', 'focus', 'astig_0', 'astig_45', 'coma_0', 'coma_90', 'spherical', 'trefoil_0', 'trefoil_90',
                 '5th_astig_0', '5th_astig_45', '5th_coma_0', '5th_coma_90', '5th_spherical', 'tetrafoil_0', 'tetrafoil_45']
@@ -354,7 +396,7 @@ class WavefrontAnalyzer(ImageAnalyzer):
 
     def zonal_reconstruction(self, hasodata, phasemap_aberration_filter=[1, 1, 1], nan_to_zero=False):
         self.compute_phase_set_zonal.set_zonal_filter(phasemap_aberration_filter)
-        phase = wkpy.Compute.phase_zonal(compute_phase_set=self.compute_phase_set_zonal, hasodata=hasodata)
+        phase = load_wavekit().Compute.phase_zonal(compute_phase_set=self.compute_phase_set_zonal, hasodata=hasodata)
         data, pupil = phase.get_data()
         if nan_to_zero:
             data[np.isnan(data)] = 0.0
@@ -368,14 +410,16 @@ class WavefrontAnalyzer(ImageAnalyzer):
     
     @staticmethod
     def get_pupil(hasoslopes=None, pupil=None):
+        wk = load_wavekit()
+
         if pupil is None:
             if hasoslopes is None:
                 return None, None
-            pupil = wkpy.Pupil(hasoslopes = hasoslopes)
-        center, radius = wkpy.ComputePupil.fit_zernike_pupil(
+            pupil = wk.Pupil(hasoslopes = hasoslopes)
+        center, radius = wk.ComputePupil.fit_zernike_pupil(
             pupil,
-            wkpy.E_PUPIL_DETECTION.AUTOMATIC,
-            wkpy.E_PUPIL_COVERING.INSCRIBED,
+            wk.E_PUPIL_DETECTION.AUTOMATIC,
+            wk.E_PUPIL_COVERING.INSCRIBED,
             False)
 
         pupil_dict = {
