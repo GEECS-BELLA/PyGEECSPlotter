@@ -210,3 +210,8 @@ def get_analysed_shot_save_path(analysis_dir, analysis_diagnostic, scan, shot_nu
         os.makedirs(dir_path)
     
     return save_path
+
+def get_shot_num(path):
+    filename = os.path.basename(path)
+    match = re.search(r'(\d+)\.png', filename)
+    return int(match.group(1)) if match else -1
