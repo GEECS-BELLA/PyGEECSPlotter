@@ -70,6 +70,7 @@ class ScanDataAnalyzer:
 
         self.scan_title = self.scan_data_title()
         self._mask = None
+        self.last_merged_columns = []
 
     def _init_from_sfilename(self):
         top_dir, year, month, day = get_top_dir_from_sfilename(self.sfilename)
@@ -667,6 +668,7 @@ class ScanDataAnalyzer:
         write_columns_to_sfile=False,
         overwrite_columns=True,
         analysis_label='',
+        extra_info_str='',
         write_analyzed=False,
         write_lineouts=False,
         write_displayed=False,
@@ -677,8 +679,11 @@ class ScanDataAnalyzer:
 
         Iteration is delegated to ``_iter_shots``. This method applies the
         optional per-shot side effects (display, write_analyzed,
-        write_lineouts, write_displayed), accumulates scalar results, and
-        optionally merges them back into the sfile.
+        write_lineouts, write_displayed), accumulates scalar results, merges
+        them into ``self.data`` so they're immediately plottable, and
+        optionally writes them back to the sfile (plus a standalone summary
+        file, so the columns can be re-merged later without rerunning the
+        analysis).
 
         Parameters
         ----------
@@ -688,11 +693,27 @@ class ScanDataAnalyzer:
             ``write_analyzed_lineouts`` / ``write_displayed_data``.
         bg : optional
             Background spec; see ``_resolve_bg_for_row``.
+        write_columns_to_sfile : bool, optional
+            If True, overwrite ``self.sfilename`` with the new columns merged
+            in, and write a standalone summary file
+            (``Scan{scan:03d}_{diagnostic}_{extra_info_str}Summary.txt``)
+            under the scan's analysis dir. The columns are merged into
+            ``self.data`` either way, so this only controls whether anything
+            on disk is touched.
+        extra_info_str : str, optional
+            Extra tag inserted into the summary filename (and appended to the
+            merged sfile column names, same as ``analysis_label``).
 
         Returns
         -------
         add_columns_df : DataFrame or None
+            The raw (unrenamed) per-shot results, one row per shot. May
+            contain non-scalar columns (e.g. an image analyzer's
+            ``imshow_extent`` array) that are dropped before merging into
+            ``self.data`` — see ``last_merged_columns`` for the columns that
+            actually landed on ``active_data``.
         """
+        self.last_merged_columns = []
         rows = []
         analysis_dir = None
 
@@ -726,29 +747,73 @@ class ScanDataAnalyzer:
 
         add_columns_df = pd.DataFrame(rows) if rows else None
 
-        if write_columns_to_sfile and add_columns_df is not None and len(self.data) > 0:
+        if add_columns_df is not None and len(self.data) > 0:
             diag_str = analyzer.output_diagnostic if analyzer.output_diagnostic is not None \
                 else analyzer.diagnostic
-            if analysis_dir is None:
-                analysis_dir = self.get_scan_data_analysis_dir(make_dir=True)
-            controls_path = os.path.join(
-                analysis_dir, '%s analyzer_controls %s.txt' % (diag_str, analysis_label)
-            )
-            write_controls_from_python(controls_path, analyzer.analyzer_dict)
 
-            self.merge_data_frame_to_sfile(
-                add_columns_df,
-                diag_str,
-                overwrite_columns=overwrite_columns,
-                analysis_label=analysis_label,
-            )
+            # Merge into self.data unconditionally, so the new columns are on
+            # active_data and plottable immediately — whether or not anything
+            # is written to disk.
+            renamed_df = self._rename_add_columns(add_columns_df, diag_str, extra_info_str)
+            self.last_merged_columns = [
+                c for c in renamed_df.columns if c not in ('scan', 'Shotnumber')
+            ]
+            self.data = self.data.drop(
+                columns=[c for c in renamed_df.columns
+                         if c in self.data.columns and c not in ('scan', 'Shotnumber')]
+            ).merge(renamed_df, on=['scan', 'Shotnumber'], how='left')
+
+            if write_columns_to_sfile:
+                if analysis_dir is None:
+                    analysis_dir = self.get_scan_data_analysis_dir(make_dir=True)
+                controls_path = os.path.join(
+                    analysis_dir, '%s analyzer_controls %s.txt' % (diag_str, analysis_label)
+                )
+                write_controls_from_python(controls_path, analyzer.analyzer_dict)
+
+                self.merge_data_frame_to_sfile(
+                    add_columns_df,
+                    diag_str,
+                    overwrite_columns=overwrite_columns,
+                    analysis_label=analysis_label,
+                )
+
+                summary_path = os.path.join(
+                    analysis_dir,
+                    f"Scan{int(self.scan):03d}_{diag_str}_{extra_info_str}Summary.txt",
+                )
+                add_columns_df.to_csv(summary_path, index=False, sep='\t')
 
         return add_columns_df
+
+    @staticmethod
+    def _rename_add_columns(add_columns_df, diagnostic, analysis_label):
+        """
+        Prefix per-shot result columns with the diagnostic (and optional
+        label), the same renaming ``merge_data_frame_to_sfile`` applies —
+        shared so ``self.data`` and the sfile end up with identical names.
+        ``scan`` / ``Shotnumber`` are left untouched.
+        """
+        add_columns_df = add_columns_df.select_dtypes(include=[np.number, 'float64', 'int64', 'bool'])
+        if not diagnostic and not analysis_label:
+            return add_columns_df
+
+        def rename_columns(col):
+            if col in ('scan', 'Shotnumber'):
+                return col
+            new_col = col
+            if diagnostic:
+                new_col = f"{diagnostic} {new_col}"
+            if analysis_label:
+                new_col = f"{new_col} {analysis_label}"
+            return new_col
+
+        return add_columns_df.rename(columns=rename_columns)
     
     def get_scan_data_analysis_dir( self, make_dir=True ):
         return get_analysis_dir(self.top_dir, self.scan, make_dir=True)
 
-    def display_scan(self, displayer, save=False, suffix='', fig=None, ax=None, **kwargs):
+    def display_scan(self, displayer, save=False, export=False, suffix='', fig=None, ax=None, **kwargs):
         """
         Render a scan-level figure using a ``ScanDisplayer``.
 
@@ -758,6 +823,9 @@ class ScanDataAnalyzer:
             Display object implementing ``display(scan, *, fig, ax)``.
         save : bool, optional
             If True, save the resulting figure via ``displayer.save``.
+        export : bool, optional
+            If True, write the arrays behind the plot via ``displayer.export``
+            (an ``.npz`` alongside the saved figure).
         suffix : str, optional
             Suffix appended to the saved filename.
         fig, ax : optional
@@ -772,6 +840,8 @@ class ScanDataAnalyzer:
         fig, ax = displayer.display(self, fig=fig, ax=ax, **kwargs)
         if save:
             displayer.save(fig, self, suffix=suffix)
+        if export:
+            displayer.export(self, suffix=suffix)
         return fig, ax
 
     def merge_data_frame_to_sfile(self, 

@@ -53,6 +53,13 @@ class ScalarVsParameter(ScanDisplayer):
             label='shots',
         )
 
+        self.last_export = {
+            'x': df[x_col].to_numpy(),
+            'y': df[self.y_col].to_numpy(),
+            'x_col': x_col,
+            'y_col': self.y_col,
+        }
+
         if self.bin_summary != 'none':
             center, spread = scan.compute_bin_summary(mode=self.bin_summary)
             if x_col in center.columns and self.y_col in center.columns:
@@ -66,6 +73,11 @@ class ScalarVsParameter(ScanDisplayer):
                     label=f'per-bin {self.bin_summary}',
                 )
                 ax.legend()
+                self.last_export.update({
+                    'x_bin': center[x_col].to_numpy(),
+                    'y_bin': center[self.y_col].to_numpy(),
+                    'y_bin_err': spread[self.y_col].to_numpy(),
+                })
 
         ax.set_xlabel(self.display_dict.get('xlabel', x_col))
         ax.set_ylabel(self.display_dict.get('ylabel', self.y_col))

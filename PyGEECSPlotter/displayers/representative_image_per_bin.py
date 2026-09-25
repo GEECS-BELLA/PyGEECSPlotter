@@ -103,19 +103,34 @@ class RepresentativeImagePerBin(ShotSelectionGrid):
             return int(in_bin[np.nanargmax(values)])
         return int(in_bin[np.nanargmin(values)])
 
+    def _short_param(self) -> str:
+        """
+        ``self.parameter`` with the diagnostic's own prefix stripped, if
+        present — it's usually a column ``analyze_scan`` produced (e.g.
+        ``'CAM-PL1-LPMode max_counts'``), and repeating the full diagnostic
+        name in every panel title/suptitle just doubles it up and overflows
+        narrow grid panels.
+        """
+        diag = self.analyzer.output_diagnostic or self.analyzer.diagnostic
+        prefix = f'{diag} '
+        if self.parameter.startswith(prefix):
+            return self.parameter[len(prefix):]
+        return self.parameter
+
     def _label(self, active, b, pos: int) -> str:
         base = f'Bin {int(b)}'
         if self.mode in ('max', 'min'):
             val = active[self.parameter].iloc[pos]
+            param = self._short_param()
             try:
-                return f'{base} ({self.mode} {self.parameter}={float(val):.3g})'
+                return f'{base} ({self.mode} {param}={float(val):.3g})'
             except (TypeError, ValueError):
-                return f'{base} ({self.mode} {self.parameter}={val})'
+                return f'{base} ({self.mode} {param}={val})'
         return base
 
     def _suptitle(self, scan) -> str:
         diag = self.analyzer.output_diagnostic or self.analyzer.diagnostic
         detail = self.mode
         if self.mode in ('max', 'min'):
-            detail = f'{self.mode} {self.parameter}'
+            detail = f'{self.mode} {self._short_param()}'
         return scan.scan_data_title(f'{diag} {detail} per bin')

@@ -107,7 +107,28 @@ class ImageGridDisplayer(ScanDisplayer):
             axes.flat[k].set_visible(False)
 
         fig.suptitle(self._suptitle(scan))
+        self.last_export = self._build_export(panels)
         return fig, axes
+
+    def _build_export(self, panels):
+        """
+        Stack panel images into one array (labels alongside), so the grid
+        can be reloaded without recomputing anything. Panels are stacked as
+        a plain ``(n_panels, ...)`` array when every image shares one shape;
+        otherwise stored as an object array, one entry per panel.
+        """
+        labels = np.asarray([label for label, _, _ in panels], dtype=object)
+        images = [data for _, data, _ in panels]
+
+        shapes = {np.asarray(im).shape for im in images if im is not None}
+        if len(shapes) == 1 and len(images) == sum(im is not None for im in images):
+            stack = np.stack([np.asarray(im) for im in images], axis=0)
+        else:
+            stack = np.empty(len(images), dtype=object)
+            for k, im in enumerate(images):
+                stack[k] = None if im is None else np.asarray(im)
+
+        return {'labels': labels, 'images': stack}
 
     def _render_panel(self, fig, a, data, return_dict, label):
         """Draw one panel and apply the shared label/tick treatment."""
