@@ -19,6 +19,7 @@ concrete class either directly from its module or from this package:
         LineoutWaterfall,
         LineoutMeanPerBin,
         LineoutMeanWaterfall,
+        MagSpecAllEWaterfall,
     )
 
 Image-grid family
@@ -47,7 +48,9 @@ The same three views, but for analyzers whose per-shot output is a flat
 'y_lo': y_lo}``) rather than a dict of trace DataFrames. ``LineoutWaterfall``
 stacks one axis's lineout across every shot; ``LineoutMeanPerBin`` overlays
 several axes' mean lineouts per bin panel; ``LineoutMeanWaterfall`` stacks one
-axis's per-bin mean lineout as a waterfall.
+axis's per-bin mean lineout as a waterfall. ``MagSpecAllEWaterfall`` is a
+``LineoutWaterfall`` of ``MagSpecAllEAnalyzer``'s spectrum on its fixed
+momentum grid (``'p'`` / ``'p_lo'``), with physical labels and a log scale.
 """
 
 from PyGEECSPlotter.displayers.scan_displayer import ScanDisplayer
@@ -65,6 +68,7 @@ from PyGEECSPlotter.displayers.trace_mean_waterfall import TraceMeanWaterfall
 from PyGEECSPlotter.displayers.lineout_waterfall import LineoutWaterfall
 from PyGEECSPlotter.displayers.lineout_mean_per_bin import LineoutMeanPerBin
 from PyGEECSPlotter.displayers.lineout_mean_waterfall import LineoutMeanWaterfall
+from PyGEECSPlotter.displayers.magspec_alle_waterfall import MagSpecAllEWaterfall
 
 __all__ = [
     "ScanDisplayer",
@@ -82,4 +86,5 @@ __all__ = [
     "LineoutWaterfall",
     "LineoutMeanPerBin",
     "LineoutMeanWaterfall",
+    "MagSpecAllEWaterfall",
 ]
