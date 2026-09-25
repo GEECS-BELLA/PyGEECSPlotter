@@ -57,7 +57,7 @@ class ImageAnalyzer(DiagnosticAnalyzer):
             return None
         return ni_imread.read_imaq_image(filename).astype('float')
     
-    def analyze_data(self, data, *, bg=None, context=None, analyzer_dict=None):
+    def analyze_data(self, data, bg=None, context=None, analyzer_dict=None):
         if analyzer_dict is None:
             analyzer_dict = self.analyzer_dict
 
@@ -219,7 +219,7 @@ class ImageAnalyzer(DiagnosticAnalyzer):
         if return_dict is not None:
             extent = return_dict.get( 'imshow_extent', None )
         else:
-            extent = None
+            extent = display_dict.get('extent', None)
 
         im = ax.imshow(data,
                         aspect=display_dict.get('aspect', 'equal'),

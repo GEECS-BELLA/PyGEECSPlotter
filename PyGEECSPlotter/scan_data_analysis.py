@@ -17,6 +17,8 @@ from tqdm import tqdm
 
 from PyGEECSPlotter.navigation_utils import *
 from PyGEECSPlotter.utils import parse_controls_from_python, write_controls_from_python
+from PyGEECSPlotter.binning import compute_bin_numbers
+from PyGEECSPlotter.multi_diagnostic_analyzer import MultiDiagnosticAnalyzer
 # from PyGEECSPlotter.navigation_utils import get_analysis_dir, get_analysis_diagnostic_path, open_directory_in_explorer, get_analysed_shot_save_path
 
 import PyGEECSPlotter.plotting as gplt
@@ -68,6 +70,7 @@ class ScanDataAnalyzer:
 
         self.scan_title = self.scan_data_title()
         self._mask = None
+        self.last_merged_columns = []
 
     def _init_from_sfilename(self):
         top_dir, year, month, day = get_top_dir_from_sfilename(self.sfilename)
@@ -196,7 +199,7 @@ class ScanDataAnalyzer:
                 self.add_column_math(column_math_filename, parse_from=parse_from)
             
             if analyzer is not None:
-                self.add_file_list_to_scan_data(analyzer.diagnostic, analyzer.file_ext, remove_missing_diagnostic_files)
+                analyzer.register_with_scan(self, remove_missing_diagnostic_files)
             self.set_analysis_dir()
 
     def get_data_columns(self):
@@ -464,6 +467,76 @@ class ScanDataAnalyzer:
         self._init_mask()
         print('Filters reset. %d shots included.' % self._mask.sum())
 
+    def rebin(self, method='unique', scan_parameter=None, **kwargs):
+        """
+        Re-compute ``temp Bin number`` from a column of ``self.data``.
+
+        Bins drive ``compute_bin_summary`` and ``aggregate_per_bin``. By
+        default ``temp Bin number`` is initialized from the sfile's
+        ``Bin #`` column at load time. Call ``rebin`` to redefine bins
+        based on any column — typically when you want to bin by a
+        measured/post-analyzed value rather than the DAQ's commanded
+        bin index.
+
+        The mask (filters) is unaffected.
+
+        Parameters
+        ----------
+        method : str or callable, optional
+            One of ``'unique'``, ``'rounding'``, ``'zscore'``,
+            ``'kmeans'``, ``'edges'``, ``'quantile'``, ``'width'``, or
+            a callable ``f(values, **kwargs) -> ndarray`` that returns
+            bin numbers. Default ``'unique'``.
+        scan_parameter : str, optional
+            Column name in ``self.data`` to bin on. Defaults to
+            ``self.scan_parameter``.
+        **kwargs
+            Forwarded to the binning method:
+              - ``rounding_factor`` for ``method='rounding'``
+              - ``z_threshold``     for ``method='zscore'``
+              - ``n_bins``          for ``method='kmeans'`` /
+                                    ``'quantile'`` / ``'width'``
+              - ``bin_edges``       for ``method='edges'``
+              - ``bin_width``       for ``method='width'`` (number or
+                                    ``np.histogram_bin_edges`` keyword)
+
+        Returns
+        -------
+        ndarray of int
+            The new bin numbers (same length as ``self.data``).
+        """
+        if scan_parameter is None:
+            scan_parameter = self.scan_parameter
+
+        if scan_parameter not in self.data.columns:
+            raise KeyError(
+                f"Column {scan_parameter!r} not in self.data. "
+                f"Use load_scan_data first, or analyze_scan to add a measured column."
+            )
+
+        values = self.data[scan_parameter].values
+        bin_numbers = compute_bin_numbers(values, method=method, **kwargs)
+        self.data['temp Bin number'] = bin_numbers
+
+        n_bins = len(np.unique(bin_numbers[bin_numbers > 0]))
+        n_unbinned = int((bin_numbers == 0).sum())
+        method_name = method if isinstance(method, str) else getattr(method, '__name__', 'callable')
+        print(
+            "Re-binned by '%s' (method=%s): %d bins, %d unbinned (NaN) shots."
+            % (scan_parameter, method_name, n_bins, n_unbinned)
+        )
+        return bin_numbers
+
+    def reset_bins(self):
+        """
+        Reset ``temp Bin number`` to the sfile's original ``Bin #`` column.
+        """
+        if 'Bin #' not in self.data.columns:
+            raise KeyError("'Bin #' column not found in self.data — cannot reset bins.")
+        self.data['temp Bin number'] = self.data['Bin #']
+        n_bins = self.data['temp Bin number'].nunique()
+        print("Bins reset to sfile 'Bin #' (%d bins)." % n_bins)
+
     def get_bg_file_path(self, diagnostic, file_ext='.png', which_scan='last'):
         """
         Retrieves the background file path for a specific diagnostic from the analysis directory.
@@ -526,12 +599,12 @@ class ScanDataAnalyzer:
             print(f"An error occurred while retrieving the background file path: {e}")
             return None
 
-    def _iter_shots(self, analyzer, bg=None, *, show_progress=True):
+    def _iter_shots(self, analyzer, bg=None, show_progress=True, rows=None):
         """
-        Yield ``(context, data, results, aux)`` for each active shot.
+        Yield ``(context, data, results, aux)`` for each shot.
 
         Centralizes the per-shot iteration shell:
-          1) iterate ``active_data``
+          1) iterate the rows (``active_data`` by default)
           2) load the diagnostic file (if any)
           3) resolve the per-row background
           4) call ``analyzer.analyze_data``
@@ -546,6 +619,10 @@ class ScanDataAnalyzer:
             Background spec passed through ``_resolve_bg_for_row``.
         show_progress : bool, optional
             Wrap iteration in a tqdm progress bar.
+        rows : DataFrame, optional
+            Subset of rows to iterate, typically a slice/sample of
+            ``active_data``. Defaults to the full ``active_data``. Lets
+            callers process only selected shots without loading the rest.
 
         Yields
         ------
@@ -558,21 +635,29 @@ class ScanDataAnalyzer:
         aux : dict
             Auxiliary outputs (lineouts, etc.).
         """
-        rows = self.active_data
+        if rows is None:
+            rows = self.active_data
         it = rows.iterrows()
         if show_progress:
             it = tqdm(it, total=rows.shape[0])
 
+        is_multi = isinstance(analyzer, MultiDiagnosticAnalyzer)
+
         for _, row in it:
             context = row.to_dict()
 
-            if analyzer.diagnostic is not None:
+            if is_multi:
+                paths = {name: context.get(f'{name} file_list') for name, _ in analyzer.inputs}
+                data = analyzer.load_data(paths)
+                bg_i = self._resolve_bg_for_multi(analyzer, bg, context)
+            elif analyzer.diagnostic is not None:
                 filename = context.get(f'{analyzer.diagnostic} file_list')
                 data = analyzer.load_data(filename)
+                bg_i = self._resolve_bg_for_row(analyzer, bg, context)
             else:
                 data = None
+                bg_i = self._resolve_bg_for_row(analyzer, bg, context)
 
-            bg_i = self._resolve_bg_for_row(analyzer, bg, context)
             data, results, aux = analyzer.analyze_data(data, bg=bg_i, context=context)
 
             yield context, data, results, aux
@@ -583,8 +668,10 @@ class ScanDataAnalyzer:
         write_columns_to_sfile=False,
         overwrite_columns=True,
         analysis_label='',
+        extra_info_str='',
         write_analyzed=False,
         write_lineouts=False,
+        write_displayed=False,
         close_displayed=True,
         ):
         """
@@ -592,8 +679,11 @@ class ScanDataAnalyzer:
 
         Iteration is delegated to ``_iter_shots``. This method applies the
         optional per-shot side effects (display, write_analyzed,
-        write_lineouts, write_displayed), accumulates scalar results, and
-        optionally merges them back into the sfile.
+        write_lineouts, write_displayed), accumulates scalar results, merges
+        them into ``self.data`` so they're immediately plottable, and
+        optionally writes them back to the sfile (plus a standalone summary
+        file, so the columns can be re-merged later without rerunning the
+        analysis).
 
         Parameters
         ----------
@@ -603,11 +693,27 @@ class ScanDataAnalyzer:
             ``write_analyzed_lineouts`` / ``write_displayed_data``.
         bg : optional
             Background spec; see ``_resolve_bg_for_row``.
+        write_columns_to_sfile : bool, optional
+            If True, overwrite ``self.sfilename`` with the new columns merged
+            in, and write a standalone summary file
+            (``Scan{scan:03d}_{diagnostic}_{extra_info_str}Summary.txt``)
+            under the scan's analysis dir. The columns are merged into
+            ``self.data`` either way, so this only controls whether anything
+            on disk is touched.
+        extra_info_str : str, optional
+            Extra tag inserted into the summary filename (and appended to the
+            merged sfile column names, same as ``analysis_label``).
 
         Returns
         -------
         add_columns_df : DataFrame or None
+            The raw (unrenamed) per-shot results, one row per shot. May
+            contain non-scalar columns (e.g. an image analyzer's
+            ``imshow_extent`` array) that are dropped before merging into
+            ``self.data`` — see ``last_merged_columns`` for the columns that
+            actually landed on ``active_data``.
         """
+        self.last_merged_columns = []
         rows = []
         analysis_dir = None
 
@@ -631,37 +737,83 @@ class ScanDataAnalyzer:
                 analyzer.write_analyzed_data(data, analysis_dir, scan, shot_num, context=context)
                 if write_lineouts:
                     analyzer.write_analyzed_lineouts(aux, analysis_dir, scan, shot_num)
-                if display_data:
-                    analyzer.write_displayed_data(fig, analysis_dir, scan, shot_num)
+            if display_data and write_displayed:
+                if analysis_dir is None:
+                    analysis_dir = self.get_scan_data_analysis_dir(make_dir=True)
+                analyzer.write_displayed_data(fig, analysis_dir, scan, shot_num)
 
             if close_displayed and fig is not None:
                 plt.close(fig)
 
         add_columns_df = pd.DataFrame(rows) if rows else None
 
-        if write_columns_to_sfile and add_columns_df is not None and len(self.data) > 0:
+        if add_columns_df is not None and len(self.data) > 0:
             diag_str = analyzer.output_diagnostic if analyzer.output_diagnostic is not None \
                 else analyzer.diagnostic
-            if analysis_dir is None:
-                analysis_dir = self.get_scan_data_analysis_dir(make_dir=True)
-            controls_path = os.path.join(
-                analysis_dir, '%s analyzer_controls %s.txt' % (diag_str, analysis_label)
-            )
-            write_controls_from_python(controls_path, analyzer.analyzer_dict)
 
-            self.merge_data_frame_to_sfile(
-                add_columns_df,
-                diag_str,
-                overwrite_columns=overwrite_columns,
-                analysis_label=analysis_label,
-            )
+            # Merge into self.data unconditionally, so the new columns are on
+            # active_data and plottable immediately — whether or not anything
+            # is written to disk.
+            renamed_df = self._rename_add_columns(add_columns_df, diag_str, extra_info_str)
+            self.last_merged_columns = [
+                c for c in renamed_df.columns if c not in ('scan', 'Shotnumber')
+            ]
+            self.data = self.data.drop(
+                columns=[c for c in renamed_df.columns
+                         if c in self.data.columns and c not in ('scan', 'Shotnumber')]
+            ).merge(renamed_df, on=['scan', 'Shotnumber'], how='left')
+
+            if write_columns_to_sfile:
+                if analysis_dir is None:
+                    analysis_dir = self.get_scan_data_analysis_dir(make_dir=True)
+                controls_path = os.path.join(
+                    analysis_dir, '%s analyzer_controls %s.txt' % (diag_str, analysis_label)
+                )
+                write_controls_from_python(controls_path, analyzer.analyzer_dict)
+
+                self.merge_data_frame_to_sfile(
+                    add_columns_df,
+                    diag_str,
+                    overwrite_columns=overwrite_columns,
+                    analysis_label=analysis_label,
+                )
+
+                summary_path = os.path.join(
+                    analysis_dir,
+                    f"Scan{int(self.scan):03d}_{diag_str}_{extra_info_str}Summary.txt",
+                )
+                add_columns_df.to_csv(summary_path, index=False, sep='\t')
 
         return add_columns_df
+
+    @staticmethod
+    def _rename_add_columns(add_columns_df, diagnostic, analysis_label):
+        """
+        Prefix per-shot result columns with the diagnostic (and optional
+        label), the same renaming ``merge_data_frame_to_sfile`` applies —
+        shared so ``self.data`` and the sfile end up with identical names.
+        ``scan`` / ``Shotnumber`` are left untouched.
+        """
+        add_columns_df = add_columns_df.select_dtypes(include=[np.number, 'float64', 'int64', 'bool'])
+        if not diagnostic and not analysis_label:
+            return add_columns_df
+
+        def rename_columns(col):
+            if col in ('scan', 'Shotnumber'):
+                return col
+            new_col = col
+            if diagnostic:
+                new_col = f"{diagnostic} {new_col}"
+            if analysis_label:
+                new_col = f"{new_col} {analysis_label}"
+            return new_col
+
+        return add_columns_df.rename(columns=rename_columns)
     
     def get_scan_data_analysis_dir( self, make_dir=True ):
         return get_analysis_dir(self.top_dir, self.scan, make_dir=True)
 
-    def display_scan(self, displayer, *, save=False, suffix='', fig=None, ax=None, **kwargs):
+    def display_scan(self, displayer, save=False, export=False, suffix='', fig=None, ax=None, **kwargs):
         """
         Render a scan-level figure using a ``ScanDisplayer``.
 
@@ -671,6 +823,9 @@ class ScanDataAnalyzer:
             Display object implementing ``display(scan, *, fig, ax)``.
         save : bool, optional
             If True, save the resulting figure via ``displayer.save``.
+        export : bool, optional
+            If True, write the arrays behind the plot via ``displayer.export``
+            (an ``.npz`` alongside the saved figure).
         suffix : str, optional
             Suffix appended to the saved filename.
         fig, ax : optional
@@ -685,6 +840,8 @@ class ScanDataAnalyzer:
         fig, ax = displayer.display(self, fig=fig, ax=ax, **kwargs)
         if save:
             displayer.save(fig, self, suffix=suffix)
+        if export:
+            displayer.export(self, suffix=suffix)
         return fig, ax
 
     def merge_data_frame_to_sfile(self, 
@@ -743,7 +900,7 @@ class ScanDataAnalyzer:
         merged_df.to_csv(self.sfilename, index=False, sep='\t')
         print(f'Columns added to {self.sfilename}')
 
-    def mean_std_diagnostic(self, analyzer, bg=None, ddof=0, *, show_progress=False):
+    def mean_std_diagnostic(self, analyzer, bg=None, ddof=0, show_progress=False):
         """
         Pixel-wise mean / std of analyzed data across all active shots.
 
@@ -837,6 +994,32 @@ class ScanDataAnalyzer:
 
         return bins, np.asarray(mean_per_bin), np.asarray(std_per_bin)
 
+    def _resolve_bg_for_multi(self, analyzer, bg, context):
+        """
+        Resolve the per-row background for a ``MultiDiagnosticAnalyzer``.
+
+        ``bg`` can be:
+          - ``None`` — returned as-is.
+          - a dict ``{diagnostic_name: bg_spec}`` — each ``bg_spec`` is
+            resolved through ``_resolve_bg_for_row`` using that input's
+            sub-analyzer as the loader. Entries without a registered
+            sub-analyzer are returned as-is (assumed pre-loaded).
+          - anything else — passed through; the multi analyzer's
+            ``analyze_data`` is responsible for interpreting it.
+        """
+        if bg is None or not isinstance(bg, dict):
+            return bg
+
+        out = {}
+        for name, _ in analyzer.inputs:
+            sub = analyzer.sub_analyzers.get(name)
+            sub_bg = bg.get(name)
+            if sub is None:
+                out[name] = sub_bg
+            else:
+                out[name] = self._resolve_bg_for_row(sub, sub_bg, context)
+        return out
+
     @staticmethod
     def _resolve_bg_for_row(analyzer, bg, context, debug_bg=False, debug_once=True):
         """
@@ -890,7 +1073,7 @@ class ScanDataAnalyzer:
         if mode not in valid_modes:
             raise ValueError(f"Invalid mode '{mode}'. Must be one of {valid_modes}.")
 
-        numeric_cols = self.data.select_dtypes(include=np.number)
+        numeric_cols = self.active_data.select_dtypes(include=np.number)
         grouped = numeric_cols.groupby('temp Bin number')
 
         if mode == 'mean':

@@ -5,7 +5,7 @@ setup(
     version="0.0.3",
     description="GEECS Plotter Library",
     author="Alex Picksley",
-    packages=["PyGEECSPlotter"],
+    packages=["PyGEECSPlotter", "PyGEECSPlotter.displayers"],
     install_requires=[
         "numpy",
         "matplotlib",

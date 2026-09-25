@@ -1,3 +1,10 @@
+# Claude Code local state (worktrees, settings, skills) - not for the repo yet
+.claude/
+CLAUDE.local.md
+
+# Working example notebooks - local scratch, not for the repo
+ongoing_analysis/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
