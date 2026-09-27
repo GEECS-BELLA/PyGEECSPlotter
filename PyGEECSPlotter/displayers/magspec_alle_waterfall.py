@@ -18,9 +18,15 @@ class MagSpecAllEWaterfall(LineoutWaterfall):
     ``analyzer_dict['momentum_grid']``; the default is 1024 points across
     ``roi``.
 
+    Recomputing every shot is slow (~0.7 s/shot). If the analysis has
+    already been run with ``write_analyzed=True``, pass
+    ``MagSpecAllEReader(load='spec')`` instead: it reads only the saved
+    ``<diag>Spec`` tables (~20 ms/shot) and returns the same ``'p'`` /
+    ``'p_lo'`` pair.
+
     Parameters
     ----------
-    analyzer : MagSpecAllEAnalyzer
+    analyzer : MagSpecAllEAnalyzer or MagSpecAllEReader
     bg : optional
         Background spec forwarded to the per-shot pipeline.
     y_column : str, optional
