@@ -20,6 +20,10 @@ concrete class either directly from its module or from this package:
         LineoutMeanPerBin,
         LineoutMeanWaterfall,
         MagSpecAllEWaterfall,
+        MagSpecAllESampledShots,
+        MagSpecAllERepresentativePerBin,
+        MagSpecAllESpectrumPerBin,
+        MagSpecAllESpectrumMeanWaterfall,
     )
 
 Image-grid family
@@ -51,6 +55,16 @@ several axes' mean lineouts per bin panel; ``LineoutMeanWaterfall`` stacks one
 axis's per-bin mean lineout as a waterfall. ``MagSpecAllEWaterfall`` is a
 ``LineoutWaterfall`` of ``MagSpecAllEAnalyzer``'s spectrum on its fixed
 momentum grid (``'p'`` / ``'p_lo'``), with physical labels and a log scale.
+
+Magspec (allE) family
+---------------------
+Thin, physical-units subclasses of the families above for
+``MagSpecAllEAnalyzer`` / ``MagSpecAllEReader``: ``MagSpecAllEWaterfall``
+(every shot's spectrum), ``MagSpecAllESpectrumPerBin`` and
+``MagSpecAllESpectrumMeanWaterfall`` (mean spectrum per bin, as panels or a
+waterfall), and ``MagSpecAllESampledShots`` /
+``MagSpecAllERepresentativePerBin`` (allE images in GeV/c x mrad on one
+colour scale). Run them on ``MagSpecAllEReader`` to avoid re-analysing.
 """
 
 from PyGEECSPlotter.displayers.scan_displayer import ScanDisplayer
@@ -69,6 +83,14 @@ from PyGEECSPlotter.displayers.lineout_waterfall import LineoutWaterfall
 from PyGEECSPlotter.displayers.lineout_mean_per_bin import LineoutMeanPerBin
 from PyGEECSPlotter.displayers.lineout_mean_waterfall import LineoutMeanWaterfall
 from PyGEECSPlotter.displayers.magspec_alle_waterfall import MagSpecAllEWaterfall
+from PyGEECSPlotter.displayers.magspec_alle_gallery import (
+    MagSpecAllESampledShots,
+    MagSpecAllERepresentativePerBin,
+)
+from PyGEECSPlotter.displayers.magspec_alle_spectrum_per_bin import (
+    MagSpecAllESpectrumPerBin,
+    MagSpecAllESpectrumMeanWaterfall,
+)
 
 __all__ = [
     "ScanDisplayer",
@@ -87,4 +109,8 @@ __all__ = [
     "LineoutMeanPerBin",
     "LineoutMeanWaterfall",
     "MagSpecAllEWaterfall",
+    "MagSpecAllESampledShots",
+    "MagSpecAllERepresentativePerBin",
+    "MagSpecAllESpectrumPerBin",
+    "MagSpecAllESpectrumMeanWaterfall",
 ]

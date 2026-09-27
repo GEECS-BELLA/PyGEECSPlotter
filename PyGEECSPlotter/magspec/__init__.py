@@ -1,6 +1,7 @@
 # Python port of the BELLA triangle-chamber magnetic spectrometer analysis
 # (Kei Nakamura's MATLAB: bellaMagspcTri.m -> fBellaSShotTri.m). Pure
-# numerics; the framework wrapper is PyGEECSPlotter.magspec_alle_analysis.
+# numerics; the framework wrapper is PyGEECSPlotter.magspec_alle_analysis,
+# and PyGEECSPlotter.magspec_alle_reader reads its saved outputs back.
 #
 #   calibration  - ESMCalib file loading (cam / lanex / trajectory tables)
 #   axes         - per-camera and stitched momentum / angle axes
