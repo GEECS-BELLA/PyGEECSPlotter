@@ -77,6 +77,8 @@ class Stage2Result:
     mmtR: np.ndarray            # ROI momentum axis [GeV/c] (non-uniform)
     accpR: np.ndarray           # acceptance on mmtR [mrad]
     scalars: dict
+    spectrum: np.ndarray = None  # spcR: charge density on mmtR [pC/GeV]
+    gap: tuple = None            # (lowE max, highE 11th point) [GeV/c]: screen gap
 
 
 def run_stage2(high, low, angle, front_mm, front_sig, front_mmt, resolution, roi=(0.01, 5.0)):
@@ -177,4 +179,7 @@ def run_stage2(high, low, angle, front_mm, front_sig, front_mmt, resolution, roi
         'charge6to8GeV_pC': chg68, 'pkChrDen6to8GeV_pC': cd68,
         'xRayBase_fC/mm^2': xray_b, 'xRayBase_fC/mm': xray_bi,
     }
-    return Stage2Result(uni, uni_mmt, ya, spec, div, img_r, mmt_r, accp_r, scalars)
+    # screen gap drawn black in infoE (fill2X in fBellaSShotTri)
+    gap = (low.mmt[-1], high.mmt[10])
+    return Stage2Result(uni, uni_mmt, ya, spec, div, img_r, mmt_r, accp_r, scalars,
+                        spectrum=spc_r, gap=gap)
