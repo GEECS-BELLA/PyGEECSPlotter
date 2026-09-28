@@ -9,10 +9,12 @@ import os
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 
 from PyGEECSPlotter.diagnostic_analyzer import DiagnosticAnalyzer
 from PyGEECSPlotter.magspec.calibration import MAGSPEC_CAMERAS, MagSpecCalibration
-from PyGEECSPlotter.magspec.io import open_12bit_png, write_int_ac_png, write_table
+from PyGEECSPlotter.magspec.infoe import draw_infoe
+from PyGEECSPlotter.magspec.io import open_12bit_png, read_int_ac_png, write_int_ac_png, write_table
 from PyGEECSPlotter.magspec.matlab_compat import interp1
 from PyGEECSPlotter.magspec.pipeline import run_alle
 from PyGEECSPlotter.magspec.stage1 import ebeam_y_angle
@@ -20,6 +22,7 @@ from PyGEECSPlotter.multi_diagnostic_analyzer import MultiDiagnosticAnalyzer
 from PyGEECSPlotter.navigation_utils import get_analysed_shot_save_path
 
 FIELD_COLUMN = 'HALLPROBE-TEA-MAGSPEC Field'
+ICT_COLUMN = 'TurboICT charge [pc]'
 
 
 class _MagSpecCamera(DiagnosticAnalyzer):
@@ -66,6 +69,18 @@ class MagSpecAllEAnalyzer(MultiDiagnosticAnalyzer):
     calibration_kwargs : dict, optional
         Extra arguments for :class:`MagSpecCalibration` (``crrnt``,
         ``mgs_chg``, ``lanex_file``).
+    ebeam_diagnostic : str or None
+        Folder under ``analysis/ScanNNN/`` holding saved EBeam-profile
+        outputs, for the left panel of the infoE figure. The default
+        ``'CAM-TEA-EBeam_ProfileA'`` is where both MATLAB and
+        ``EBeamProfileAnalyzer`` write them. None, or missing files, leaves
+        that panel blank.
+
+    ``display_data`` draws the MATLAB infoE summary figure (e-beam profile,
+    allE charge density and spectrum, front-screen x-ray, info text).
+    ``display_dict={'info': False}``, or passing ``fig``/``ax`` (as the
+    image-grid displayers do), gives the simple allE + spectrum view.
+    ``write_displayed_data`` saves it as ``ScanNNN_<diag>infoE_SSS.png``.
 
     ``analyze_data`` returns ``(allE, results, aux)``:
 
@@ -84,7 +99,7 @@ class MagSpecAllEAnalyzer(MultiDiagnosticAnalyzer):
 
     def __init__(self, calib_dir, day, bg_dir=None, analyzer_dict=None,
                  display_dict=None, output_diagnostic='MagSpecAllE',
-                 calibration_kwargs=None):
+                 calibration_kwargs=None, ebeam_diagnostic='CAM-TEA-EBeam_ProfileA'):
         cams = {name: _MagSpecCamera(diagnostic=name, file_ext='.png') for name in MAGSPEC_CAMERAS}
         super().__init__(
             inputs=[(name, '.png') for name in MAGSPEC_CAMERAS],
@@ -96,6 +111,7 @@ class MagSpecAllEAnalyzer(MultiDiagnosticAnalyzer):
         )
         self.calibration = MagSpecCalibration(calib_dir, day, **(calibration_kwargs or {}))
         self.bg_dir = bg_dir
+        self.ebeam_diagnostic = ebeam_diagnostic
         self._default_bg = None
         # analyze_scan does not hand aux to display/write; keep the last shot's
         self._last_aux = None
@@ -170,14 +186,60 @@ class MagSpecAllEAnalyzer(MultiDiagnosticAnalyzer):
             'highE': s1.high, 'lowE': s1.low,
             'p': grid, 'p_lo': np.nan_to_num(p_lo, nan=0.0),
             'angle_lo': s2.div['ChargeDen_fC/mrad'].to_numpy(),
+            # everything the infoE figure needs
+            'infoE': {
+                'mmt': s2.mmtR, 'ya': s2.angle, 'density': s2.density, 'accp': s2.accpR,
+                'spectrum': s2.spectrum, 'gap': s2.gap, 'scalars': dict(s2.scalars),
+                'xray_img': s1.front_img, 'xray_x_mm': s1.front_x[0], 'xray_y_mm': s1.front_y[0],
+                'ey_angle': ey, 'ict_pC': float(context.get(ICT_COLUMN, np.nan)),
+                'scan': context.get('scan'), 'shot': context.get('Shotnumber'),
+                'ebeam': self._load_ebeam(context),
+                'roi': tuple(ad.get('roi', (0.01, 5.0))),
+            },
         }
         self._last_aux = aux
         return s2.alle, results, aux
 
+    def _load_ebeam(self, context):
+        """Saved EBeam-profile image [pC] and angle axes for this shot, or None.
+
+        The day's top directory is taken from a camera ``file_list`` path
+        (``<top>/scans/ScanNNN/<camera>/...``), else from ``bg_dir``
+        (``<top>/analysis``)."""
+        if not self.ebeam_diagnostic or 'scan' not in context or 'Shotnumber' not in context:
+            return None
+        cam_path = next((context.get(f'{n} file_list') for n in MAGSPEC_CAMERAS
+                         if isinstance(context.get(f'{n} file_list'), str)), None)
+        if cam_path is not None:
+            top = cam_path
+            for _ in range(4):
+                top = os.path.dirname(top)
+        elif self.bg_dir:
+            top = os.path.dirname(os.path.normpath(self.bg_dir))
+        else:
+            return None
+        scan, shot, diag = int(context['scan']), int(context['Shotnumber']), self.ebeam_diagnostic
+        folder = os.path.join(top, 'analysis', f'Scan{scan:03d}', diag)
+        png = os.path.join(folder, f'Scan{scan:03d}_{diag}_{shot:03d}.png')
+        tables = [os.path.join(folder, f'Scan{scan:03d}_{diag}{ax}_{shot:03d}.txt') for ax in 'XY']
+        if not all(os.path.exists(p) for p in [png] + tables):
+            return None
+        x, y = (pd.read_csv(p, sep='\t')['mrad'].to_numpy() for p in tables)
+        return {'image': 1e-6 * read_int_ac_png(png), 'x': x, 'y': y}   # aC -> pC
+
     def display_data(self, data, return_dict=None, title=None, fig=None, ax=None):
-        """allE charge density [pC/mrad/(GeV/c)] with the spectrum below."""
+        """infoE summary figure by default; the simple allE + spectrum view
+        with ``display_dict={'info': False}`` or when ``fig``/``ax`` are given."""
         if data is None:
             return None, None
+        info = (self._last_aux or {}).get('infoE')
+        if self.display_dict.get('info', True) and info is not None and fig is None and ax is None:
+            return draw_infoe(**info, fontsize=self.display_dict.get('fontsize', 10),
+                              figsize=self.display_dict.get('figsize', (20, 6.67)))
+        return self._display_simple(data, return_dict=return_dict, title=title, fig=fig, ax=ax)
+
+    def _display_simple(self, data, return_dict=None, title=None, fig=None, ax=None):
+        """allE charge density [pC/mrad/(GeV/c)] with the spectrum below."""
         dd = self.display_dict
         n_ang, n_mmt = data.shape
         last = self._last_aux or {}
@@ -224,3 +286,12 @@ class MagSpecAllEAnalyzer(MultiDiagnosticAnalyzer):
                         list(spec.columns), [spec[c] for c in spec.columns])
             write_table(get_analysed_shot_save_path(analysis_dir, diag, scan, shot_num, '.txt', 'Div'),
                         list(div.columns), [div[c] for c in div.columns])
+
+    def write_displayed_data(self, fig, analysis_dir, scan, shot_num):
+        """Save the displayed figure (infoE by default) as
+        ``<output_diagnostic>/ScanNNN_<diag>infoE_SSS.png``."""
+        if fig is None:
+            return
+        path = get_analysed_shot_save_path(analysis_dir, self.output_diagnostic, scan, shot_num,
+                                           '.png', 'infoE')
+        fig.savefig(path, dpi=self.display_dict.get('dpi', 120))

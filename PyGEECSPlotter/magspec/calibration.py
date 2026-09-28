@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from PyGEECSPlotter.magspec.io import log_column, read_log
+from PyGEECSPlotter.magspec.io import find_column, log_column, read_log
 from PyGEECSPlotter.magspec.matlab_compat import find_first, interp1, mround
 
 # Post-2022 camera names, in the MATLAB processing order (fBellaImgDirTr).
@@ -27,6 +27,8 @@ _CAM_FIELDS = {
     'yCntr': 'Y center pixel', 'ySt': 'Y Start', 'xSt': 'X Start', 'yEd': 'Y End',
     'xEd': 'X End', 'rot': 'rot [deg]', 'sns': 'sensitivity', 'setN': 'setN',
 }
+# phosphor-screen damage holes (pixel rectangles, used by the EBeam profile)
+_HOLE_FIELDS = [f'hole{n} {c}' for n in range(1, 5) for c in ('x1', 'x2', 'y1', 'y2')]
 _INT_FIELDS = ('yOffset', 'height', 'xOffset', 'width', 'ySt', 'xSt', 'yEd', 'xEd', 'setN')
 
 
@@ -65,6 +67,9 @@ class CamCalib:
     rot: float
     sns: float
     setN: int
+    # hole1..hole4 as (x1, x2, y1, y2) pixel rectangles, 1-based inclusive;
+    # only meaningful for the EBeam-profile row
+    holes: tuple = ()
 
 
 def load_cam_calib(path):
@@ -75,6 +80,10 @@ def load_cam_calib(path):
         for key, col in _CAM_FIELDS.items():
             v = log_column(df, col)[i]
             vals[key] = int(v) if key in _INT_FIELDS else float(v)
+        cols = [c for c in _HOLE_FIELDS if find_column(df.columns, c, required=False)]
+        if len(cols) == len(_HOLE_FIELDS):
+            h = [log_column(df, c)[i] for c in _HOLE_FIELDS]
+            vals['holes'] = tuple(tuple(h[4 * k:4 * k + 4]) for k in range(4))
         cams.append(CamCalib(**vals))
     return cams
 
