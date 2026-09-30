@@ -10,8 +10,16 @@ import numpy as np
 import pandas as pd
 
 from PyGEECSPlotter.diagnostic_analyzer import DiagnosticAnalyzer
-from PyGEECSPlotter.magspec.io import read_int_ac_png
-from PyGEECSPlotter.magspec.matlab_compat import interp1
+try:
+    import pw_py_magspec  # noqa: F401  (private BellaCenter package)
+except ImportError as err:
+    raise ImportError(
+        "magspec_alle_reader needs the private 'pw-py-magspec' package (BellaCenter/PW-py-magspec). "
+        "Install it with: pip install git+https://github.com/BellaCenter/PW-py-magspec.git"
+    ) from err
+
+from pw_py_magspec.io import read_int_ac_png
+from pw_py_magspec.matlab_compat import interp1
 
 # which saved tables each `load` mode reads, besides (or instead of) the image
 _MODES = {
