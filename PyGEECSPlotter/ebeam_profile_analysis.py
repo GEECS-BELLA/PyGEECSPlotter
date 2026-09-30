@@ -1,6 +1,6 @@
 # BELLA transverse e-beam profile (phosphor screen, CAM-TEA-EBeam_Profile).
 # Port of the e-beam part of Kei Nakamura's live quickE script
-# (bellaLiveMagspc3.m); numerics in PyGEECSPlotter.magspec.ebeam_profile.
+# (bellaLiveMagspc3.m); numerics in the private pw_py_magspec.ebeam_profile.
 # Standalone: run it on its own, or alongside MagSpecAllEAnalyzer, whose
 # infoE figure shows its saved outputs.
 
@@ -11,9 +11,17 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from PyGEECSPlotter.diagnostic_analyzer import DiagnosticAnalyzer
-from PyGEECSPlotter.magspec.ebeam_profile import (EBeamProfileCalibration, analyze_profile,
+try:
+    import pw_py_magspec  # noqa: F401  (private BellaCenter package)
+except ImportError as err:
+    raise ImportError(
+        "ebeam_profile_analysis needs the private 'pw-py-magspec' package (BellaCenter/PW-py-magspec). "
+        "Install it with: pip install git+https://github.com/BellaCenter/PW-py-magspec.git"
+    ) from err
+
+from pw_py_magspec.ebeam_profile import (EBeamProfileCalibration, analyze_profile,
                                                   filter_position_from)
-from PyGEECSPlotter.magspec.io import open_12bit_png, write_int_ac_png, write_table
+from pw_py_magspec.io import open_12bit_png, write_int_ac_png, write_table
 from PyGEECSPlotter.navigation_utils import get_analysed_shot_save_path
 
 

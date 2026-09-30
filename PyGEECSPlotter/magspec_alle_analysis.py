@@ -1,7 +1,7 @@
 # BELLA triangle-chamber magnetic spectrometer: full-range "allE" analysis.
 # Python port of Kei Nakamura's MATLAB chain bellaMagspcTri.m ->
 # bellaMagspecViewTri.m / fBellaSShotTri.m. The numerics live in
-# PyGEECSPlotter.magspec; this module wires them into the
+# the private pw_py_magspec package; this module wires them into the
 # MultiDiagnosticAnalyzer contract.
 
 import glob
@@ -12,12 +12,20 @@ import numpy as np
 import pandas as pd
 
 from PyGEECSPlotter.diagnostic_analyzer import DiagnosticAnalyzer
-from PyGEECSPlotter.magspec.calibration import MAGSPEC_CAMERAS, MagSpecCalibration
-from PyGEECSPlotter.magspec.infoe import draw_infoe
-from PyGEECSPlotter.magspec.io import open_12bit_png, read_int_ac_png, write_int_ac_png, write_table
-from PyGEECSPlotter.magspec.matlab_compat import interp1
-from PyGEECSPlotter.magspec.pipeline import run_alle
-from PyGEECSPlotter.magspec.stage1 import ebeam_y_angle
+try:
+    import pw_py_magspec  # noqa: F401  (private BellaCenter package)
+except ImportError as err:
+    raise ImportError(
+        "magspec_alle_analysis needs the private 'pw-py-magspec' package (BellaCenter/PW-py-magspec). "
+        "Install it with: pip install git+https://github.com/BellaCenter/PW-py-magspec.git"
+    ) from err
+
+from pw_py_magspec.calibration import MAGSPEC_CAMERAS, MagSpecCalibration
+from pw_py_magspec.infoe import draw_infoe
+from pw_py_magspec.io import open_12bit_png, read_int_ac_png, write_int_ac_png, write_table
+from pw_py_magspec.matlab_compat import interp1
+from pw_py_magspec.pipeline import run_alle
+from pw_py_magspec.stage1 import ebeam_y_angle
 from PyGEECSPlotter.multi_diagnostic_analyzer import MultiDiagnosticAnalyzer
 from PyGEECSPlotter.navigation_utils import get_analysed_shot_save_path
 
