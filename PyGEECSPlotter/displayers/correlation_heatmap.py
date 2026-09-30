@@ -27,8 +27,11 @@ class CorrelationHeatmap(ScanDisplayer):
         method: str = 'pearson',
         annotate: bool = True,
         display_dict: Optional[Dict[str, Any]] = None,
+        output_subdir: Optional[str] = None,
+        timestamp_files: bool = True,
     ):
-        super().__init__(name=f"corr_{method}", display_dict=display_dict)
+        super().__init__(name=f"corr_{method}", display_dict=display_dict,
+                          output_subdir=output_subdir, timestamp_files=timestamp_files)
         self.columns = list(columns)
         self.method = method
         self.annotate = annotate

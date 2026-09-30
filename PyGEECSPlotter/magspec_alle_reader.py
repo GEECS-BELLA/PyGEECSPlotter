@@ -96,7 +96,6 @@ class MagSpecAllEReader(DiagnosticAnalyzer):
                          analyzer_dict=analyzer_dict, display_dict=display_dict,
                          output_diagnostic=diagnostic)
         self.load = load
-        self._last_aux = None
 
     @staticmethod
     def table_path(png_path, kind):
@@ -143,10 +142,9 @@ class MagSpecAllEReader(DiagnosticAnalyzer):
             div = data['div']
             aux.update({'allEDiv': div, 'angle': div['Angle_mrad'].to_numpy(),
                         'angle_lo': div['ChargeDen_fC/mrad'].to_numpy()})
-        self._last_aux = aux
         return data.get('image'), {}, aux
 
-    def display_data(self, data, return_dict=None, title=None, fig=None, ax=None):
+    def display_data(self, data, return_dict=None, title=None, fig=None, ax=None, aux=None):
         """allE charge density [pC/mrad/(GeV/c)] -- same view as
         ``MagSpecAllEAnalyzer.display_data`` (image panel only when the
         caller supplies a single axis)."""
@@ -154,7 +152,7 @@ class MagSpecAllEReader(DiagnosticAnalyzer):
             return None, None
         dd = self.display_dict
         n_ang, n_mmt = data.shape
-        last = self._last_aux or {}
+        last = aux or {}
         mmt = np.asarray(last['momentum']) if len(last.get('momentum', ())) == n_mmt else \
             np.linspace(*self.analyzer_dict.get('roi', (0.01, 5.0)), n_mmt)
         ang = np.asarray(last['angle']) if len(last.get('angle', ())) == n_ang else \

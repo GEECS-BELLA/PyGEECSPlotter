@@ -35,6 +35,9 @@ class MagSpecAllESpectrumPerBin(LineoutMeanPerBin):
     display_dict : dict, optional
         ``figsize``, ``std_alpha``, ``log`` (default True), ``xlims``,
         ``ylims`` (default: shared, from 1e-3 of the largest mean up to it).
+    output_subdir, timestamp_files :
+        As for ``ScanDisplayer``: save under ``analysis_dir/output_subdir``,
+        and add a run timestamp to the file name (default True).
     """
 
     def __init__(
@@ -47,11 +50,14 @@ class MagSpecAllESpectrumPerBin(LineoutMeanPerBin):
         label_column=None,
         label_fmt: str = '{:.4g}',
         display_dict: Optional[Dict[str, Any]] = None,
+        output_subdir: Optional[str] = None,
+        timestamp_files: bool = True,
     ):
         super().__init__(analyzer, axes=['p'], bg=bg, bins=bins, ncols=ncols,
                          show_std=show_std, label_column=label_column,
                          label_fmt=label_fmt, suppress_labels=False,
-                         display_dict=display_dict)
+                         display_dict=display_dict, output_subdir=output_subdir,
+                         timestamp_files=timestamp_files)
         diag = analyzer.output_diagnostic or analyzer.diagnostic
         self.name = f'{diag}_spectrum_mean_per_bin'
 
@@ -103,6 +109,9 @@ class MagSpecAllESpectrumMeanWaterfall(LineoutMeanWaterfall):
     display_dict : dict, optional
         ``LineoutMeanWaterfall`` keys, plus ``log`` (default True; ``vmin``
         defaults to ``vmax / 1e3``).
+    output_subdir, timestamp_files :
+        As for ``ScanDisplayer``: save under ``analysis_dir/output_subdir``,
+        and add a run timestamp to the file name (default True).
     """
 
     def __init__(
@@ -113,11 +122,14 @@ class MagSpecAllESpectrumMeanWaterfall(LineoutMeanWaterfall):
         label_column=None,
         label_fmt: str = '{:.4g}',
         display_dict: Optional[Dict[str, Any]] = None,
+        output_subdir: Optional[str] = None,
+        timestamp_files: bool = True,
     ):
-        dd = {'cmap': 'jet', 'xlabel': 'Momentum [GeV/c]', 'cbar_label': 'pC/GeV'}
+        dd = {'cmap': 'viridis', 'xlabel': 'Momentum [GeV/c]', 'cbar_label': 'pC/GeV'}
         dd.update(display_dict or {})
         super().__init__(analyzer, axis='p', bg=bg, bins=bins, label_column=label_column,
-                         label_fmt=label_fmt, display_dict=dd)
+                         label_fmt=label_fmt, display_dict=dd,
+                         output_subdir=output_subdir, timestamp_files=timestamp_files)
         diag = analyzer.output_diagnostic or analyzer.diagnostic
         self.name = f'{diag}_spectrum_mean_waterfall'
 

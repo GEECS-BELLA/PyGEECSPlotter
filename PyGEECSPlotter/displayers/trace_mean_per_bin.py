@@ -71,6 +71,8 @@ class TraceMeanPerBin(ScanDisplayer):
         label_fmt: str = '{:.4g}',
         suppress_labels: bool = True,
         display_dict: Optional[Dict[str, Any]] = None,
+        output_subdir: Optional[str] = None,
+        timestamp_files: bool = True,
     ):
         if component not in COMPONENTS and component != 'both':
             raise ValueError(
@@ -80,7 +82,8 @@ class TraceMeanPerBin(ScanDisplayer):
         if overlay and component == 'both':
             raise ValueError("overlay=True needs a single component, not 'both'.")
         diag = analyzer.output_diagnostic or analyzer.diagnostic
-        super().__init__(name=f'{diag}_{component}_mean_per_bin', display_dict=display_dict)
+        super().__init__(name=f'{diag}_{component}_mean_per_bin', display_dict=display_dict,
+                          output_subdir=output_subdir, timestamp_files=timestamp_files)
         self.analyzer = analyzer
         self.bg = bg
         self.bins = bins

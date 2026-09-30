@@ -35,6 +35,9 @@ class MagSpecAllEWaterfall(LineoutWaterfall):
     display_dict : dict, optional
         ``LineoutWaterfall`` keys, plus ``log`` (bool, default True): log
         colour scale, with ``vmin`` defaulting to ``vmax / 1e3``.
+    output_subdir, timestamp_files :
+        As for ``ScanDisplayer``: save under ``analysis_dir/output_subdir``,
+        and add a run timestamp to the file name (default True).
     """
 
     def __init__(
@@ -43,17 +46,20 @@ class MagSpecAllEWaterfall(LineoutWaterfall):
         bg=None,
         y_column=None,
         display_dict: Optional[Dict[str, Any]] = None,
+        output_subdir: Optional[str] = None,
+        timestamp_files: bool = True,
     ):
-        dd = {'cmap': 'jet', 'xlabel': 'Momentum [GeV/c]', 'cbar_label': 'pC/GeV'}
+        dd = {'cmap': 'viridis', 'xlabel': 'Momentum [GeV/c]', 'cbar_label': 'pC/GeV'}
         dd.update(display_dict or {})
-        super().__init__(analyzer, axis='p', bg=bg, y_column=y_column, display_dict=dd)
+        super().__init__(analyzer, axis='p', bg=bg, y_column=y_column, display_dict=dd,
+                         output_subdir=output_subdir, timestamp_files=timestamp_files)
         diag = analyzer.output_diagnostic or analyzer.diagnostic
         self.name = f'{diag}_spectrum_waterfall'
 
     def display(self, scan, fig=None, ax=None):
         fig, ax = super().display(scan, fig=fig, ax=ax)
         im = ax.images[-1]
-        if self.display_dict.get('log', True):
+        if self.display_dict.get('log', False):
             stack = self.last_export['stack']
             vmax = self.display_dict.get('vmax') or np.nanmax(stack)
             vmin = self.display_dict.get('vmin') or vmax / 1e3

@@ -37,6 +37,8 @@ class SampledImages(ShotSelectionGrid):
         use_analyzer_display: bool = True,
         suppress_labels: bool = True,
         display_dict: Optional[Dict[str, Any]] = None,
+        output_subdir: Optional[str] = None,
+        timestamp_files: bool = True,
     ):
         name = f"{analyzer.output_diagnostic or analyzer.diagnostic}_sampled"
         super().__init__(
@@ -47,6 +49,8 @@ class SampledImages(ShotSelectionGrid):
             suppress_labels=suppress_labels,
             display_dict=display_dict,
             name=name,
+            output_subdir=output_subdir,
+            timestamp_files=timestamp_files,
         )
         self.n_samples = n_samples
 

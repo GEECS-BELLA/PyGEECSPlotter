@@ -28,8 +28,11 @@ class ScalarVsParameter(ScanDisplayer):
         x_col: Optional[str] = None,
         bin_summary: str = 'none',
         display_dict: Optional[Dict[str, Any]] = None,
+        output_subdir: Optional[str] = None,
+        timestamp_files: bool = True,
     ):
-        super().__init__(name=f"{y_col}_vs_param", display_dict=display_dict)
+        super().__init__(name=f"{y_col}_vs_param", display_dict=display_dict,
+                          output_subdir=output_subdir, timestamp_files=timestamp_files)
         self.y_col = y_col
         self.x_col = x_col
         self.bin_summary = bin_summary

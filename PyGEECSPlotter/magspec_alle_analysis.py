@@ -6,6 +6,7 @@
 
 import glob
 import os
+import threading
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -121,8 +122,7 @@ class MagSpecAllEAnalyzer(MultiDiagnosticAnalyzer):
         self.bg_dir = bg_dir
         self.ebeam_diagnostic = ebeam_diagnostic
         self._default_bg = None
-        # analyze_scan does not hand aux to display/write; keep the last shot's
-        self._last_aux = None
+        self._bg_lock = threading.Lock()
 
     def register_with_scan(self, scan, remove_missing_files=False):
         # a missing camera is handled inside the analysis, as in MATLAB
@@ -130,18 +130,22 @@ class MagSpecAllEAnalyzer(MultiDiagnosticAnalyzer):
 
     def default_background(self):
         """Backgrounds from ``bg_dir`` (``fBellaBgV03`` lookup rule)."""
-        if self._default_bg is None:
-            if self.bg_dir is None:
-                raise ValueError('no bg given and no bg_dir set')
-            found = sorted(glob.glob(os.path.join(self.bg_dir, 'Scan*MagSpecB_averaged.png')))
-            if not found:
-                raise FileNotFoundError(f'no Scan*MagSpecB_averaged.png in {self.bg_dir}')
-            scan_s = os.path.basename(found[0])[4:7]
-            self._default_bg = {
-                name: open_12bit_png(os.path.join(self.bg_dir, f'Scan{scan_s}{name}_averaged.png'))
-                for name in MAGSPEC_CAMERAS
-            }
+        with self._bg_lock:   # loaded once, shared read-only across threads
+            if self._default_bg is None:
+                self._default_bg = self._read_default_background()
         return self._default_bg
+
+    def _read_default_background(self):
+        if self.bg_dir is None:
+            raise ValueError('no bg given and no bg_dir set')
+        found = sorted(glob.glob(os.path.join(self.bg_dir, 'Scan*MagSpecB_averaged.png')))
+        if not found:
+            raise FileNotFoundError(f'no Scan*MagSpecB_averaged.png in {self.bg_dir}')
+        scan_s = os.path.basename(found[0])[4:7]
+        return {
+            name: open_12bit_png(os.path.join(self.bg_dir, f'Scan{scan_s}{name}_averaged.png'))
+            for name in MAGSPEC_CAMERAS
+        }
 
     def momentum_grid(self, analyzer_dict=None):
         """Common momentum grid [GeV/c] for ``aux['p']``: ``analyzer_dict
@@ -207,7 +211,6 @@ class MagSpecAllEAnalyzer(MultiDiagnosticAnalyzer):
                 'roi': tuple(ad.get('roi', (0.01, 5.0))),
             },
         }
-        self._last_aux = aux
         return s2.alle, results, aux
 
     def _load_ebeam(self, context):
@@ -237,24 +240,27 @@ class MagSpecAllEAnalyzer(MultiDiagnosticAnalyzer):
         x, y = (pd.read_csv(p, sep='\t')['mrad'].to_numpy() for p in tables)
         return {'image': 1e-6 * read_int_ac_png(png), 'x': x, 'y': y}   # aC -> pC
 
-    def display_data(self, data, return_dict=None, title=None, fig=None, ax=None):
+    def display_data(self, data, return_dict=None, title=None, fig=None, ax=None, aux=None):
         """infoE summary figure by default; the simple allE + spectrum view
-        with ``display_dict={'info': False}`` or when ``fig``/``ax`` are given."""
+        with ``display_dict={'info': False}``, when ``fig``/``ax`` are given,
+        or when no ``aux`` is passed (infoE needs the shot's ``aux``, which
+        ``analyze_scan`` passes automatically)."""
         if data is None:
             return None, None
-        info = (self._last_aux or {}).get('infoE')
+        info = (aux or {}).get('infoE')
         if self.display_dict.get('info', True) and info is not None and fig is None and ax is None:
             info = dict(info)
             info['ebeam'] = self._load_ebeam(info.pop('ebeam_context'))
             return draw_infoe(**info, fontsize=self.display_dict.get('fontsize', 10),
                               figsize=self.display_dict.get('figsize', (20, 6.67)))
-        return self._display_simple(data, return_dict=return_dict, title=title, fig=fig, ax=ax)
+        return self._display_simple(data, return_dict=return_dict, title=title, fig=fig, ax=ax,
+                                    aux=aux)
 
-    def _display_simple(self, data, return_dict=None, title=None, fig=None, ax=None):
+    def _display_simple(self, data, return_dict=None, title=None, fig=None, ax=None, aux=None):
         """allE charge density [pC/mrad/(GeV/c)] with the spectrum below."""
         dd = self.display_dict
         n_ang, n_mmt = data.shape
-        last = self._last_aux or {}
+        last = aux or {}
         mmt = np.asarray(last['momentum']) if len(last.get('momentum', ())) == n_mmt             else self._last_momentum(n_mmt)
         ang = np.asarray(last['angle']) if len(last.get('angle', ())) == n_ang             else np.linspace(-1.3, 1.3, n_ang)
         dens = 1e-6 * data / (mmt[1] - mmt[0]) / (ang[1] - ang[0])
@@ -286,12 +292,12 @@ class MagSpecAllEAnalyzer(MultiDiagnosticAnalyzer):
 
     def write_analyzed_data(self, data, analysis_dir, scan, shot_num, context=None, aux=None):
         """allE png (integer aC, 'N aC/count' comment) + allESpec/allEDiv
-        tables, in the MATLAB formats."""
+        tables, in the MATLAB formats. The tables need the shot's ``aux``
+        (``analyze_scan`` passes it); without it only the PNG is written."""
         if data is None:
             return
         diag = self.output_diagnostic
         write_int_ac_png(get_analysed_shot_save_path(analysis_dir, diag, scan, shot_num, '.png'), data)
-        aux = aux or self._last_aux
         if aux:
             spec, div = aux['allESpec'], aux['allEDiv']
             write_table(get_analysed_shot_save_path(analysis_dir, diag, scan, shot_num, '.txt', 'Spec'),
