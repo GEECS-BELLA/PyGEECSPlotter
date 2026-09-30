@@ -50,6 +50,8 @@ class RepresentativeImagePerBin(ShotSelectionGrid):
         use_analyzer_display: bool = True,
         suppress_labels: bool = True,
         display_dict: Optional[Dict[str, Any]] = None,
+        output_subdir: Optional[str] = None,
+        timestamp_files: bool = True,
     ):
         if mode not in _MODES:
             raise ValueError(f"mode must be one of {_MODES}, got {mode!r}.")
@@ -65,6 +67,8 @@ class RepresentativeImagePerBin(ShotSelectionGrid):
             suppress_labels=suppress_labels,
             display_dict=display_dict,
             name=name,
+            output_subdir=output_subdir,
+            timestamp_files=timestamp_files,
         )
         self.mode = mode
         self.parameter = parameter

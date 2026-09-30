@@ -58,13 +58,16 @@ class TraceWaterfall(ScanDisplayer):
         y_column=None,
         overlay_fwhm: bool = False,
         display_dict: Optional[Dict[str, Any]] = None,
+        output_subdir: Optional[str] = None,
+        timestamp_files: bool = True,
     ):
         if component not in COMPONENTS:
             raise ValueError(
                 f"component must be one of {sorted(COMPONENTS)}, got {component!r}."
             )
         diag = analyzer.output_diagnostic or analyzer.diagnostic
-        super().__init__(name=f'{diag}_{component}_waterfall', display_dict=display_dict)
+        super().__init__(name=f'{diag}_{component}_waterfall', display_dict=display_dict,
+                          output_subdir=output_subdir, timestamp_files=timestamp_files)
         self.analyzer = analyzer
         self.bg = bg
         self.component = component

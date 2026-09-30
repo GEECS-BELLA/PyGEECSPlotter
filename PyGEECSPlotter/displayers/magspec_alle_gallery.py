@@ -71,7 +71,7 @@ class _AllEPanels:
         mmt, ang = return_dict['momentum'], return_dict['angle']
         self._mappable = a.pcolormesh(
             mmt, ang, self._density(np.asarray(data), return_dict),
-            cmap=dd.get('cmap', 'jet'), shading='auto', vmin=0, vmax=self._vmax,
+            cmap=dd.get('cmap', 'viridis'), shading='auto', vmin=0, vmax=self._vmax,
             rasterized=True,
         )
         a.set_title(label, fontsize=9)
@@ -116,6 +116,9 @@ class MagSpecAllESampledShots(_AllEPanels, SampledImages):
         Grid columns (default 4).
     display_dict : dict, optional
         ``figsize``, ``cmap``, ``vmax``, ``xlims``, ``ylims``.
+    output_subdir, timestamp_files :
+        As for ``ScanDisplayer``: save under ``analysis_dir/output_subdir``,
+        and add a run timestamp to the file name (default True).
     """
 
     def __init__(
@@ -125,10 +128,13 @@ class MagSpecAllESampledShots(_AllEPanels, SampledImages):
         n_samples: Optional[int] = 12,
         ncols: int = 4,
         display_dict: Optional[Dict[str, Any]] = None,
+        output_subdir: Optional[str] = None,
+        timestamp_files: bool = True,
     ):
         super().__init__(analyzer, bg=bg, n_samples=n_samples, ncols=ncols,
                          use_analyzer_display=False, suppress_labels=False,
-                         display_dict=display_dict)
+                         display_dict=display_dict, output_subdir=output_subdir,
+                         timestamp_files=timestamp_files)
         diag = analyzer.output_diagnostic or analyzer.diagnostic
         self.name = f'{diag}_sampled_shots'
 
@@ -158,6 +164,9 @@ class MagSpecAllERepresentativePerBin(_AllEPanels, RepresentativeImagePerBin):
         Grid columns (default 4).
     display_dict : dict, optional
         ``figsize``, ``cmap``, ``vmax``, ``xlims``, ``ylims``.
+    output_subdir, timestamp_files :
+        As for ``ScanDisplayer``: save under ``analysis_dir/output_subdir``,
+        and add a run timestamp to the file name (default True).
     """
 
     def __init__(
@@ -169,9 +178,12 @@ class MagSpecAllERepresentativePerBin(_AllEPanels, RepresentativeImagePerBin):
         bins: Optional[Iterable[int]] = None,
         ncols: int = 4,
         display_dict: Optional[Dict[str, Any]] = None,
+        output_subdir: Optional[str] = None,
+        timestamp_files: bool = True,
     ):
         super().__init__(analyzer, mode=mode, parameter=parameter, bg=bg, bins=bins,
                          ncols=ncols, use_analyzer_display=False, suppress_labels=False,
-                         display_dict=display_dict)
+                         display_dict=display_dict, output_subdir=output_subdir,
+                         timestamp_files=timestamp_files)
         diag = analyzer.output_diagnostic or analyzer.diagnostic
         self.name = f'{diag}_representative_{mode}_per_bin'
