@@ -6,6 +6,7 @@
 
 import glob
 import os
+import threading
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -80,6 +81,7 @@ class EBeamProfileAnalyzer(DiagnosticAnalyzer):
         self.calibration = EBeamProfileCalibration(calib_dir, day, **kwargs)
         self.bg_dir = bg_dir
         self._default_bg = None
+        self._bg_lock = threading.Lock()
 
     def load_data(self, filename):
         if not isinstance(filename, str) or not os.path.exists(filename):
@@ -87,7 +89,12 @@ class EBeamProfileAnalyzer(DiagnosticAnalyzer):
         return open_12bit_png(filename)
 
     def default_background(self):
-        """``Scan###<diagnostic>_averaged.png`` from ``bg_dir``."""
+        """``Scan###<diagnostic>_averaged.png`` from ``bg_dir``, loaded once
+        and shared read-only (safe to call from several threads)."""
+        with self._bg_lock:
+            return self._load_default_background()
+
+    def _load_default_background(self):
         if self._default_bg is None:
             if self.bg_dir is None:
                 raise ValueError('no bg given and no bg_dir set')

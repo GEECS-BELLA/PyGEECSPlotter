@@ -11,6 +11,8 @@ import re
 import glob
 import json
 import datetime
+import inspect
+import warnings
 import pandas as pd
 from pathlib import Path
 from tqdm import tqdm
@@ -24,6 +26,22 @@ from PyGEECSPlotter.multi_diagnostic_analyzer import MultiDiagnosticAnalyzer
 import PyGEECSPlotter.plotting as gplt
 colors = gplt.configure_plotting()
 
+
+
+def _aux_kwarg(method, aux):
+    """``{'aux': aux}`` if ``method`` accepts an ``aux`` argument, else ``{}``.
+
+    ``analyze_scan`` hands each shot's ``aux`` to ``display_data`` and
+    ``write_analyzed_data`` only when the analyzer asks for it, so analyzers
+    written before this was added keep working unchanged. Passing ``aux``
+    per call (rather than an analyzer caching the last shot's ``aux``) keeps
+    display and write correct when shots are analysed in parallel.
+    """
+    try:
+        params = inspect.signature(method).parameters
+    except (TypeError, ValueError):
+        return {}
+    return {'aux': aux} if 'aux' in params else {}
 
 
 class ScanDataAnalyzer:
@@ -691,6 +709,8 @@ class ScanDataAnalyzer:
             Provides ``load_data``, ``analyze_data``, and optionally
             ``display_data`` / ``write_analyzed_data`` /
             ``write_analyzed_lineouts`` / ``write_displayed_data``.
+            If ``display_data`` or ``write_analyzed_data`` accepts an ``aux``
+            argument, it receives that shot's ``aux``.
         bg : optional
             Background spec; see ``_resolve_bg_for_row``.
         write_columns_to_sfile : bool, optional
@@ -716,6 +736,11 @@ class ScanDataAnalyzer:
         self.last_merged_columns = []
         rows = []
         analysis_dir = None
+        if write_displayed and not display_data:
+            warnings.warn(
+                "analyze_scan(write_displayed=True) has no effect without display_data=True: "
+                "the figure written is the one display_data draws. Pass display_data=True "
+                "to save per-shot figures.", stacklevel=2)
 
         for context, data, results, aux in self._iter_shots(analyzer, bg=bg):
             scan, shot_num = int(context['scan']), int(context['Shotnumber'])
@@ -728,13 +753,15 @@ class ScanDataAnalyzer:
             if display_data:
                 filename = context.get(f'{analyzer.diagnostic} file_list', '')
                 fig, _ = analyzer.display_data(
-                    data, return_dict=results, title=os.path.basename(filename)
+                    data, return_dict=results, title=os.path.basename(filename),
+                    **_aux_kwarg(analyzer.display_data, aux)
                 )
 
             if write_analyzed:
                 if analysis_dir is None:
                     analysis_dir = self.get_scan_data_analysis_dir(make_dir=True)
-                analyzer.write_analyzed_data(data, analysis_dir, scan, shot_num, context=context)
+                analyzer.write_analyzed_data(data, analysis_dir, scan, shot_num, context=context,
+                                             **_aux_kwarg(analyzer.write_analyzed_data, aux))
                 if write_lineouts:
                     analyzer.write_analyzed_lineouts(aux, analysis_dir, scan, shot_num)
             if display_data and write_displayed:
