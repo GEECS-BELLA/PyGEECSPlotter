@@ -151,4 +151,12 @@ def create_filtered_dropdown_widget(folder_path, default_filter_string=''):
     display(filter_text, dropdown)
     return dropdown
 
+def select_data_range(style={},  display_widgets=True):
+    start_date_widget = widgets.DatePicker(description='Start Date', value = datetime.date.today(), style=style, disabled=False)
+    end_date_widget = widgets.DatePicker(description='End Date', value = datetime.date.today(), style=style, disabled=False)
+
+    if display_widgets:
+        display(widgets.HBox([start_date_widget, end_date_widget]))
+    return start_date_widget, end_date_widget
+
 
