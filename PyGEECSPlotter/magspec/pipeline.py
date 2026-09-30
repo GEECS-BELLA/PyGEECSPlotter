@@ -13,10 +13,14 @@ from PyGEECSPlotter.magspec.stage2 import ProcessedWindow, run_stage2
 
 
 def _sig(a, digits):
-    """Round to what ``%.<digits>e`` + ``str2double`` gives back."""
+    """Round to what ``%.<digits>e`` + ``str2double`` gives back (NaN/Inf
+    passed through). Formats through numpy's C formatter in one call."""
     a = np.asarray(a, float)
-    with np.errstate(invalid='ignore'):
-        return np.array([float(f'{v:.{digits}e}') if np.isfinite(v) else v for v in a.ravel()]).reshape(a.shape)
+    out = a.copy()
+    ok = np.isfinite(a)
+    if ok.any():
+        out[ok] = np.char.mod(f'%.{digits}e', a[ok]).astype(float)
+    return out
 
 
 def _window(img, win, field, quantize):

@@ -62,7 +62,7 @@ def draw_infoe(mmt, ya, density, accp, spectrum, gap, scalars, xray_img, xray_x_
     # repo copy but the reference figures use this automatic scale)
     ipe = int(np.nanargmin(np.abs(mmt - scalars.get('energyPeakMmt_GeV/c', mmt[0]))))
     peak_cd = np.nanmax(density[:, ipe]) or 0.1
-    m = ax_im.pcolormesh(mmt, ya, density, cmap='jet', shading='gouraud', vmin=0, vmax=peak_cd,
+    m = ax_im.pcolormesh(mmt, ya, density, cmap='jet', shading='auto', vmin=0, vmax=peak_cd,
                          rasterized=True)
     _acceptance_mask(ax_im, mmt, accp, ya)
     ax_im.fill([gap[0], gap[1], gap[1], gap[0]], [ya[-1], ya[-1], ya[0], ya[0]], color='k', lw=0)
@@ -90,7 +90,7 @@ def draw_infoe(mmt, ya, density, accp, spectrum, gap, scalars, xray_img, xray_x_
         ex, ey = np.asarray(ebeam['x']), np.asarray(ebeam['y'])
         dmrad = ex[1] - ex[0]
         mb = ax_eb.pcolormesh(ey, ex, np.asarray(ebeam['image']).T / dmrad ** 2, cmap='jet',
-                              shading='gouraud', vmin=0, rasterized=True)
+                              shading='auto', vmin=0, rasterized=True)
         fig.colorbar(mb, ax=ax_eb, location='top', fraction=0.08, pad=0.02)
         ax_eb.plot([ey_angle, ey_angle] if np.isfinite(ey_angle) else [0, 0], [-2, 2], 'w--', lw=1)
         ax_eb.plot(*_SCREEN_BOX, 'w-.', lw=1)
@@ -114,7 +114,7 @@ def draw_infoe(mmt, ya, density, accp, spectrum, gap, scalars, xray_img, xray_x_
     xr = np.fliplr(np.asarray(xray_img))
     # MATLAB plots the saved frontSL PNG counts (aC per pixel)
     mx = ax_xr.pcolormesh(-np.asarray(xray_x_mm), xray_y_mm, 1e3 * np.rot90(xr, 2), cmap='jet',
-                          shading='gouraud', rasterized=True)
+                          shading='auto', rasterized=True)
     ax_xr.yaxis.tick_right()
     fig.colorbar(mx, ax=ax_xr, location='top', fraction=0.08, pad=0.02)
     ax_xr.axvline(0, color='w', ls='-.', lw=1)

@@ -193,7 +193,9 @@ class MagSpecAllEAnalyzer(MultiDiagnosticAnalyzer):
                 'xray_img': s1.front_img, 'xray_x_mm': s1.front_x[0], 'xray_y_mm': s1.front_y[0],
                 'ey_angle': ey, 'ict_pC': float(context.get(ICT_COLUMN, np.nan)),
                 'scan': context.get('scan'), 'shot': context.get('Shotnumber'),
-                'ebeam': self._load_ebeam(context),
+                # the e-beam files are only read when infoE is drawn
+                'ebeam_context': {k: context.get(k) for k in
+                                  ['scan', 'Shotnumber'] + [f'{n} file_list' for n in MAGSPEC_CAMERAS]},
                 'roi': tuple(ad.get('roi', (0.01, 5.0))),
             },
         }
@@ -234,6 +236,8 @@ class MagSpecAllEAnalyzer(MultiDiagnosticAnalyzer):
             return None, None
         info = (self._last_aux or {}).get('infoE')
         if self.display_dict.get('info', True) and info is not None and fig is None and ax is None:
+            info = dict(info)
+            info['ebeam'] = self._load_ebeam(info.pop('ebeam_context'))
             return draw_infoe(**info, fontsize=self.display_dict.get('fontsize', 10),
                               figsize=self.display_dict.get('figsize', (20, 6.67)))
         return self._display_simple(data, return_dict=return_dict, title=title, fig=fig, ax=ax)
