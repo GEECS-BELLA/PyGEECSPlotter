@@ -62,30 +62,47 @@ def xray_out(img, prm):
     img = np.asarray(img, float)
     cnt = img.sum()
     szy, szx = img.shape
-    out = img.copy()
+    # padded frame: the image in the centre, its first/last ``pit`` rows and
+    # columns copied outward (not mirrored), zero corners -- as MATLAB's
+    # [crn,edgT,crn; edgL,img,edgR; crn,edgB,crn]
+    pd_img = np.zeros((szy + 2 * pit, szx + 2 * pit))
+    core = pd_img[pit:pit + szy, pit:pit + szx]
 
-    def padded(a):
-        crn = np.zeros((pit, pit))
-        top = np.hstack([crn, a[:pit, :], crn])
-        mid = np.hstack([a[:, :pit], a, a[:, -pit:]])
-        bot = np.hstack([crn, a[-pit:, :], crn])
-        return np.vstack([top, mid, bot])
+    def refresh_edges():
+        pd_img[:pit, pit:pit + szx] = core[:pit, :]
+        pd_img[pit + szy:, pit:pit + szx] = core[-pit:, :]
+        pd_img[pit:pit + szy, :pit] = core[:, :pit]
+        pd_img[pit:pit + szy, pit + szx:] = core[:, -pit:]
 
-    pd_img = padded(img)
+    core[...] = img
+    refresh_edges()
+    valid = img >= min_x
+    # neighbour views (top, bottom, left, right) and reusable work arrays
+    views = (pd_img[:szy, pit:pit + szx], pd_img[2 * pit:2 * pit + szy, pit:pit + szx],
+             pd_img[pit:pit + szy, :szx], pd_img[pit:pit + szy, 2 * pit:2 * pit + szx])
+    ref = np.empty((szy, szx))
+    tmp = np.empty((szy, szx))
+    hit = np.empty((szy, szx), dtype=bool)
     if fct != 0:
         for _ in range(itr):
-            # same operation order as MATLAB: exact ties in the comparison
-            # below are common on integer images
-            ref = (0.25 * pd_img[:szy, pit:pit + szx]
-                   + 0.25 * pd_img[2 * pit:2 * pit + szy, pit:pit + szx]
-                   + 0.25 * pd_img[pit:pit + szy, :szx]
-                   + 0.25 * pd_img[pit:pit + szy, 2 * pit:2 * pit + szx])
+            # ref = 0.25*top + 0.25*bottom + 0.25*left + 0.25*right, summed
+            # left to right as MATLAB does: exact ties in the comparison below
+            # are common on integer images, so the rounding must match
+            np.multiply(views[0], 0.25, out=ref)
+            for v in views[1:]:
+                np.multiply(v, 0.25, out=tmp)
+                np.add(ref, tmp, out=ref)
             if fct > 0:
-                hit = ((out - fct * ref) > 0) & (img >= min_x)
+                np.multiply(ref, fct, out=tmp)
+                np.subtract(core, tmp, out=tmp)      # core - fct*ref
             else:
-                hit = ((out * fct + ref) > 0) & (img >= min_x)
-            out = out * (~hit) + ref * hit
-            pd_img = padded(out)
+                np.multiply(core, fct, out=tmp)
+                np.add(tmp, ref, out=tmp)            # core*fct + ref
+            np.greater(tmp, 0, out=hit)
+            np.logical_and(hit, valid, out=hit)
+            np.copyto(core, ref, where=hit)
+            refresh_edges()
+    out = core.copy()
     return out, cnt - out.sum()
 
 
