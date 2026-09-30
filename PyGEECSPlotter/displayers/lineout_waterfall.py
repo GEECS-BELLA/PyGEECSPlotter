@@ -46,9 +46,12 @@ class LineoutWaterfall(ScanDisplayer):
         bg=None,
         y_column=None,
         display_dict: Optional[Dict[str, Any]] = None,
+        output_subdir: Optional[str] = None,
+        timestamp_files: bool = True,
     ):
         diag = analyzer.output_diagnostic or analyzer.diagnostic
-        super().__init__(name=f'{diag}_{axis}_lineout_waterfall', display_dict=display_dict)
+        super().__init__(name=f'{diag}_{axis}_lineout_waterfall', display_dict=display_dict,
+                          output_subdir=output_subdir, timestamp_files=timestamp_files)
         self.analyzer = analyzer
         self.axis = axis
         self.bg = bg

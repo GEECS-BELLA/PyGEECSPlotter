@@ -57,9 +57,12 @@ class MultiDiagnosticAlignment(ScanDisplayer):
         ncols: Optional[int] = None,
         alignment_name: Optional[str] = None,
         display_dict: Optional[Dict[str, Any]] = None,
+        output_subdir: Optional[str] = None,
+        timestamp_files: bool = True,
     ):
         name = f"{alignment_name}_alignment" if alignment_name else "multi_diagnostic_alignment"
-        super().__init__(name=name, display_dict=display_dict)
+        super().__init__(name=name, display_dict=display_dict,
+                          output_subdir=output_subdir, timestamp_files=timestamp_files)
         self.diagnostic_dicts = list(diagnostic_dicts)
         self.analyzer = analyzer if analyzer is not None else ImageAnalyzer()
         self.shot_selector = shot_selector

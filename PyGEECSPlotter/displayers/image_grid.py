@@ -45,10 +45,13 @@ class ImageGridDisplayer(ScanDisplayer):
         suppress_labels: bool = True,
         display_dict: Optional[Dict[str, Any]] = None,
         name: Optional[str] = None,
+        output_subdir: Optional[str] = None,
+        timestamp_files: bool = True,
     ):
         if name is None:
             name = f"{analyzer.output_diagnostic or analyzer.diagnostic}_image_grid"
-        super().__init__(name=name, display_dict=display_dict)
+        super().__init__(name=name, display_dict=display_dict,
+                          output_subdir=output_subdir, timestamp_files=timestamp_files)
         self.analyzer = analyzer
         self.ncols = ncols
         self.use_analyzer_display = use_analyzer_display

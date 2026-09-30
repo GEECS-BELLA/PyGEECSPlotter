@@ -27,6 +27,8 @@ class ShotSelectionGrid(ImageGridDisplayer):
         suppress_labels: bool = True,
         display_dict: Optional[Dict[str, Any]] = None,
         name: Optional[str] = None,
+        output_subdir: Optional[str] = None,
+        timestamp_files: bool = True,
     ):
         super().__init__(
             analyzer,
@@ -35,6 +37,8 @@ class ShotSelectionGrid(ImageGridDisplayer):
             suppress_labels=suppress_labels,
             display_dict=display_dict,
             name=name,
+            output_subdir=output_subdir,
+            timestamp_files=timestamp_files,
         )
         self.bg = bg
 
