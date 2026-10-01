@@ -47,8 +47,7 @@ class ParallelScanDataAnalyzer(ScanDataAnalyzer):
       mutated then used with no lock — **do not use ``WavefrontAnalyzer``
       with this class**; use the base ``ScanDataAnalyzer`` for it instead).
 
-    If in doubt about a given analyzer, check `pygeecsplotter-dev`'s
-    `architecture.md` ("Parallel analysis") or ask before assuming it's safe.
+    If in doubt about a given analyzer, use the base ``ScanDataAnalyzer``.
 
     Parameters
     ----------
