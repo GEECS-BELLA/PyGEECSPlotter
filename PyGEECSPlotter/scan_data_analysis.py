@@ -617,15 +617,55 @@ class ScanDataAnalyzer:
             print(f"An error occurred while retrieving the background file path: {e}")
             return None
 
+    def _process_row(self, analyzer, bg, row):
+        """
+        Run one shot's pipeline: build its context, load its diagnostic
+        file(s), resolve its background, and call ``analyzer.analyze_data``.
+
+        This is the per-row body shared by ``_iter_shots`` (serial) and
+        ``ParallelScanDataAnalyzer._iter_shots_parallel`` (threaded) —
+        kept in exactly one place so the multi-vs-single-diagnostic
+        branching and background resolution can't drift between the two
+        paths.
+
+        Parameters
+        ----------
+        analyzer : DiagnosticAnalyzer
+        bg : optional
+            Background spec passed through ``_resolve_bg_for_row`` /
+            ``_resolve_bg_for_multi``.
+        row : Series
+            One row of ``active_data`` (as yielded by ``DataFrame.iterrows()``).
+
+        Returns
+        -------
+        context, data, results, aux : as documented on ``_iter_shots``.
+        """
+        context = row.to_dict()
+        is_multi = isinstance(analyzer, MultiDiagnosticAnalyzer)
+
+        if is_multi:
+            paths = {name: context.get(f'{name} file_list') for name, _ in analyzer.inputs}
+            data = analyzer.load_data(paths)
+            bg_i = self._resolve_bg_for_multi(analyzer, bg, context)
+        elif analyzer.diagnostic is not None:
+            filename = context.get(f'{analyzer.diagnostic} file_list')
+            data = analyzer.load_data(filename)
+            bg_i = self._resolve_bg_for_row(analyzer, bg, context)
+        else:
+            data = None
+            bg_i = self._resolve_bg_for_row(analyzer, bg, context)
+
+        data, results, aux = analyzer.analyze_data(data, bg=bg_i, context=context)
+
+        return context, data, results, aux
+
     def _iter_shots(self, analyzer, bg=None, show_progress=True, rows=None):
         """
         Yield ``(context, data, results, aux)`` for each shot.
 
-        Centralizes the per-shot iteration shell:
-          1) iterate the rows (``active_data`` by default)
-          2) load the diagnostic file (if any)
-          3) resolve the per-row background
-          4) call ``analyzer.analyze_data``
+        Centralizes the per-shot iteration shell: iterate the rows
+        (``active_data`` by default) and run ``_process_row`` on each.
 
         Used by ``analyze_scan`` and any per-shot aggregation
         (``mean_std_diagnostic``, ``aggregate_per_bin``, custom workflows).
@@ -659,26 +699,8 @@ class ScanDataAnalyzer:
         if show_progress:
             it = tqdm(it, total=rows.shape[0])
 
-        is_multi = isinstance(analyzer, MultiDiagnosticAnalyzer)
-
         for _, row in it:
-            context = row.to_dict()
-
-            if is_multi:
-                paths = {name: context.get(f'{name} file_list') for name, _ in analyzer.inputs}
-                data = analyzer.load_data(paths)
-                bg_i = self._resolve_bg_for_multi(analyzer, bg, context)
-            elif analyzer.diagnostic is not None:
-                filename = context.get(f'{analyzer.diagnostic} file_list')
-                data = analyzer.load_data(filename)
-                bg_i = self._resolve_bg_for_row(analyzer, bg, context)
-            else:
-                data = None
-                bg_i = self._resolve_bg_for_row(analyzer, bg, context)
-
-            data, results, aux = analyzer.analyze_data(data, bg=bg_i, context=context)
-
-            yield context, data, results, aux
+            yield self._process_row(analyzer, bg, row)
 
     def analyze_scan(self, analyzer,
         bg=None,
@@ -736,42 +758,89 @@ class ScanDataAnalyzer:
         self.last_merged_columns = []
         rows = []
         analysis_dir = None
+        self._warn_if_write_displayed_is_a_noop(display_data, write_displayed)
+
+        for context, data, results, aux in self._iter_shots(analyzer, bg=bg):
+            rows.append({'scan': int(context['scan']), 'Shotnumber': int(context['Shotnumber']), **results})
+            analysis_dir = self._apply_shot_side_effects(
+                analyzer, context, data, results, aux, analysis_dir,
+                display_data=display_data, write_analyzed=write_analyzed,
+                write_lineouts=write_lineouts, write_displayed=write_displayed,
+                close_displayed=close_displayed,
+            )
+
+        return self._finish_analyze_scan(
+            rows, analyzer, analysis_dir, write_columns_to_sfile=write_columns_to_sfile,
+            analysis_label=analysis_label, extra_info_str=extra_info_str,
+            overwrite_columns=overwrite_columns,
+        )
+
+    @staticmethod
+    def _warn_if_write_displayed_is_a_noop(display_data, write_displayed):
         if write_displayed and not display_data:
             warnings.warn(
                 "analyze_scan(write_displayed=True) has no effect without display_data=True: "
                 "the figure written is the one display_data draws. Pass display_data=True "
-                "to save per-shot figures.", stacklevel=2)
+                "to save per-shot figures.", stacklevel=3)
 
-        for context, data, results, aux in self._iter_shots(analyzer, bg=bg):
-            scan, shot_num = int(context['scan']), int(context['Shotnumber'])
-            rows.append({'scan': scan, 'Shotnumber': shot_num, **results})
+    def _apply_shot_side_effects(self, analyzer, context, data, results, aux, analysis_dir,
+                                 display_data, write_analyzed, write_lineouts,
+                                 write_displayed, close_displayed):
+        """
+        Run one shot's display/write side effects, exactly as ``analyze_scan``
+        did inline before this was extracted so it could also be called, in
+        the same order, from ``ParallelScanDataAnalyzer``.
 
-            if data is None:
-                continue
+        Returns the (possibly newly-resolved) ``analysis_dir``, so the caller
+        can thread it through to the next shot and to ``_finish_analyze_scan``
+        — it is computed at most once per scan, on first use, exactly as
+        before.
+        """
+        if data is None:
+            return analysis_dir
 
-            fig = None
-            if display_data:
-                filename = context.get(f'{analyzer.diagnostic} file_list', '')
-                fig, _ = analyzer.display_data(
-                    data, return_dict=results, title=os.path.basename(filename),
-                    **_aux_kwarg(analyzer.display_data, aux)
-                )
+        scan, shot_num = int(context['scan']), int(context['Shotnumber'])
 
-            if write_analyzed:
-                if analysis_dir is None:
-                    analysis_dir = self.get_scan_data_analysis_dir(make_dir=True)
-                analyzer.write_analyzed_data(data, analysis_dir, scan, shot_num, context=context,
-                                             **_aux_kwarg(analyzer.write_analyzed_data, aux))
-                if write_lineouts:
-                    analyzer.write_analyzed_lineouts(aux, analysis_dir, scan, shot_num)
-            if display_data and write_displayed:
-                if analysis_dir is None:
-                    analysis_dir = self.get_scan_data_analysis_dir(make_dir=True)
-                analyzer.write_displayed_data(fig, analysis_dir, scan, shot_num)
+        fig = None
+        if display_data:
+            filename = context.get(f'{analyzer.diagnostic} file_list', '')
+            fig, _ = analyzer.display_data(
+                data, return_dict=results, title=os.path.basename(filename),
+                **_aux_kwarg(analyzer.display_data, aux)
+            )
 
-            if close_displayed and fig is not None:
-                plt.close(fig)
+        if write_analyzed:
+            if analysis_dir is None:
+                analysis_dir = self.get_scan_data_analysis_dir(make_dir=True)
+            analyzer.write_analyzed_data(data, analysis_dir, scan, shot_num, context=context,
+                                         **_aux_kwarg(analyzer.write_analyzed_data, aux))
+            if write_lineouts:
+                analyzer.write_analyzed_lineouts(aux, analysis_dir, scan, shot_num)
+        if display_data and write_displayed:
+            if analysis_dir is None:
+                analysis_dir = self.get_scan_data_analysis_dir(make_dir=True)
+            analyzer.write_displayed_data(fig, analysis_dir, scan, shot_num)
 
+        if close_displayed and fig is not None:
+            plt.close(fig)
+
+        return analysis_dir
+
+    def _finish_analyze_scan(self, rows, analyzer, analysis_dir, write_columns_to_sfile,
+                             analysis_label, extra_info_str, overwrite_columns):
+        """
+        Post-loop tail of ``analyze_scan``: build ``add_columns_df``, merge
+        the renamed columns into ``self.data``, and optionally write them
+        back to the sfile plus the standalone controls/summary files.
+
+        Shared by the serial ``analyze_scan`` and
+        ``ParallelScanDataAnalyzer.analyze_scan`` so this logic exists in
+        exactly one place. ``analysis_dir`` is whatever the shot loop already
+        resolved (``None`` if neither ``write_analyzed`` nor
+        ``write_displayed`` needed it); this method resolves it itself,
+        lazily, if still ``None`` and it's needed for the controls/summary
+        files — the same lazy-once behaviour ``analyze_scan`` always had.
+        """
         add_columns_df = pd.DataFrame(rows) if rows else None
 
         if add_columns_df is not None and len(self.data) > 0:
