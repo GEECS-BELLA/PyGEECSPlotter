@@ -90,26 +90,26 @@ class ParallelScanDataAnalyzer(ScanDataAnalyzer):
                 "they will dominate the runtime. Use ScanDataAnalyzer.analyze_scan "
                 "if you need them.", stacklevel=2)
 
-        # Resolved (and created) once up front so the worker threads can write
-        # per-shot files without racing to make the directory.
-        if write_analyzed:
-            analysis_dir = self.get_scan_data_analysis_dir(make_dir=True)
-
         def process(row):
             context, data, results, aux = self._process_row(analyzer, bg, row)
             if write_analyzed and data is not None:
+                # Each shot's own scan dir (an sfile can span several scans).
                 scan, shot_num = int(context['scan']), int(context['Shotnumber'])
-                analyzer.write_analyzed_data(data, analysis_dir, scan, shot_num, context=context,
+                shot_dir = self._shot_analysis_dir(scan)
+                analyzer.write_analyzed_data(data, shot_dir, scan, shot_num, context=context,
                                              **_aux_kwarg(analyzer.write_analyzed_data, aux))
                 if write_lineouts:
-                    analyzer.write_analyzed_lineouts(aux, analysis_dir, scan, shot_num)
+                    analyzer.write_analyzed_lineouts(aux, shot_dir, scan, shot_num)
             return context, data, results, aux
 
         for context, data, results, aux in self._iter_shots_parallel(
             analyzer, bg=bg, max_workers=max_workers, process=process
         ):
             rows.append({'scan': int(context['scan']), 'Shotnumber': int(context['Shotnumber']), **results})
-            # write_analyzed / write_lineouts already done in the workers.
+            # write_analyzed / write_lineouts already done in the workers;
+            # still record the first shot's dir as the scan-level default.
+            if write_analyzed and analysis_dir is None and data is not None:
+                analysis_dir = self._shot_analysis_dir(int(context['scan']))
             analysis_dir = self._apply_shot_side_effects(
                 analyzer, context, data, results, aux, analysis_dir,
                 display_data=display_data, write_analyzed=False,

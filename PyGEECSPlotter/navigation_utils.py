@@ -131,8 +131,8 @@ def get_analysis_dir(top_dir, scan, save_label=None, make_dir=False, print_data=
         analysis_dir = os.path.join(top_dir, 'analysis', 'Scan%03d' %scan)
     else:
         analysis_dir = os.path.join(top_dir, 'analysis', save_label, 'Scan%03d' %scan)
-    if make_dir and not os.path.exists(analysis_dir):
-        os.makedirs(analysis_dir)
+    if make_dir:
+        os.makedirs(analysis_dir, exist_ok=True)  # safe with concurrent shot writers
     if print_data:
         print('Analysys Dir             : %s' %analysis_dir)
     return analysis_dir

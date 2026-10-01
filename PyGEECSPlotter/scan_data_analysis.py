@@ -793,8 +793,9 @@ class ScanDataAnalyzer:
 
         Returns the (possibly newly-resolved) ``analysis_dir``, so the caller
         can thread it through to the next shot and to ``_finish_analyze_scan``
-        — it is computed at most once per scan, on first use, exactly as
-        before.
+        — it is the analysis dir of the first shot written, used as the
+        default for scan-level files. Per-shot files always go to the dir of
+        that shot's own ``context['scan']``.
         """
         if data is None:
             return analysis_dir
@@ -809,17 +810,21 @@ class ScanDataAnalyzer:
                 **_aux_kwarg(analyzer.display_data, aux)
             )
 
-        if write_analyzed:
+        # An sfile can span several scans: each shot's files go to its own
+        # scan's analysis dir; the first one resolved is the default returned
+        # for the scan-level summary/controls files.
+        if write_analyzed or (display_data and write_displayed):
+            shot_dir = self._shot_analysis_dir(scan)
             if analysis_dir is None:
-                analysis_dir = self.get_scan_data_analysis_dir(make_dir=True)
-            analyzer.write_analyzed_data(data, analysis_dir, scan, shot_num, context=context,
+                analysis_dir = shot_dir
+
+        if write_analyzed:
+            analyzer.write_analyzed_data(data, shot_dir, scan, shot_num, context=context,
                                          **_aux_kwarg(analyzer.write_analyzed_data, aux))
             if write_lineouts:
-                analyzer.write_analyzed_lineouts(aux, analysis_dir, scan, shot_num)
+                analyzer.write_analyzed_lineouts(aux, shot_dir, scan, shot_num)
         if display_data and write_displayed:
-            if analysis_dir is None:
-                analysis_dir = self.get_scan_data_analysis_dir(make_dir=True)
-            analyzer.write_displayed_data(fig, analysis_dir, scan, shot_num)
+            analyzer.write_displayed_data(fig, shot_dir, scan, shot_num)
 
         if close_displayed and fig is not None:
             plt.close(fig)
@@ -906,6 +911,10 @@ class ScanDataAnalyzer:
 
         return add_columns_df.rename(columns=rename_columns)
     
+    def _shot_analysis_dir(self, scan):
+        """Analysis dir (created if needed) for one shot's own scan number."""
+        return get_analysis_dir(self.top_dir, int(scan), make_dir=True)
+
     def get_scan_data_analysis_dir( self, make_dir=True ):
         return get_analysis_dir(self.top_dir, self.scan, make_dir=True)
 
