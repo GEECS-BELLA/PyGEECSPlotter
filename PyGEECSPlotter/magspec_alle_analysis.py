@@ -7,6 +7,7 @@
 import glob
 import os
 import threading
+import warnings
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -73,6 +74,10 @@ class MagSpecAllEAnalyzer(MultiDiagnosticAnalyzer):
         ``angle_cuts`` : (max angle, max div, max |mean-peak|) [mrad] for
         the EBeam-profile input-angle estimate, default (1.8, 1.32, 0.35).
         ``ey_angle`` : force the input angle [mrad] instead.
+        ``ebeam_columns`` : ``(output_diagnostic, analysis_label)`` that
+        ``EBeamProfileAnalyzer`` wrote its sfile columns with, e.g.
+        ``('py-ebeam', 'py_test_v1')`` for ``'py-ebeam peak angle x [mrad]
+        py_test_v1'``. Default None: the MATLAB ``'EBeamPrf ...'`` names.
         ``momentum_grid`` : fixed momentum axis [GeV/c] for ``aux['p']``
         (default 1024 points across ``roi``).
     calibration_kwargs : dict, optional
@@ -84,6 +89,15 @@ class MagSpecAllEAnalyzer(MultiDiagnosticAnalyzer):
         ``'CAM-TEA-EBeam_ProfileA'`` is where both MATLAB and
         ``EBeamProfileAnalyzer`` write them. None, or missing files, leaves
         that panel blank.
+    xray_diagnostic : str or None
+        Folder under ``analysis/ScanNNN/`` for the extra per-shot infoE
+        inputs that ``write_analyzed_data`` saves when it is given (e.g.
+        ``'py-magspec-mw-xray'``), so ``MagSpecAllEReader(load='infoE')`` can
+        redraw the full infoE without re-analysing: the front-screen x-ray
+        image (``ScanNNN_<xray>_SSS.png``, integer aC) and an ``Info`` table
+        (``ScanNNN_<xray>Info_SSS.txt``: x-ray x / y axes [mm], momentum
+        [GeV/c] and acceptance [mrad] on the ROI grid, screen gap [GeV/c];
+        columns of different length are NaN-padded). None: not written.
 
     ``display_data`` draws the MATLAB infoE summary figure (e-beam profile,
     allE charge density and spectrum, front-screen x-ray, info text).
@@ -102,13 +116,17 @@ class MagSpecAllEAnalyzer(MultiDiagnosticAnalyzer):
       ``'p_lo'`` (spectrum [pC/GeV] on the fixed momentum grid) and
       ``'angle'`` / ``'angle_lo'`` (divergence [fC/mrad]).
 
-    The sfile row (``context``) must contain ``HALLPROBE-TEA-MAGSPEC Field``
-    and the ``EBeamPrf ...`` angle / divergence columns.
+    The sfile row (``context``) must contain ``HALLPROBE-TEA-MAGSPEC Field``.
+    It should also contain the ``EBeamPrf ...`` angle / divergence columns
+    (run ``EBeamProfileAnalyzer`` first and write them to the sfile); if they
+    are missing a warning is issued once and the input angle is taken as 0
+    mrad, unless ``analyzer_dict['ey_angle']`` is given.
     """
 
     def __init__(self, calib_dir, day, bg_dir=None, analyzer_dict=None,
                  display_dict=None, output_diagnostic='MagSpecAllE',
-                 calibration_kwargs=None, ebeam_diagnostic='CAM-TEA-EBeam_ProfileA'):
+                 calibration_kwargs=None, ebeam_diagnostic='CAM-TEA-EBeam_ProfileA',
+                 xray_diagnostic=None):
         cams = {name: _MagSpecCamera(diagnostic=name, file_ext='.png') for name in MAGSPEC_CAMERAS}
         super().__init__(
             inputs=[(name, '.png') for name in MAGSPEC_CAMERAS],
@@ -121,8 +139,10 @@ class MagSpecAllEAnalyzer(MultiDiagnosticAnalyzer):
         self.calibration = MagSpecCalibration(calib_dir, day, **(calibration_kwargs or {}))
         self.bg_dir = bg_dir
         self.ebeam_diagnostic = ebeam_diagnostic
+        self.xray_diagnostic = xray_diagnostic
         self._default_bg = None
         self._bg_lock = threading.Lock()
+        self._warned_no_ebeam_angle = False
 
     def register_with_scan(self, scan, remove_missing_files=False):
         # a missing camera is handled inside the analysis, as in MATLAB
@@ -146,6 +166,38 @@ class MagSpecAllEAnalyzer(MultiDiagnosticAnalyzer):
             name: open_12bit_png(os.path.join(self.bg_dir, f'Scan{scan_s}{name}_averaged.png'))
             for name in MAGSPEC_CAMERAS
         }
+
+    @staticmethod
+    def _ebeam_columns(context, ebeam_columns):
+        """``context`` with the EBeam-profile columns under the MATLAB names.
+
+        ``ebeam_columns`` = ``(output_diagnostic, analysis_label)`` the
+        EBeamProfileAnalyzer columns were written with, i.e. columns named
+        ``'<output_diagnostic> peak angle x [mrad] <analysis_label>'``. None
+        means the MATLAB names (``'EBeamPrf peak angle x [mrad]'``)."""
+        if ebeam_columns is None:
+            return context
+        diag, label = ebeam_columns
+        mapped = dict(context)
+        for stat in ('peak angle', 'mean angle', 'std div', 'fwhm div'):
+            for ax in 'xy':
+                name = f'{stat} {ax} [mrad]'
+                src = ' '.join(s for s in (diag, name, label) if s)
+                if src in context:
+                    mapped[f'EBeamPrf {name}'] = context[src]
+        return mapped
+
+    def _warn_no_ebeam_angle(self, err):
+        """Warn once per analyzer (thread-safe) that the input angle defaults to 0."""
+        with self._bg_lock:
+            if self._warned_no_ebeam_angle:
+                return
+            self._warned_no_ebeam_angle = True
+        warnings.warn(
+            f"sfile has no EBeamPrf column {err}; using e-beam input angle 0 mrad. "
+            "Run EBeamProfileAnalyzer and write its columns to the sfile first "
+            "(or pass analyzer_dict={'ey_angle': ...}) to use the measured angle.",
+            stacklevel=2)
 
     def momentum_grid(self, analyzer_dict=None):
         """Common momentum grid [GeV/c] for ``aux['p']``: ``analyzer_dict
@@ -174,7 +226,14 @@ class MagSpecAllEAnalyzer(MultiDiagnosticAnalyzer):
         if ad.get('ey_angle') is not None:
             ey = float(ad['ey_angle'])
         else:
-            ey = ebeam_y_angle(context, *ad.get('angle_cuts', (1.8, 1.32, 0.35)))
+            try:
+                ey = ebeam_y_angle(self._ebeam_columns(context, ad.get('ebeam_columns')),
+                                   *ad.get('angle_cuts', (1.8, 1.32, 0.35)))
+            except KeyError as err:
+                # EBeamPrf scalars not in the sfile: no input angle, as when
+                # the quality cuts fail.
+                self._warn_no_ebeam_angle(err)
+                ey = 0.0
 
         s1, s2 = run_alle(raw, bgs, self.calibration, field_T, ey,
                           roi=tuple(ad.get('roi', (0.01, 5.0))),
@@ -304,6 +363,22 @@ class MagSpecAllEAnalyzer(MultiDiagnosticAnalyzer):
                         list(spec.columns), [spec[c] for c in spec.columns])
             write_table(get_analysed_shot_save_path(analysis_dir, diag, scan, shot_num, '.txt', 'Div'),
                         list(div.columns), [div[c] for c in div.columns])
+            if self.xray_diagnostic:
+                self._write_xray(aux['infoE'], analysis_dir, scan, shot_num)
+
+    def _write_xray(self, info, analysis_dir, scan, shot_num):
+        """The infoE inputs not in the allE files, to ``xray_diagnostic``."""
+        xr = self.xray_diagnostic
+        img = np.asarray(info['xray_img'], float)
+        if img.ndim == 2 and img.size > 1:   # a missing camera A gives a 1-element dummy
+            write_int_ac_png(get_analysed_shot_save_path(analysis_dir, xr, scan, shot_num, '.png'),
+                             1e3 * img)      # fC -> aC
+        cols = {'xray_x_mm': info['xray_x_mm'], 'xray_y_mm': info['xray_y_mm'],
+                'mmt_GeV/c': info['mmt'], 'accp_mrad': info['accp'], 'gap_GeV/c': info['gap']}
+        n = max(np.size(v) for v in cols.values())
+        padded = [np.r_[np.ravel(v), np.full(n - np.size(v), np.nan)] for v in cols.values()]
+        write_table(get_analysed_shot_save_path(analysis_dir, xr, scan, shot_num, '.txt', 'Info'),
+                    list(cols), padded)
 
     def write_displayed_data(self, fig, analysis_dir, scan, shot_num):
         """Save the displayed figure (infoE by default) as
