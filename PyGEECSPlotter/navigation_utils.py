@@ -152,8 +152,7 @@ def get_analysis_diagnostic_path(analysis_dir, analysis_diagnostic, scan, shot_n
     
     # Ensure the directory exists
     dir_path = os.path.join(analysis_dir, analysis_diagnostic)
-    if not os.path.exists(dir_path):
-        os.makedirs(dir_path)
+    os.makedirs(dir_path, exist_ok=True)  # exist_ok: safe with concurrent shot writers
     
     return save_path
     
@@ -236,8 +235,7 @@ def get_analysed_shot_save_path(analysis_dir, analysis_diagnostic, scan, shot_nu
     
     # Ensure the directory exists
     dir_path = os.path.join(analysis_dir, analysis_diagnostic)
-    if not os.path.exists(dir_path):
-        os.makedirs(dir_path)
+    os.makedirs(dir_path, exist_ok=True)  # exist_ok: safe with concurrent shot writers
     
     return save_path
 
