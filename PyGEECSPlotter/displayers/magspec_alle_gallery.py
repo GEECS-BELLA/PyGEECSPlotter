@@ -82,7 +82,7 @@ class _AllEPanels:
             cmap=dd.get('cmap', 'viridis'), shading='auto', vmin=0, vmax=self._vmax,
             rasterized=True,
         )
-        a.set_title(label, fontsize=9)
+        self._corner_label(a, label)
         a.set_xlim(dd.get('xlims', (mmt[0], mmt[-1])))
         a.set_ylim(dd.get('ylims', (ang[0], ang[-1])))
         spec = a.get_subplotspec()
@@ -166,6 +166,9 @@ class MagSpecAllERepresentativePerBin(_AllEPanels, RepresentativeImagePerBin):
         Background spec forwarded to the per-shot pipeline.
     bins : iterable of int, optional
         Bins to show; default all active bins.
+    label_column, label_fmt :
+        As for ``RepresentativeImagePerBin``: title panels with this column's
+        per-bin mean instead of ``'Bin {n}'``.
     ncols : int, optional
         Grid columns (default 1: one wide panel per row).
     display_dict : dict, optional
@@ -182,13 +185,15 @@ class MagSpecAllERepresentativePerBin(_AllEPanels, RepresentativeImagePerBin):
         parameter: Optional[str] = None,
         bg=None,
         bins: Optional[Iterable[int]] = None,
+        label_column: Optional[str] = None,
+        label_fmt: str = '{:.4g}',
         ncols: int = 1,
         display_dict: Optional[Dict[str, Any]] = None,
         output_subdir: Optional[str] = None,
         timestamp_files: bool = True,
     ):
         super().__init__(analyzer, mode=mode, parameter=parameter, bg=bg, bins=bins,
-                         ncols=ncols, use_analyzer_display=False, suppress_labels=False,
+                         label_column=label_column, label_fmt=label_fmt, ncols=ncols, use_analyzer_display=False, suppress_labels=False,
                          display_dict=display_dict, output_subdir=output_subdir,
                          timestamp_files=timestamp_files)
         diag = analyzer.output_diagnostic or analyzer.diagnostic

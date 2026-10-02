@@ -105,7 +105,7 @@ class ImageGridDisplayer(ScanDisplayer):
 
         fig, axes = plt.subplots(
             nrows, ncols,
-            figsize=self._grid_figsize(ncols, nrows),
+            figsize=self._grid_figsize(ncols, nrows, pad=self._panel_pad()),
             constrained_layout=True,
             squeeze=False,
         )
@@ -131,9 +131,26 @@ class ImageGridDisplayer(ScanDisplayer):
         can be reloaded without recomputing anything. Panels are stacked as
         a plain ``(n_panels, ...)`` array when every image shares one shape;
         otherwise stored as an object array, one entry per panel.
+
+        The pixel scale goes alongside, so the axes can be rebuilt on
+        reload: ``dx``, ``dy`` and ``spatial_units`` from the analyzer
+        (1, 1, ``'pixels'`` if unset), and ``extents``, each panel's
+        ``imshow_extent`` ``[x0, x1, y0, y1]`` where the analyzer gave one
+        (NaN otherwise, e.g. for per-bin means, which are in pixels from
+        the image corner: ``x = arange(nx) * dx``).
         """
         labels = np.asarray([label for label, _, _ in panels], dtype=object)
         images = [data for _, data, _ in panels]
+
+        analyzer_dict = getattr(self.analyzer, 'analyzer_dict', None) or {}
+        analyzer_display = getattr(self.analyzer, 'display_dict', None) or {}
+        units = analyzer_display.get('spatial_units',
+                                     analyzer_dict.get('spatial_units', 'pixels'))
+        extents = np.full((len(panels), 4), np.nan)
+        for k, (_, _, return_dict) in enumerate(panels):
+            ext = (return_dict or {}).get('imshow_extent')
+            if ext is not None:
+                extents[k] = np.asarray(ext, float)
 
         shapes = {np.asarray(im).shape for im in images if im is not None}
         if len(shapes) == 1 and len(images) == sum(im is not None for im in images):
@@ -143,7 +160,30 @@ class ImageGridDisplayer(ScanDisplayer):
             for k, im in enumerate(images):
                 stack[k] = None if im is None else np.asarray(im)
 
-        return {'labels': labels, 'images': stack}
+        return {'labels': labels, 'images': stack,
+                'dx': float(analyzer_dict.get('dx', 1)),
+                'dy': float(analyzer_dict.get('dy', 1)),
+                'spatial_units': str(units),
+                'extents': extents}
+
+    def _panel_pad(self):
+        """Margin per panel, inches (width, height), for ``_grid_figsize``.
+        Labels sit inside the panels, so only tick labels (when kept) and
+        per-panel colour bars need room."""
+        pad_w, pad_h = (0.15, 0.05) if self.suppress_labels else (0.6, 0.35)
+        analyzer_display = getattr(self.analyzer, 'display_dict', None) or {}
+        if self.use_analyzer_display and not analyzer_display.get('cbar_off', False):
+            pad_w += 0.6
+        return pad_w, pad_h
+
+    @staticmethod
+    def _corner_label(a, label):
+        """Write ``label`` in the panel's top-left corner, on a translucent
+        dark box so it reads on any colour map, and clear any axes title."""
+        a.set_title('')
+        a.text(0.03, 0.97, label, transform=a.transAxes, ha='left', va='top',
+               fontsize='small', color='w',
+               bbox=dict(facecolor='k', alpha=0.5, edgecolor='none', pad=1.5))
 
     def _render_panel(self, fig, a, data, return_dict, label):
         """Draw one panel and apply the shared label/tick treatment."""
@@ -158,8 +198,8 @@ class ImageGridDisplayer(ScanDisplayer):
                 aspect='equal',
                 cmap=self.display_dict.get('cmap', 'viridis'),
             )
-        # Always own the title so it's consistent regardless of branch.
-        a.set_title(label)
+        # Label inside the panel rather than as a title, so rows pack tight.
+        self._corner_label(a, label)
         if self.suppress_labels:
             a.set_xlabel(None)
             a.set_ylabel(None)

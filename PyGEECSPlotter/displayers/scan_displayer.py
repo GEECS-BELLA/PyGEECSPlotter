@@ -80,15 +80,16 @@ class ScanDisplayer:
         figsize = self.display_dict.get('figsize', defaults.get('figsize', (6, 5)))
         return plt.subplots(constrained_layout=True, figsize=figsize)
 
-    def _grid_figsize(self, ncols, nrows, panel=(2.5, 2.5)):
+    def _grid_figsize(self, ncols, nrows, panel=(2.5, 2.5), pad=None):
         """Figure size for an ``nrows`` x ``ncols`` panel grid.
 
         ``display_dict['figsize']`` wins. Else each plot area is ``panel``
         inches (width, height) -- or, if ``display_dict['panel_aspect']`` is
         set, ``panel[0]`` (or ``display_dict['panel_width']``) wide and
         ``1 / panel_aspect`` of that tall -- plus a fixed margin per panel
-        for titles and tick labels. Plot areas are then shrunk (keeping
-        their shape) until the figure fits ``display_dict['max_figsize']``
+        for titles and tick labels (``pad``, inches (width, height); default
+        room for a title and tick labels on every panel). Plot areas are
+        then shrunk (keeping their shape) until the figure fits ``display_dict['max_figsize']``
         (default ``MAX_FIG_SIZE``), so text stays readable instead of the
         figure growing with the panel count. An explicit ``figsize`` is used
         as given, ignoring the cap."""
@@ -99,7 +100,8 @@ class ScanDisplayer:
         if aspect:
             w = self.display_dict.get('panel_width', w)
             h = w / aspect
-        pad_w, pad_h, title_h = _PANEL_PAD_W, _PANEL_PAD_H, _SUPTITLE_H
+        pad_w, pad_h = pad if pad is not None else (_PANEL_PAD_W, _PANEL_PAD_H)
+        title_h = _SUPTITLE_H
         max_w, max_h = self.display_dict.get('max_figsize') or MAX_FIG_SIZE
         scale = min(1.0,
                     (max_w - ncols * pad_w) / (ncols * w),
