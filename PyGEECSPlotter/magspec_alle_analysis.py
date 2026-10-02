@@ -124,8 +124,8 @@ class MagSpecAllEAnalyzer(MultiDiagnosticAnalyzer):
     """
 
     def __init__(self, calib_dir, day, bg_dir=None, analyzer_dict=None,
-                 display_dict=None, output_diagnostic='MagSpecAllE',
-                 calibration_kwargs=None, ebeam_diagnostic='CAM-TEA-EBeam_ProfileA',
+                 display_dict=None, output_diagnostic='py-magspec',
+                 calibration_kwargs=None, ebeam_diagnostic='py-ebeam',
                  xray_diagnostic=None):
         cams = {name: _MagSpecCamera(diagnostic=name, file_ext='.png') for name in MAGSPEC_CAMERAS}
         super().__init__(
@@ -139,7 +139,7 @@ class MagSpecAllEAnalyzer(MultiDiagnosticAnalyzer):
         self.calibration = MagSpecCalibration(calib_dir, day, **(calibration_kwargs or {}))
         self.bg_dir = bg_dir
         self.ebeam_diagnostic = ebeam_diagnostic
-        self.xray_diagnostic = xray_diagnostic
+        self.xray_diagnostic = xray_diagnostic or f"{output_diagnostic}-xray"
         self._default_bg = None
         self._bg_lock = threading.Lock()
         self._warned_no_ebeam_angle = False
