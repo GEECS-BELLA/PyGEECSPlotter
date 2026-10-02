@@ -39,7 +39,11 @@ class MultiDiagnosticAlignment(ScanDisplayer):
     alignment_name : str, optional
         Used for the figure title and saved filename suffix.
     display_dict : dict, optional
-        Whole-figure overrides: ``'figsize'``.
+        Whole-figure overrides: ``'panel_aspect'`` (plot-area width /
+        height, default 1; images drawn with a fixed aspect keep it),
+        ``'panel_width'`` (inches, default 2.5), ``'max_figsize'`` (default
+        ``MAX_FIG_SIZE``; panels shrink to fit) and ``'figsize'`` (used as
+        given, ignoring the cap).
 
     Notes
     -----
@@ -63,6 +67,7 @@ class MultiDiagnosticAlignment(ScanDisplayer):
         name = f"{alignment_name}_alignment" if alignment_name else "multi_diagnostic_alignment"
         super().__init__(name=name, display_dict=display_dict,
                           output_subdir=output_subdir, timestamp_files=timestamp_files)
+        self.display_dict.setdefault('panel_aspect', 1)
         self.diagnostic_dicts = list(diagnostic_dicts)
         self.analyzer = analyzer if analyzer is not None else ImageAnalyzer()
         self.shot_selector = shot_selector
@@ -96,10 +101,9 @@ class MultiDiagnosticAlignment(ScanDisplayer):
         ncols = self.ncols if self.ncols is not None else n
         nrows = int(np.ceil(n / ncols))
 
-        figsize = self.display_dict.get('figsize', (3 * ncols, 3 * nrows))
         fig, axes = plt.subplots(
             nrows, ncols,
-            figsize=figsize,
+            figsize=self._grid_figsize(ncols, nrows),
             constrained_layout=True,
             squeeze=False,
         )
@@ -128,6 +132,7 @@ class MultiDiagnosticAlignment(ScanDisplayer):
         for k in range(n, nrows * ncols):
             axes.flat[k].set_visible(False)
 
+        self._apply_panel_aspect(axes)
         title = scan.scan_data_title(self.alignment_name or 'alignment')
         fig.suptitle(title)
         return fig, axes

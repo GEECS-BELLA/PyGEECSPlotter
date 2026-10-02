@@ -33,7 +33,9 @@ class MagSpecAllESpectrumPerBin(LineoutMeanPerBin):
         As for ``LineoutMeanPerBin`` (default: the scan parameter's mean
         value per bin).
     display_dict : dict, optional
-        ``figsize``, ``std_alpha``, ``log`` (default True), ``xlims``,
+        ``figsize``, ``panel_aspect`` (plot-area width / height, default 4;
+        None for the plain shape), ``panel_width`` (inches, default 6),
+        ``std_alpha``, ``log`` (default True), ``xlims``,
         ``ylims`` (default: shared, from 1e-3 of the largest mean up to it).
     output_subdir, timestamp_files :
         As for ``ScanDisplayer``: save under ``analysis_dir/output_subdir``,
@@ -58,6 +60,9 @@ class MagSpecAllESpectrumPerBin(LineoutMeanPerBin):
                          label_fmt=label_fmt, suppress_labels=False,
                          display_dict=display_dict, output_subdir=output_subdir,
                          timestamp_files=timestamp_files)
+        # wide panels by default (``panel_aspect=None`` for the plain shape)
+        self.display_dict.setdefault('panel_aspect', 4)
+        self.display_dict.setdefault('panel_width', 6)
         diag = analyzer.output_diagnostic or analyzer.diagnostic
         self.name = f'{diag}_spectrum_mean_per_bin'
 
