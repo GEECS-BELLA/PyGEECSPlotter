@@ -3,7 +3,7 @@ from typing import Optional, Dict, Any, Iterable
 import numpy as np
 
 from PyGEECSPlotter.displayers.scan_displayer import ScanDisplayer
-from PyGEECSPlotter.displayers._lineout_binning import mean_lineouts_per_bin
+from PyGEECSPlotter.displayers._lineout_binning import mean_lineouts_per_bin, on_grid
 from PyGEECSPlotter.displayers._trace_binning import bin_labels
 
 
@@ -34,6 +34,12 @@ class LineoutMeanWaterfall(ScanDisplayer):
         Pass ``False`` to fall back to plain ``'Bin {n}'`` labels.
     label_fmt : str, optional
         Format string for the label column's value, e.g. ``'{:.3g} mm'``.
+    align : {'snap', 'interp'}, optional
+        How shots whose coordinate axes are shifted (e.g. ImageAnalyzer
+        ``centroid_method='centroid'``) are put on one axis: ``'snap'``
+        (default) shifts by whole pixels, exact, needing ImageAnalyzer's
+        ``round_centroid=True`` (its default); ``'interp'`` interpolates,
+        for sub-pixel origins.
     display_dict : dict, optional
         Style overrides: ``figsize``, ``cmap``, ``vmin``, ``vmax``, ``xlims``,
         ``normalise_rows``, ``n_yticks``.
@@ -47,6 +53,7 @@ class LineoutMeanWaterfall(ScanDisplayer):
         bins: Optional[Iterable[int]] = None,
         label_column=None,
         label_fmt: str = '{:.4g}',
+        align: str = 'snap',
         display_dict: Optional[Dict[str, Any]] = None,
         output_subdir: Optional[str] = None,
         timestamp_files: bool = True,
@@ -60,11 +67,13 @@ class LineoutMeanWaterfall(ScanDisplayer):
         self.bins = bins
         self.label_column = label_column
         self.label_fmt = label_fmt
+        self.align = align
 
     # ------------------------------------------------------------------
     def display(self, scan, fig=None, ax=None):
         bins, per_bin = mean_lineouts_per_bin(
-            scan, self.analyzer, bg=self.bg, bins=self.bins, axes=[self.axis]
+            scan, self.analyzer, bg=self.bg, bins=self.bins, axes=[self.axis],
+            align=self.align,
         )
         if all(p is None for p in per_bin):
             raise RuntimeError(f"{type(self).__name__}: no bins produced data.")
@@ -85,8 +94,8 @@ class LineoutMeanWaterfall(ScanDisplayer):
             if entry is None or self.axis not in entry:
                 rows.append(np.full_like(coord, np.nan, dtype=float))
                 continue
-            _, mean, _ = entry[self.axis]
-            rows.append(np.asarray(mean, dtype=float))
+            c, mean, _ = entry[self.axis]
+            rows.append(on_grid(np.asarray(c, float), np.asarray(mean, dtype=float), coord, self.align))
         stack = np.vstack(rows)
 
         if self.display_dict.get('normalise_rows', False):

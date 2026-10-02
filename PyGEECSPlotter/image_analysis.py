@@ -124,7 +124,8 @@ class ImageAnalyzer(DiagnosticAnalyzer):
                 y0=analyzer_dict.get('y0', None),
                 dx=analyzer_dict.get('dx', 1),
                 dy=analyzer_dict.get('dy', 1),
-                centroid_thresh=analyzer_dict.get('centroid_threshold_low', 0.85)
+                centroid_thresh=analyzer_dict.get('centroid_threshold_low', 0.85),
+                round_centroid=analyzer_dict.get('round_centroid', True),
             )
             x_lo, y_lo = self.get_lineouts(
                 data_out,
@@ -422,10 +423,15 @@ class ImageAnalyzer(DiagnosticAnalyzer):
 
     @staticmethod
     def get_spatial_coords(data, method='center', x0=None, y0=None,
-                           dx=1, dy=1, centroid_thresh=0.85):
+                           dx=1, dy=1, centroid_thresh=0.85, round_centroid=True):
         """
         Compute x, y arrays for data, using one of several 'method's to place origin:
           - 'center', 'pixel', 'manual', 'centroid'
+
+        With method='centroid' and round_centroid=True (default), the axis
+        origin is the centroid rounded to the nearest pixel, so every shot's
+        axis lies on the same pixel lattice and lineouts from different shots
+        line up by a whole-pixel shift. The returned x0, y0 stay sub-pixel.
         """
         if method == 'center':
             x0 = 0.5*data.shape[1]
@@ -443,8 +449,11 @@ class ImageAnalyzer(DiagnosticAnalyzer):
         else:
             x0, y0 = 0.5*data.shape[1], 0.5*data.shape[0]
 
-        x = (np.arange(data.shape[1]) - x0) * dx
-        y = (np.arange(data.shape[0]) - y0) * dy
+        x_origin, y_origin = x0, y0
+        if method == 'centroid' and round_centroid:
+            x_origin, y_origin = np.round(x0), np.round(y0)
+        x = (np.arange(data.shape[1]) - x_origin) * dx
+        y = (np.arange(data.shape[0]) - y_origin) * dy
         return x, y, x0, y0
 
     @staticmethod

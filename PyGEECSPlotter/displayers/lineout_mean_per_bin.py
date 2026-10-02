@@ -4,7 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from PyGEECSPlotter.displayers.scan_displayer import ScanDisplayer
-from PyGEECSPlotter.displayers._lineout_binning import mean_lineouts_per_bin
+from PyGEECSPlotter.displayers._lineout_binning import mean_lineouts_per_bin, on_grid
 from PyGEECSPlotter.displayers._trace_binning import bin_labels
 
 # Distinct colour/style per axis so an overlay of several lineouts on one
@@ -52,6 +52,12 @@ class LineoutMeanPerBin(ScanDisplayer):
         Format string for the label column's value, e.g. ``'{:.3g} mm'``.
     suppress_labels : bool, optional
         Strip inner axis labels for a cleaner grid (default True).
+    align : {'snap', 'interp'}, optional
+        How shots whose coordinate axes are shifted (e.g. ImageAnalyzer
+        ``centroid_method='centroid'``) are put on one axis: ``'snap'``
+        (default) shifts by whole pixels, exact, needing ImageAnalyzer's
+        ``round_centroid=True`` (its default); ``'interp'`` interpolates,
+        for sub-pixel origins.
     display_dict : dict, optional
         Style overrides: ``figsize``, ``std_alpha``, ``panel_aspect``
         (plot-area width / height; default None) and ``panel_width`` (inches,
@@ -69,6 +75,7 @@ class LineoutMeanPerBin(ScanDisplayer):
         label_column=None,
         label_fmt: str = '{:.4g}',
         suppress_labels: bool = True,
+        align: str = 'snap',
         display_dict: Optional[Dict[str, Any]] = None,
         output_subdir: Optional[str] = None,
         timestamp_files: bool = True,
@@ -84,12 +91,14 @@ class LineoutMeanPerBin(ScanDisplayer):
         self.show_std = show_std
         self.label_column = label_column
         self.label_fmt = label_fmt
+        self.align = align
         self.suppress_labels = suppress_labels
 
     # ------------------------------------------------------------------
     def display(self, scan, fig=None, ax=None):
         bins, per_bin = mean_lineouts_per_bin(
-            scan, self.analyzer, bg=self.bg, bins=self.bins, axes=self.axes
+            scan, self.analyzer, bg=self.bg, bins=self.bins, axes=self.axes,
+            align=self.align,
         )
         if all(p is None for p in per_bin):
             raise RuntimeError(f"{type(self).__name__}: no bins produced data.")
@@ -109,6 +118,7 @@ class LineoutMeanPerBin(ScanDisplayer):
             constrained_layout=True, squeeze=False,
         )
 
+        legend_done = False
         for k, (entry, label) in enumerate(zip(per_bin, labels)):
             a = axes_arr.flat[k]
             if entry is None:
@@ -127,8 +137,10 @@ class LineoutMeanPerBin(ScanDisplayer):
                         color=style.get('color'), lw=0,
                     )
             a.set_title(label)
-            if len(axes_present) > 1:
+            # one legend, on the first drawn panel: the axis styles are the same in every panel
+            if len(axes_present) > 1 and not legend_done:
                 a.legend(fontsize='small')
+                legend_done = True
             if self.suppress_labels:
                 a.set_xlabel(None)
                 a.set_ylabel(None)
@@ -160,9 +172,9 @@ class LineoutMeanPerBin(ScanDisplayer):
             for k, entry in enumerate(per_bin):
                 if entry is None or axis not in entry:
                     continue
-                _, mean, std = entry[axis]
-                mean_stack[k] = mean
-                std_stack[k] = std
+                c, mean, std = entry[axis]
+                mean_stack[k] = on_grid(np.asarray(c, float), np.asarray(mean, float), coord_ref, self.align)
+                std_stack[k] = on_grid(np.asarray(c, float), np.asarray(std, float), coord_ref, self.align)
             export[f'{axis}_coord'] = coord_ref
             export[f'{axis}_mean'] = mean_stack
             export[f'{axis}_std'] = std_stack

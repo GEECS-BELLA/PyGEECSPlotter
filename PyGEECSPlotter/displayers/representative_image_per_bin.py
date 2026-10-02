@@ -3,6 +3,7 @@ from typing import Optional, Dict, Any, Iterable, List, Tuple
 import numpy as np
 
 from PyGEECSPlotter.displayers.shot_selection_grid import ShotSelectionGrid
+from PyGEECSPlotter.displayers._trace_binning import bin_labels
 
 
 _MODES = ('first', 'last', 'max', 'min')
@@ -35,6 +36,11 @@ class RepresentativeImagePerBin(ShotSelectionGrid):
         Background spec forwarded to the per-shot pipeline.
     bins : iterable of int, optional
         Bin numbers to render. Defaults to all unique bins in ``active_data``.
+    label_column : str, optional
+        Scan-data column whose per-bin mean titles each panel (e.g. the scan
+        parameter). Default None titles panels ``'Bin {n}'``.
+    label_fmt : str, optional
+        Format string for the label column's value, e.g. ``'{:.3g} mm'``.
     ncols, use_analyzer_display, suppress_labels, display_dict :
         See ``ImageGridDisplayer``.
     """
@@ -46,6 +52,8 @@ class RepresentativeImagePerBin(ShotSelectionGrid):
         parameter: Optional[str] = None,
         bg=None,
         bins: Optional[Iterable[int]] = None,
+        label_column: Optional[str] = None,
+        label_fmt: str = '{:.4g}',
         ncols: int = 4,
         use_analyzer_display: bool = True,
         suppress_labels: bool = True,
@@ -73,6 +81,8 @@ class RepresentativeImagePerBin(ShotSelectionGrid):
         self.mode = mode
         self.parameter = parameter
         self.bins = bins
+        self.label_column = label_column
+        self.label_fmt = label_fmt
 
     def _select_rows(self, scan) -> List[Tuple[str, int]]:
         active = scan.active_data
@@ -83,14 +93,16 @@ class RepresentativeImagePerBin(ShotSelectionGrid):
 
         bin_col = active['temp Bin number']
         bins = list(self.bins) if self.bins is not None else list(np.unique(bin_col))
+        labels = bin_labels(scan, bins, label_column=self.label_column or False,
+                            label_fmt=self.label_fmt)
 
         selection: List[Tuple[str, int]] = []
-        for b in bins:
+        for b, base in zip(bins, labels):
             in_bin = np.where((bin_col == b).to_numpy())[0]
             if in_bin.size == 0:
                 continue
             pos = self._pick_in_bin(active, in_bin)
-            selection.append((self._label(active, b, pos), int(pos)))
+            selection.append((base, int(pos)))
         return selection
 
     def _pick_in_bin(self, active, in_bin: np.ndarray) -> int:
@@ -112,8 +124,7 @@ class RepresentativeImagePerBin(ShotSelectionGrid):
         ``self.parameter`` with the diagnostic's own prefix stripped, if
         present — it's usually a column ``analyze_scan`` produced (e.g.
         ``'CAM-PL1-LPMode max_counts'``), and repeating the full diagnostic
-        name in every panel title/suptitle just doubles it up and overflows
-        narrow grid panels.
+        name in the suptitle just doubles it up.
         """
         diag = self.analyzer.output_diagnostic or self.analyzer.diagnostic
         prefix = f'{diag} '
@@ -121,20 +132,12 @@ class RepresentativeImagePerBin(ShotSelectionGrid):
             return self.parameter[len(prefix):]
         return self.parameter
 
-    def _label(self, active, b, pos: int) -> str:
-        base = f'Bin {int(b)}'
-        if self.mode in ('max', 'min'):
-            val = active[self.parameter].iloc[pos]
-            param = self._short_param()
-            try:
-                return f'{base} ({self.mode} {param}={float(val):.3g})'
-            except (TypeError, ValueError):
-                return f'{base} ({self.mode} {param}={val})'
-        return base
-
     def _suptitle(self, scan) -> str:
         diag = self.analyzer.output_diagnostic or self.analyzer.diagnostic
         detail = self.mode
         if self.mode in ('max', 'min'):
             detail = f'{self.mode} {self._short_param()}'
-        return scan.scan_data_title(f'{diag} {detail} per bin')
+        title = scan.scan_data_title(f'{diag} {detail} per bin')
+        if self.label_column:
+            title += f'\n{self.label_column}'
+        return title

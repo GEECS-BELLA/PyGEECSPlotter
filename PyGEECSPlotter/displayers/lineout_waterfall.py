@@ -3,6 +3,7 @@ from typing import Optional, Dict, Any
 import numpy as np
 
 from PyGEECSPlotter.displayers.scan_displayer import ScanDisplayer
+from PyGEECSPlotter.displayers._lineout_binning import on_grid
 
 
 class LineoutWaterfall(ScanDisplayer):
@@ -15,8 +16,10 @@ class LineoutWaterfall(ScanDisplayer):
     'x_lo': x_lo, 'y_lo': y_lo}``) rather than a dict of trace DataFrames.
     x is the lineout coordinate, y is shot (or bin), colour is amplitude.
 
-    Requires every shot to land on the same coordinate axis (true by
-    construction for a fixed image shape / ROI).
+    Every shot's lineout is put on the first shot's coordinate axis (see
+    ``align``) when a shot's axis is shifted (e.g. ``centroid_method=
+    'centroid'`` sets x = 0 at each shot's own centroid); points off a
+    shot's axis are NaN.
 
     Parameters
     ----------
@@ -34,6 +37,12 @@ class LineoutWaterfall(ScanDisplayer):
         in order of the scanned control parameter rather than acquisition
         order. Pass ``False`` to keep the raw acquisition order (labelled
         ``'Shot (in scan order)'``).
+    align : {'snap', 'interp'}, optional
+        How shots whose coordinate axes are shifted (e.g. ImageAnalyzer
+        ``centroid_method='centroid'``) are put on one axis: ``'snap'``
+        (default) shifts by whole pixels, exact, needing ImageAnalyzer's
+        ``round_centroid=True`` (its default); ``'interp'`` interpolates,
+        for sub-pixel origins.
     display_dict : dict, optional
         Style overrides: ``figsize``, ``cmap``, ``vmin``, ``vmax``,
         ``xlims``, ``normalise_rows``, ``n_yticks``.
@@ -45,6 +54,7 @@ class LineoutWaterfall(ScanDisplayer):
         axis: str = 'x',
         bg=None,
         y_column=None,
+        align: str = 'snap',
         display_dict: Optional[Dict[str, Any]] = None,
         output_subdir: Optional[str] = None,
         timestamp_files: bool = True,
@@ -56,6 +66,7 @@ class LineoutWaterfall(ScanDisplayer):
         self.axis = axis
         self.bg = bg
         self.y_column = y_column
+        self.align = align
 
     # ------------------------------------------------------------------
     def _collect(self, scan, y_col):
@@ -72,14 +83,9 @@ class LineoutWaterfall(ScanDisplayer):
 
             if coord is None:
                 coord = this_coord
-            elif this_coord.shape != coord.shape or not np.allclose(this_coord, coord):
-                raise ValueError(
-                    f"{type(self).__name__} needs every shot on the same "
-                    f"{coord_key!r} coordinate, but shot "
-                    f"{context.get('Shotnumber', '?')} differs."
-                )
-
-            rows.append(np.asarray(aux[lo_key], dtype=float))
+            # first shot's axis is the reference; shots on a shifted axis
+            # (e.g. per-shot centroid origin) are aligned onto it
+            rows.append(on_grid(this_coord, np.asarray(aux[lo_key], dtype=float), coord, self.align))
             y_vals.append(context.get(y_col, np.nan) if y_col else np.nan)
 
         if not rows:
