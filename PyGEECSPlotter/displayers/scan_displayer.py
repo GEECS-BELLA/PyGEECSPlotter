@@ -16,6 +16,17 @@ import matplotlib.pyplot as plt
 # one of these.
 _UNSAFE_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|]')
 
+# Largest default figure for panel grids, inches (width, height): a letter
+# page's width and 0.7 of its length, so text stays legible when printed or
+# shown on screen. Panels shrink to fit. display_dict['max_figsize'] changes
+# the cap; display_dict['figsize'] sets the size outright, ignoring it.
+MAX_FIG_SIZE = (8.5, 0.7 * 11.0)
+# Room per panel for tick labels / axis labels (width) and the panel title
+# (height), and once per figure for the suptitle and a top colour bar.
+_PANEL_PAD_W = 0.7
+_PANEL_PAD_H = 0.35
+_SUPTITLE_H = 0.9
+
 
 class ScanDisplayer:
     """
@@ -68,6 +79,60 @@ class ScanDisplayer:
             return fig, ax
         figsize = self.display_dict.get('figsize', defaults.get('figsize', (6, 5)))
         return plt.subplots(constrained_layout=True, figsize=figsize)
+
+    def _grid_figsize(self, ncols, nrows, panel=(2.5, 2.5)):
+        """Figure size for an ``nrows`` x ``ncols`` panel grid.
+
+        ``display_dict['figsize']`` wins. Else each plot area is ``panel``
+        inches (width, height) -- or, if ``display_dict['panel_aspect']`` is
+        set, ``panel[0]`` (or ``display_dict['panel_width']``) wide and
+        ``1 / panel_aspect`` of that tall -- plus a fixed margin per panel
+        for titles and tick labels. Plot areas are then shrunk (keeping
+        their shape) until the figure fits ``display_dict['max_figsize']``
+        (default ``MAX_FIG_SIZE``), so text stays readable instead of the
+        figure growing with the panel count. An explicit ``figsize`` is used
+        as given, ignoring the cap."""
+        if self.display_dict.get('figsize') is not None:
+            return self.display_dict['figsize']
+        aspect = self.display_dict.get('panel_aspect')
+        w, h = panel
+        if aspect:
+            w = self.display_dict.get('panel_width', w)
+            h = w / aspect
+        pad_w, pad_h, title_h = _PANEL_PAD_W, _PANEL_PAD_H, _SUPTITLE_H
+        max_w, max_h = self.display_dict.get('max_figsize') or MAX_FIG_SIZE
+        scale = min(1.0,
+                    (max_w - ncols * pad_w) / (ncols * w),
+                    (max_h - title_h - nrows * pad_h) / (nrows * h))
+        scale = max(scale, 0.1)     # very many panels: overshoot rather than vanish
+        return (ncols * (w * scale + pad_w), nrows * (h * scale + pad_h) + title_h)
+
+    def _top_colorbar(self, fig, axes, mappable, label=None):
+        """One horizontal colour bar above the top row of ``axes``, spanning
+        ``display_dict['cbar_span']`` panels (default: 2, or the row width if
+        fewer), instead of a full-height bar down the side."""
+        visible = [a for a in np.atleast_1d(axes).ravel() if a.get_visible()]
+        top = [a for a in visible if a.get_subplotspec().is_first_row()] or visible[:1]
+        span = min(self.display_dict.get('cbar_span', 2), len(top))
+        cb = fig.colorbar(mappable, ax=top, location='top', shrink=span / len(top),
+                          aspect=25 * span, pad=0.01)
+        if label:
+            cb.set_label(label, fontsize='small')
+        cb.ax.tick_params(labelsize='small')
+        return cb
+
+    def _apply_panel_aspect(self, axes):
+        """Make each plot area ``display_dict['panel_aspect']`` times wider
+        than tall (``set_box_aspect``). Off when None: panels keep whatever
+        shape their content gives them. Axes already drawn with a fixed data
+        aspect (e.g. ``imshow(aspect='equal')``) keep it, sitting inside
+        their panel-sized cell, rather than being stretched."""
+        aspect = self.display_dict.get('panel_aspect')
+        if not aspect:
+            return
+        for a in np.atleast_1d(axes).ravel():
+            if a.get_aspect() == 'auto':
+                a.set_box_aspect(1 / aspect)
 
     def _output_dir(self, scan):
         """Scan's analysis directory, nested under ``output_subdir`` if set."""

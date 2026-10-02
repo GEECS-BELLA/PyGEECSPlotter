@@ -29,13 +29,23 @@ class ImageGridDisplayer(ScanDisplayer):
         If True (default), strip per-panel axis labels and tick labels for
         a cleaner thumbnail grid. Pass False to keep the analyzer's axes.
     display_dict : dict, optional
-        Style overrides: ``figsize``, ``cmap``.
+        Style overrides: ``cmap``; ``panel_aspect`` (plot-area width /
+        height, default 1 for square panels, e.g. 4 for 4:1; None leaves
+        each panel its own shape); ``panel_width`` (inches per panel before
+        shrinking to fit, default 2.5); ``cbar_span`` (panels a shared top
+        colour bar spans, default 2); ``max_figsize`` (cap on the figure,
+        default ``MAX_FIG_SIZE``: a letter page wide, 0.7 of one tall;
+        panels shrink to fit); ``figsize`` (used as given, ignoring the cap).
 
     Notes
     -----
     This displayer creates its own figure; ``fig`` / ``ax`` arguments to
     ``display`` are ignored.
     """
+
+    # Subclasses override for a different default panel shape.
+    default_panel_aspect = 1
+    default_panel_width = 2.5
 
     def __init__(
         self,
@@ -52,6 +62,8 @@ class ImageGridDisplayer(ScanDisplayer):
             name = f"{analyzer.output_diagnostic or analyzer.diagnostic}_image_grid"
         super().__init__(name=name, display_dict=display_dict,
                           output_subdir=output_subdir, timestamp_files=timestamp_files)
+        self.display_dict.setdefault('panel_aspect', self.default_panel_aspect)
+        self.display_dict.setdefault('panel_width', self.default_panel_width)
         self.analyzer = analyzer
         self.ncols = ncols
         self.use_analyzer_display = use_analyzer_display
@@ -91,10 +103,9 @@ class ImageGridDisplayer(ScanDisplayer):
         ncols = min(self.ncols, n_panels)
         nrows = int(np.ceil(n_panels / ncols))
 
-        figsize = self.display_dict.get('figsize', (3 * ncols, 3 * nrows))
         fig, axes = plt.subplots(
             nrows, ncols,
-            figsize=figsize,
+            figsize=self._grid_figsize(ncols, nrows),
             constrained_layout=True,
             squeeze=False,
         )
@@ -109,6 +120,7 @@ class ImageGridDisplayer(ScanDisplayer):
         for k in range(n_panels, nrows * ncols):
             axes.flat[k].set_visible(False)
 
+        self._apply_panel_aspect(axes)
         fig.suptitle(self._suptitle(scan))
         self.last_export = self._build_export(panels)
         return fig, axes
@@ -143,6 +155,7 @@ class ImageGridDisplayer(ScanDisplayer):
             a.imshow(
                 np.asarray(data),
                 origin='lower',
+                aspect='equal',
                 cmap=self.display_dict.get('cmap', 'viridis'),
             )
         # Always own the title so it's consistent regardless of branch.

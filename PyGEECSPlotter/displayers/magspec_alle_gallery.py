@@ -19,9 +19,17 @@ class _AllEPanels:
     ``analyzer_dict``. The angle axis is ``aux['angle']`` or the fixed
     256-point [-1.3, 1.3] mrad axis.
 
-    display_dict keys: ``figsize``, ``cmap`` (default ``'jet'``), ``vmax``
-    (default: 99.9th percentile over all panels), ``xlims``, ``ylims``.
+    display_dict keys: ``cmap`` (default ``'viridis'``), ``vmax`` (default:
+    99.9th percentile over all panels), ``xlims``, ``ylims``,
+    ``panel_aspect`` (plot-area width / height, default 4; None for no
+    forced shape), ``panel_width`` (inches before shrinking to fit, default
+    7.5), ``cbar_span`` (panels the top colour bar spans, default 2) and
+    ``figsize`` (overrides the sizing and the ``MAX_FIG_SIZE`` cap).
     """
+
+    # allE panels are 4:1 (wide) by default, one per row
+    default_panel_aspect = 4
+    default_panel_width = 7.5
 
     def _collect_panels(self, scan) -> List[Tuple[str, Any, Optional[Dict[str, Any]]]]:
         # ShotSelectionGrid's selection, but keeping each shot's axes from aux
@@ -82,17 +90,15 @@ class _AllEPanels:
             a.set_xlabel('Momentum [GeV/c]')
         else:
             a.set_xticklabels([])
-        if spec.is_first_col():
-            a.set_ylabel('Angle [mrad]')
-        else:
-            a.set_yticklabels([])
+        if not spec.is_first_col():
+            a.set_yticklabels([])   # one shared y label, set in display()
 
     def display(self, scan, fig=None, ax=None):
         self._mappable = None
         fig, axes = super().display(scan, fig=fig, ax=ax)
+        fig.supylabel('Angle [mrad]')
         if self._mappable is not None:
-            visible = [a for a in axes.flat if a.get_visible()]
-            fig.colorbar(self._mappable, ax=visible, label='pC/mrad/(GeV/c)', shrink=0.9)
+            self._top_colorbar(fig, axes, self._mappable, label='pC/mrad/(GeV/c)')
         return fig, axes
 
 
@@ -113,9 +119,9 @@ class MagSpecAllESampledShots(_AllEPanels, SampledImages):
     n_samples : int, optional
         Number of shots to show (default 12).
     ncols : int, optional
-        Grid columns (default 4).
+        Grid columns (default 1: one wide panel per row).
     display_dict : dict, optional
-        ``figsize``, ``cmap``, ``vmax``, ``xlims``, ``ylims``.
+        As for ``_AllEPanels``.
     output_subdir, timestamp_files :
         As for ``ScanDisplayer``: save under ``analysis_dir/output_subdir``,
         and add a run timestamp to the file name (default True).
@@ -126,7 +132,7 @@ class MagSpecAllESampledShots(_AllEPanels, SampledImages):
         analyzer,
         bg=None,
         n_samples: Optional[int] = 12,
-        ncols: int = 4,
+        ncols: int = 1,
         display_dict: Optional[Dict[str, Any]] = None,
         output_subdir: Optional[str] = None,
         timestamp_files: bool = True,
@@ -161,9 +167,9 @@ class MagSpecAllERepresentativePerBin(_AllEPanels, RepresentativeImagePerBin):
     bins : iterable of int, optional
         Bins to show; default all active bins.
     ncols : int, optional
-        Grid columns (default 4).
+        Grid columns (default 1: one wide panel per row).
     display_dict : dict, optional
-        ``figsize``, ``cmap``, ``vmax``, ``xlims``, ``ylims``.
+        As for ``_AllEPanels``.
     output_subdir, timestamp_files :
         As for ``ScanDisplayer``: save under ``analysis_dir/output_subdir``,
         and add a run timestamp to the file name (default True).
@@ -176,7 +182,7 @@ class MagSpecAllERepresentativePerBin(_AllEPanels, RepresentativeImagePerBin):
         parameter: Optional[str] = None,
         bg=None,
         bins: Optional[Iterable[int]] = None,
-        ncols: int = 4,
+        ncols: int = 1,
         display_dict: Optional[Dict[str, Any]] = None,
         output_subdir: Optional[str] = None,
         timestamp_files: bool = True,

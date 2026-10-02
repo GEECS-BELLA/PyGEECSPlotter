@@ -53,7 +53,9 @@ class LineoutMeanPerBin(ScanDisplayer):
     suppress_labels : bool, optional
         Strip inner axis labels for a cleaner grid (default True).
     display_dict : dict, optional
-        Style overrides: ``figsize``, ``std_alpha``.
+        Style overrides: ``figsize``, ``std_alpha``, ``panel_aspect``
+        (plot-area width / height; default None) and ``panel_width`` (inches,
+        with ``panel_aspect``).
     """
 
     def __init__(
@@ -102,9 +104,9 @@ class LineoutMeanPerBin(ScanDisplayer):
         n_panels = len(bins)
         ncols = min(self.ncols, n_panels)
         nrows = int(np.ceil(n_panels / ncols))
-        figsize = self.display_dict.get('figsize', (3.5 * ncols, 3 * nrows))
         fig, axes_arr = plt.subplots(
-            nrows, ncols, figsize=figsize, constrained_layout=True, squeeze=False,
+            nrows, ncols, figsize=self._grid_figsize(ncols, nrows, panel=(3.5, 3)),
+            constrained_layout=True, squeeze=False,
         )
 
         for k, (entry, label) in enumerate(zip(per_bin, labels)):
@@ -136,6 +138,7 @@ class LineoutMeanPerBin(ScanDisplayer):
         for k in range(n_panels, nrows * ncols):
             axes_arr.flat[k].set_visible(False)
 
+        self._apply_panel_aspect(axes_arr)
         diag = self.analyzer.output_diagnostic or self.analyzer.diagnostic
         fig.suptitle(scan.scan_data_title(f'{diag} lineout mean per bin'))
         return fig, axes_arr

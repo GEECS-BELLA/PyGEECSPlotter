@@ -55,7 +55,11 @@ class TraceMeanPerBin(ScanDisplayer):
         Strip inner axis labels for a cleaner grid (default True, grid mode
         only).
     display_dict : dict, optional
-        Style overrides, forwarded to the analyzer's ``display_data``.
+        Style overrides, forwarded to the analyzer's ``display_data``. Grid
+        layout keys: ``panel_aspect`` (plot-area width / height; default
+        None), ``panel_width`` (inches, with ``panel_aspect``),
+        ``max_figsize`` (default ``MAX_FIG_SIZE``; panels shrink to fit) and
+        ``figsize`` (used as given, ignoring the cap).
     """
 
     def __init__(
@@ -180,9 +184,9 @@ class TraceMeanPerBin(ScanDisplayer):
         ncols = min(self.ncols, n_panels)
         nrows = int(np.ceil(n_panels / ncols))
 
-        figsize = self.display_dict.get('figsize', (3.5 * ncols, 3 * nrows))
         fig, axes = plt.subplots(
-            nrows, ncols, figsize=figsize, constrained_layout=True, squeeze=False,
+            nrows, ncols, figsize=self._grid_figsize(ncols, nrows, panel=(3, 2.5)),
+            constrained_layout=True, squeeze=False,
         )
 
         panel_dict = dict(self.display_dict)
@@ -220,6 +224,8 @@ class TraceMeanPerBin(ScanDisplayer):
         for k in range(n_panels, nrows * ncols):
             axes.flat[k].set_visible(False)
 
+        # fig.axes includes the phase twins, so they keep matching their panel
+        self._apply_panel_aspect(fig.axes)
         diag = self.analyzer.output_diagnostic or self.analyzer.diagnostic
         fig.suptitle(scan.scan_data_title(f'{diag} {self.component} mean per bin'))
         return fig, axes
