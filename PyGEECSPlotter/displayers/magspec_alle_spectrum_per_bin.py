@@ -109,7 +109,7 @@ class MagSpecAllESpectrumMeanWaterfall(LineoutMeanWaterfall):
     Parameters
     ----------
     analyzer : MagSpecAllEAnalyzer or MagSpecAllEReader
-    bg, bins, label_column, label_fmt :
+    bg, bins, label_column, label_fmt, overlay_y_values :
         As for ``LineoutMeanWaterfall``.
     display_dict : dict, optional
         ``LineoutMeanWaterfall`` keys, plus ``log`` (default True; ``vmin``
@@ -126,6 +126,7 @@ class MagSpecAllESpectrumMeanWaterfall(LineoutMeanWaterfall):
         bins: Optional[Iterable[int]] = None,
         label_column=None,
         label_fmt: str = '{:.4g}',
+        overlay_y_values: bool = False,
         display_dict: Optional[Dict[str, Any]] = None,
         output_subdir: Optional[str] = None,
         timestamp_files: bool = True,
@@ -133,7 +134,7 @@ class MagSpecAllESpectrumMeanWaterfall(LineoutMeanWaterfall):
         dd = {'cmap': 'viridis', 'xlabel': 'Momentum [GeV/c]', 'cbar_label': 'pC/GeV'}
         dd.update(display_dict or {})
         super().__init__(analyzer, axis='p', bg=bg, bins=bins, label_column=label_column,
-                         label_fmt=label_fmt, display_dict=dd,
+                         label_fmt=label_fmt, overlay_y_values=overlay_y_values, display_dict=dd,
                          output_subdir=output_subdir, timestamp_files=timestamp_files)
         diag = analyzer.output_diagnostic or analyzer.diagnostic
         self.name = f'{diag}_spectrum_mean_waterfall'

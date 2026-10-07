@@ -13,6 +13,10 @@ _AXIS_STYLE = {
     'x': dict(color='tab:blue'),
     'y': dict(color='tab:orange'),
     'r': dict(color='tab:green'),
+    # optical spectra (OpticalSpectrumAnalyzer / CombinedVisNIRSpectrum)
+    'wl': dict(color='k'),
+    'vis_wl': dict(color='tab:blue', lw=0.8),
+    'nir_wl': dict(color='tab:red', lw=0.8),
 }
 
 

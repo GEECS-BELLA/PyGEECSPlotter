@@ -43,6 +43,11 @@ class LineoutWaterfall(ScanDisplayer):
         (default) shifts by whole pixels, exact, needing ImageAnalyzer's
         ``round_centroid=True`` (its default); ``'interp'`` interpolates,
         for sub-pixel origins.
+    overlay_y_values : bool, optional
+        Mark each row's ``y_column`` value (the scan parameter in
+        acquisition order) as a short tick against a second x-axis across
+        the top, so non-uniform steps show. Colour:
+        ``display_dict['y_overlay_color']`` (default black).
     display_dict : dict, optional
         Style overrides: ``figsize``, ``cmap``, ``vmin``, ``vmax``,
         ``xlims``, ``normalise_rows``, ``n_yticks``.
@@ -55,6 +60,7 @@ class LineoutWaterfall(ScanDisplayer):
         bg=None,
         y_column=None,
         align: str = 'snap',
+        overlay_y_values: bool = False,
         display_dict: Optional[Dict[str, Any]] = None,
         output_subdir: Optional[str] = None,
         timestamp_files: bool = True,
@@ -67,6 +73,7 @@ class LineoutWaterfall(ScanDisplayer):
         self.bg = bg
         self.y_column = y_column
         self.align = align
+        self.overlay_y_values = overlay_y_values
 
     # ------------------------------------------------------------------
     def _collect(self, scan, y_col):
@@ -101,8 +108,11 @@ class LineoutWaterfall(ScanDisplayer):
         if y_col is None:
             y_col = scan.scan_parameter
         y_col = y_col if y_col else None
+        # column behind y_vals: the y_column, else (acquisition order) the
+        # scan parameter, so overlay_y_values still has values to show
+        val_col = y_col or scan.scan_parameter
 
-        coord, stack, y_vals = self._collect(scan, y_col)
+        coord, stack, y_vals = self._collect(scan, val_col)
 
         if y_col is not None and np.any(np.isfinite(y_vals)):
             order = np.argsort(y_vals, kind='stable')
@@ -140,6 +150,8 @@ class LineoutWaterfall(ScanDisplayer):
             ax.set_yticklabels([f'{v:.4g}' for v in y_vals[tick_idx]])
         else:
             ax.set_ylabel(self.display_dict.get('ylabel', 'Shot (in scan order)'))
+        if self.overlay_y_values:
+            self._overlay_row_values(ax, y_vals, label=val_col)
 
         xlims = self.display_dict.get('xlims', None)
         if xlims is not None:

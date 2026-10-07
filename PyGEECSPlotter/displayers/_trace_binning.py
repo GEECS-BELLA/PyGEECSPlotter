@@ -57,25 +57,24 @@ def _mean_over_active(scan, analyzer, bg):
     return mean_data, std_data
 
 
+def bin_values(scan, bins, column):
+    """Mean of ``column`` in each bin, as floats; NaN where unavailable."""
+    try:
+        center_df, _ = scan.compute_bin_summary(mode='mean')
+    except Exception:
+        return np.full(len(bins), np.nan)
+    if column not in center_df.columns:
+        return np.full(len(bins), np.nan)
+    by_bin = center_df.set_index('temp Bin number')[column]
+    return np.asarray([by_bin.loc[b] if b in by_bin.index else np.nan for b in bins],
+                      dtype=float)
+
+
 def bin_labels(scan, bins, label_column=None, label_fmt='{:.4g}'):
     """Human labels for each bin: 'Bin {n}', or a summarised column value."""
     if label_column is False:
         return [f'Bin {int(b)}' for b in bins]
 
-    col = label_column or scan.scan_parameter
-    try:
-        center_df, _ = scan.compute_bin_summary(mode='mean')
-    except Exception:
-        return [f'Bin {int(b)}' for b in bins]
-
-    if col not in center_df.columns:
-        return [f'Bin {int(b)}' for b in bins]
-
-    by_bin = center_df.set_index('temp Bin number')[col]
-    labels = []
-    for b in bins:
-        if b in by_bin.index:
-            labels.append(label_fmt.format(by_bin.loc[b]))
-        else:
-            labels.append(f'Bin {int(b)}')
-    return labels
+    values = bin_values(scan, bins, label_column or scan.scan_parameter)
+    return [label_fmt.format(v) if np.isfinite(v) else f'Bin {int(b)}'
+            for b, v in zip(bins, values)]

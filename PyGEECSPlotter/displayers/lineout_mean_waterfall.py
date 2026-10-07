@@ -4,7 +4,7 @@ import numpy as np
 
 from PyGEECSPlotter.displayers.scan_displayer import ScanDisplayer
 from PyGEECSPlotter.displayers._lineout_binning import mean_lineouts_per_bin, on_grid
-from PyGEECSPlotter.displayers._trace_binning import bin_labels
+from PyGEECSPlotter.displayers._trace_binning import bin_labels, bin_values
 
 
 class LineoutMeanWaterfall(ScanDisplayer):
@@ -40,6 +40,11 @@ class LineoutMeanWaterfall(ScanDisplayer):
         (default) shifts by whole pixels, exact, needing ImageAnalyzer's
         ``round_centroid=True`` (its default); ``'interp'`` interpolates,
         for sub-pixel origins.
+    overlay_y_values : bool, optional
+        Mark each row's bin mean of ``label_column`` (the scan parameter
+        when ``label_column`` is unset or False) as a short tick against a
+        second x-axis across the top, so non-uniform steps show. Colour:
+        ``display_dict['y_overlay_color']`` (default black).
     display_dict : dict, optional
         Style overrides: ``figsize``, ``cmap``, ``vmin``, ``vmax``, ``xlims``,
         ``normalise_rows``, ``n_yticks``.
@@ -54,6 +59,7 @@ class LineoutMeanWaterfall(ScanDisplayer):
         label_column=None,
         label_fmt: str = '{:.4g}',
         align: str = 'snap',
+        overlay_y_values: bool = False,
         display_dict: Optional[Dict[str, Any]] = None,
         output_subdir: Optional[str] = None,
         timestamp_files: bool = True,
@@ -68,6 +74,7 @@ class LineoutMeanWaterfall(ScanDisplayer):
         self.label_column = label_column
         self.label_fmt = label_fmt
         self.align = align
+        self.overlay_y_values = overlay_y_values
 
     # ------------------------------------------------------------------
     def display(self, scan, fig=None, ax=None):
@@ -128,6 +135,9 @@ class LineoutMeanWaterfall(ScanDisplayer):
         tick_idx = np.linspace(0, len(y) - 1, n_ticks).round().astype(int)
         ax.set_yticks(y[tick_idx])
         ax.set_yticklabels([labels[i] for i in tick_idx])
+        if self.overlay_y_values:
+            val_col = self.label_column if isinstance(self.label_column, str) else scan.scan_parameter
+            self._overlay_row_values(ax, bin_values(scan, bins, val_col), label=val_col)
 
         xlims = self.display_dict.get('xlims', None)
         if xlims is not None:

@@ -1143,8 +1143,9 @@ class ScanDataAnalyzer:
         if bg is None:
             return None
 
-        # Provider object with .get(context)
-        if hasattr(bg, "get") and callable(bg.get):
+        # Provider object with .get(context); pandas objects also have
+        # .get, but a DataFrame / Series is loaded bg data (e.g. a spectrum)
+        if hasattr(bg, "get") and callable(bg.get) and not isinstance(bg, (pd.DataFrame, pd.Series)):
             bg_spec = bg.get(context)
 
         # Callable provider
