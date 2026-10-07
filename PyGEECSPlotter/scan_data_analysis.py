@@ -193,6 +193,7 @@ class ScanDataAnalyzer:
         ):
 
         sfile_data = pd.read_csv(self.sfilename, sep='\t')
+        sfile_data = self._drop_incomplete_rows(sfile_data)
         if len(sfile_data) == 0:
             self.data = sfile_data
             self.scan_parameter = 'Shotnumber'
@@ -219,6 +220,27 @@ class ScanDataAnalyzer:
             if analyzer is not None:
                 analyzer.register_with_scan(self, remove_missing_diagnostic_files)
             self.set_analysis_dir()
+
+    @staticmethod
+    def _drop_incomplete_rows(sfile_data):
+        """
+        Drop sfile rows with no ``scan`` or ``Shotnumber`` (e.g. a partial
+        last row logged as the scan stopped). They can't be matched to any
+        diagnostic file, and building file names from them fails. Only the
+        loaded data is affected: ``merge_data_frame_to_sfile`` re-reads the
+        sfile and left-joins onto it, so the row stays in the file.
+        """
+        keys = [c for c in ('scan', 'Shotnumber') if c in sfile_data.columns]
+        if not keys:
+            return sfile_data
+        incomplete = sfile_data[keys].isna().any(axis=1)
+        if incomplete.any():
+            # +2: file line number (1-based, after the header line)
+            lines = ', '.join(str(int(i) + 2) for i in np.flatnonzero(incomplete))
+            print('Warning: dropping %d sfile row(s) with no scan / Shotnumber (file line %s)'
+                  % (incomplete.sum(), lines))
+            sfile_data = sfile_data[~incomplete].reset_index(drop=True)
+        return sfile_data
 
     def get_data_columns(self):
         if self.data is not None:
