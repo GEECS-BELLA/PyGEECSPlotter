@@ -174,7 +174,7 @@ class DirectoryWatcherSFile(FileSystemEventHandler):
             else:
                 prefix = None
             with lock:
-                merged_sfile = self.current_scan_analyzer.merge_data_frame_to_sfile(add_columns_df, analyzer.diagnostic,
+                merged_sfile = self.current_scan_analyzer.merge_data_frame_to_sfile(add_columns_df, prefix,
                                                                        overwrite_columns=True,
                                                                        analysis_label=analyzer_dict.get("analysis_label", None))
             print("Added columns to masterlog")
@@ -197,7 +197,7 @@ class DirectoryWatcherSFile(FileSystemEventHandler):
                 # compared to where sfiles are usually saved
                 old_sfilename = self.current_scan_analyzer.sfilename
                 self.current_scan_analyzer.sfilename = scan_data_fname
-                merged_sfile = self.current_scan_analyzer.merge_data_frame_to_sfile(add_columns_df, analyzer.diagnostic,
+                merged_sfile = self.current_scan_analyzer.merge_data_frame_to_sfile(add_columns_df, prefix,
                                                                        overwrite_columns=True,
                                                                        analysis_label=analyzer_dict.get("analysis_label", None))
                 # Change the sfilename back to the original one in case we need to save more files
