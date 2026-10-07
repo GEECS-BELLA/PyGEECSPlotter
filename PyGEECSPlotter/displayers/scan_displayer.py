@@ -123,6 +123,29 @@ class ScanDisplayer:
         cb.ax.tick_params(labelsize='small')
         return cb
 
+    def _overlay_row_values(self, ax, values, label=None):
+        """Mark ``values[k]`` on waterfall row ``k`` (rows at y = 0, 1, ...)
+        as a short vertical tick, against a second x-axis across the top
+        of ``ax``. Shows the actual value behind each row when the rows are
+        not evenly spaced in it. Returns the top axis, or None if no value
+        is finite."""
+        values = np.asarray(values, dtype=float)
+        rows = np.arange(len(values))
+        ok = np.isfinite(values)
+        if not ok.any():
+            return None
+        lo, hi = values[ok].min(), values[ok].max()
+        pad = 0.05 * (hi - lo) if hi > lo else (0.05 * abs(lo) or 1.0)
+        ylim = ax.get_ylim()
+        top = ax.twiny()
+        top.vlines(values[ok], rows[ok] - 0.4, rows[ok] + 0.4,
+                   color=self.display_dict.get('y_overlay_color', 'k'), lw=1.0)
+        top.set_xlim(lo - pad, hi + pad)
+        ax.set_ylim(ylim)       # the twin shares y; keep the image's row extent
+        if label:
+            top.set_xlabel(label)
+        return top
+
     def _apply_panel_aspect(self, axes):
         """Make each plot area ``display_dict['panel_aspect']`` times wider
         than tall (``set_box_aspect``). Off when None: panels keep whatever

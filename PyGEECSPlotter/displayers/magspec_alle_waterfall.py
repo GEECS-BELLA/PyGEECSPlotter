@@ -32,6 +32,8 @@ class MagSpecAllEWaterfall(LineoutWaterfall):
     y_column : str, optional
         As for ``LineoutWaterfall``: row order / y label; defaults to the
         scan parameter, ``False`` keeps acquisition order.
+    overlay_y_values : bool, optional
+        As for ``LineoutWaterfall``: tick each row's y value on a top axis.
     display_dict : dict, optional
         ``LineoutWaterfall`` keys, plus ``log`` (bool, default True): log
         colour scale, with ``vmin`` defaulting to ``vmax / 1e3``.
@@ -45,13 +47,15 @@ class MagSpecAllEWaterfall(LineoutWaterfall):
         analyzer,
         bg=None,
         y_column=None,
+        overlay_y_values: bool = False,
         display_dict: Optional[Dict[str, Any]] = None,
         output_subdir: Optional[str] = None,
         timestamp_files: bool = True,
     ):
         dd = {'cmap': 'viridis', 'xlabel': 'Momentum [GeV/c]', 'cbar_label': 'pC/GeV'}
         dd.update(display_dict or {})
-        super().__init__(analyzer, axis='p', bg=bg, y_column=y_column, display_dict=dd,
+        super().__init__(analyzer, axis='p', bg=bg, y_column=y_column,
+                         overlay_y_values=overlay_y_values, display_dict=dd,
                          output_subdir=output_subdir, timestamp_files=timestamp_files)
         diag = analyzer.output_diagnostic or analyzer.diagnostic
         self.name = f'{diag}_spectrum_waterfall'

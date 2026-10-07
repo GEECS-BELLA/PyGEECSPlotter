@@ -45,6 +45,11 @@ class TraceWaterfall(ScanDisplayer):
         ``'Shot (in scan order)'``).
     overlay_fwhm : bool, optional
         Overlay the per-shot width, centred on the centroid, as a line.
+    overlay_y_values : bool, optional
+        Mark each row's ``y_column`` value (the scan parameter in
+        acquisition order) as a short tick against a second x-axis across
+        the top, so non-uniform steps show. Colour:
+        ``display_dict['y_overlay_color']`` (default black).
     display_dict : dict, optional
         Style overrides: ``figsize``, ``cmap``, ``vmin``, ``vmax``,
         ``xlims``, ``normalise_rows``, ``n_yticks``.
@@ -57,6 +62,7 @@ class TraceWaterfall(ScanDisplayer):
         component: str = 'temporal',
         y_column=None,
         overlay_fwhm: bool = False,
+        overlay_y_values: bool = False,
         display_dict: Optional[Dict[str, Any]] = None,
         output_subdir: Optional[str] = None,
         timestamp_files: bool = True,
@@ -73,6 +79,7 @@ class TraceWaterfall(ScanDisplayer):
         self.component = component
         self.y_column = y_column
         self.overlay_fwhm = overlay_fwhm
+        self.overlay_y_values = overlay_y_values
 
     # ------------------------------------------------------------------
     def _collect(self, scan, y_col):
@@ -127,8 +134,11 @@ class TraceWaterfall(ScanDisplayer):
         if y_col is None:
             y_col = scan.scan_parameter
         y_col = y_col if y_col else None
+        # column behind y_vals: the y_column, else (acquisition order) the
+        # scan parameter, so overlay_y_values still has values to show
+        val_col = y_col or scan.scan_parameter
 
-        axis, stack, shots, widths, centres, y_vals = self._collect(scan, y_col)
+        axis, stack, shots, widths, centres, y_vals = self._collect(scan, val_col)
 
         if y_col is not None and np.any(np.isfinite(y_vals)):
             order = np.argsort(y_vals, kind='stable')
@@ -175,6 +185,8 @@ class TraceWaterfall(ScanDisplayer):
             ax.set_yticklabels([f'{v:.4g}' for v in y_vals[tick_idx]])
         else:
             ax.set_ylabel(self.display_dict.get('ylabel', 'Shot (in scan order)'))
+        if self.overlay_y_values:
+            self._overlay_row_values(ax, y_vals, label=val_col)
 
         xlims = self.display_dict.get('xlims', None)
         if xlims is not None:
