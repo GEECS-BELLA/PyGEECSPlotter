@@ -7,8 +7,7 @@ import numpy as np
 import pandas as pd
 
 from PyGEECSPlotter.multi_diagnostic_analyzer import MultiDiagnosticAnalyzer
-from PyGEECSPlotter.spectrum_analysis import OpticalSpectrumAnalyzer
-from PyGEECSPlotter.utils import merge_dicts_overwrite
+from PyGEECSPlotter.spectrum_analysis import OpticalSpectrumAnalyzer, get_config
 
 
 class CombinedVisNIRSpectrum(MultiDiagnosticAnalyzer):
@@ -44,11 +43,19 @@ class CombinedVisNIRSpectrum(MultiDiagnosticAnalyzer):
           - ``'remove_2nd_order_800nm'`` (bool): enable the watchdog.
           - ``'check_2nd_order_800_low_wl'`` / ``'..._high_wl'`` /
             ``'..._thresh'``: watchdog window + threshold.
+          - ``'scale_method'``: ``'legacy'`` (default) or ``'ratio'``; how
+            NIR is scaled onto VIS (see ``_stitch``). The factor is
+            returned as the ``'nir scale'`` result.
           - ``'calculate_red_blue_shifts'`` (bool) +
-            ``'threshold_for_shifts'``: forwarded to
-            ``OpticalSpectrumAnalyzer.compute_spectrum_shifts`` /
-            ``compute_cumulative_spectrum_shifts``.
+            ``'threshold_for_shifts'`` + ``'below_threshold_value'``,
+            ``'camera_responses'``: as for ``OpticalSpectrumAnalyzer``,
+            on the combined spectrum.
     output_diagnostic, output_file_ext, display_dict : as usual.
+
+    ``aux`` is lineout-style: ``'wl'`` / ``'wl_lo'`` is the combined
+    spectrum, ``'vis_wl'`` / ``'nir_wl'`` (with ``_lo``) each spectrometer
+    after processing (NIR scaled onto VIS), so ``OpticalSpectrumMeanPerBin(
+    axes=['wl', 'vis_wl', 'nir_wl'])`` overlays all three.
     """
 
     def __init__(
@@ -110,6 +117,8 @@ class CombinedVisNIRSpectrum(MultiDiagnosticAnalyzer):
         nir_data, nir_results, _ = self.sub_analyzers[self.nir_diagnostic].analyze_data(
             nir_in, bg=nir_bg, context=context, analyzer_dict=nir_dict,
         )
+        if vis_data is None or nir_data is None:
+            return None, {}, {}
 
         # 3) Optional 2nd-order 800 nm watchdog: zero out NIR above the
         # watchdog wavelength if the check region is too dim.
@@ -120,12 +129,14 @@ class CombinedVisNIRSpectrum(MultiDiagnosticAnalyzer):
         nir_xover_include = self._nir_overlap_support(nir_dict, nir_data)
 
         # 5-6) Scale NIR onto VIS, blend across the overlap, build axis.
-        combined_wl, combined_counts = self._stitch(
+        combined_wl, combined_counts, scale = self._stitch(
             vis_data, nir_data, nir_xover_include,
+            scale_method=analyzer_dict.get('scale_method', 'legacy'),
         )
 
         # 7) Combined stats + optional shifts.
-        results = self._combined_results(combined_wl, combined_counts, analyzer_dict)
+        results = self._shift_helper.spectrum_results(combined_wl, combined_counts, analyzer_dict)
+        results['nir scale'] = scale
 
         # Surface per-sub scalars too so they end up alongside the
         # combined ones in the sfile.
@@ -134,11 +145,16 @@ class CombinedVisNIRSpectrum(MultiDiagnosticAnalyzer):
         for key, value in nir_results.items():
             results[f'nir {key}'] = value
 
-        combined_df = pd.DataFrame({
-            'Wavelength (nm)': combined_wl,
-            'Counts': np.nan_to_num(combined_counts, nan=0.0),
-        })
-        return combined_df, results, {}
+        combined_counts = np.nan_to_num(combined_counts, nan=0.0)
+        combined_df = pd.DataFrame({'Wavelength (nm)': combined_wl, 'Counts': combined_counts})
+        # lineout-style aux: the combined spectrum, plus each spectrometer
+        # on its own axis (NIR after scaling onto VIS) for overlays
+        aux = {
+            'wl': combined_wl, 'wl_lo': combined_counts,
+            'vis_wl': vis_data['Wavelength (nm)'].values, 'vis_wl_lo': vis_data['Counts'].values,
+            'nir_wl': nir_data['Wavelength (nm)'].values, 'nir_wl_lo': nir_data['Counts'].values * scale,
+        }
+        return combined_df, results, aux
 
     # ------------------------------------------------------------------
     # Helpers
@@ -179,7 +195,7 @@ class CombinedVisNIRSpectrum(MultiDiagnosticAnalyzer):
 
         Falls back to all NIR indices if no response arrays are configured.
         """
-        response_arrays = nir_dict.get('diagnostic_response_arrays', [])
+        response_arrays = get_config(nir_dict, 'diagnostic_response_arrays', [])
         if not response_arrays:
             return np.arange(len(nir_data))
         valid = np.ones(len(nir_data), dtype=bool)
@@ -190,12 +206,26 @@ class CombinedVisNIRSpectrum(MultiDiagnosticAnalyzer):
             return np.arange(len(nir_data))
         return idx
 
-    def _stitch(self, vis_data, nir_data, nir_xover_include):
+    _SCALE_METHODS = ('legacy', 'ratio')
+
+    def _stitch(self, vis_data, nir_data, nir_xover_include, scale_method='legacy'):
         """
         Scale NIR onto VIS in the overlap region, linearly blend across
         the overlap, then resample onto a uniform VIS-spaced wavelength
-        axis spanning min(vis) to max(nir).
+        axis spanning min(vis) to max(nir). Returns ``(wl, counts, scale)``.
+
+        ``scale_method``:
+
+        - ``'legacy'`` (default, reproduces earlier results): ratio of
+          oppositely weighted means — VIS weighted 1 -> 0 across its overlap
+          samples, NIR 0 -> 1 across its own. The two means are taken on
+          different samples with different weights, so the scale is biased
+          whenever the spectrum isn't flat across the overlap.
+        - ``'ratio'``: NIR interpolated onto the VIS overlap wavelengths,
+          scale = sum(VIS) / sum(NIR) over those same samples.
         """
+        if scale_method not in self._SCALE_METHODS:
+            raise ValueError(f"scale_method must be one of {self._SCALE_METHODS}, got {scale_method!r}.")
         vis_wl = vis_data['Wavelength (nm)'].values
         vis_counts = vis_data['Counts'].values
         nir_wl = nir_data['Wavelength (nm)'].values
@@ -205,6 +235,7 @@ class CombinedVisNIRSpectrum(MultiDiagnosticAnalyzer):
         vis_xover_idcs = np.where(vis_wl > nir_overlap_min_wl)[0]
         nir_xover_idcs = np.where(nir_wl < float(np.max(vis_wl)))[0]
 
+        scale = 1.0
         if vis_xover_idcs.size == 0 or nir_xover_idcs.size == 0:
             # No overlap → just concatenate
             wl_combined = np.concatenate([vis_wl, nir_wl])
@@ -212,64 +243,36 @@ class CombinedVisNIRSpectrum(MultiDiagnosticAnalyzer):
         else:
             vis_tmp = vis_counts[vis_xover_idcs]
             nir_tmp = nir_counts[nir_xover_idcs]
+            # NIR overlap on the VIS overlap wavelengths (unscaled)
+            nir_on_vis = np.interp(vis_wl[vis_xover_idcs], nir_wl[nir_xover_idcs], nir_tmp)
 
-            # Weighted means tip toward the side the weight emphasises.
             w_vis = 1.0 - np.arange(len(vis_xover_idcs)) / len(vis_xover_idcs)
-            w_nir = np.arange(len(nir_xover_idcs)) / len(nir_xover_idcs)
-            mean_vis = np.nanmean(w_vis * vis_tmp)
-            mean_nir = np.nanmean(w_nir * nir_tmp)
+            if scale_method == 'legacy':
+                w_nir = np.arange(len(nir_xover_idcs)) / len(nir_xover_idcs)
+                num, den = np.nanmean(w_vis * vis_tmp), np.nanmean(w_nir * nir_tmp)
+            else:
+                num, den = np.nansum(vis_tmp), np.nansum(nir_on_vis)
+            if np.isfinite(num) and np.isfinite(den) and den != 0:
+                scale = float(num / den)
 
-            scale = mean_vis / mean_nir if mean_nir != 0 else 1.0
             nir_counts = nir_counts * scale
-            nir_tmp_scaled = nir_tmp * scale
+            # linear blend: all VIS at the blue end of the overlap, all NIR at the red end
+            blended = vis_tmp * w_vis + nir_on_vis * scale * (1.0 - w_vis)
 
-            # Interpolate scaled NIR overlap onto VIS wavelengths,
-            # then blend.
-            nir_on_vis = np.interp(
-                vis_wl[vis_xover_idcs],
-                nir_wl[nir_xover_idcs],
-                nir_tmp_scaled,
-            )
-            w_nir_on_vis = np.arange(len(vis_xover_idcs)) / len(vis_xover_idcs)
-            blended = vis_tmp * w_vis + nir_on_vis * w_nir_on_vis
-
-            pre_vis_counts = vis_counts[:vis_xover_idcs[0]]
-            post_nir_counts = nir_counts[nir_xover_idcs[-1]:]
-            post_nir_wl = nir_wl[nir_xover_idcs[-1]:]
-
-            counts_combined = np.concatenate([pre_vis_counts, blended, post_nir_counts])
+            # NIR from the first sample past the VIS range (the last overlap
+            # sample is below max(vis_wl), so including it would make the
+            # wavelength axis non-monotonic for np.interp)
+            post = nir_xover_idcs[-1] + 1
+            counts_combined = np.concatenate([vis_counts[:vis_xover_idcs[0]], blended, nir_counts[post:]])
             # Wavelengths: pre-overlap VIS + overlap VIS + post-overlap NIR
-            wl_combined = np.concatenate([vis_wl, post_nir_wl])
+            wl_combined = np.concatenate([vis_wl, nir_wl[post:]])
 
         # Resample onto a uniform VIS-spaced axis. Note: this oversamples
         # NIR; a future option could keep the heterogeneous axis instead.
         dwl = float(np.mean(np.diff(vis_wl)))
         wl_uniform = np.arange(np.min(vis_wl), np.max(nir_wl) + dwl, dwl)
         counts_uniform = np.interp(wl_uniform, wl_combined, counts_combined)
-        return wl_uniform, counts_uniform
-
-    def _combined_results(self, wl, counts, analyzer_dict):
-        max_counts = float(np.nanmax(counts)) if counts.size else np.nan
-        mean_counts = float(np.nanmean(counts)) if counts.size else np.nan
-        sum_counts = float(np.nansum(counts)) if counts.size else np.nan
-        if counts.size:
-            x0 = int(np.argmax(np.nan_to_num(counts, nan=-np.inf)))
-            peak_wl = float(wl[x0])
-        else:
-            peak_wl = np.nan
-
-        results = {
-            'peak wl (nm)': peak_wl,
-            'max counts': max_counts,
-            'mean counts': mean_counts,
-            'sum counts': sum_counts,
-        }
-        if analyzer_dict.get('calculate_red_blue_shifts', False):
-            threshold = analyzer_dict.get('threshold_for_shifts', 600)
-            shifts = self._shift_helper.compute_spectrum_shifts(counts, wl, threshold=threshold)
-            cumsum = self._shift_helper.compute_cumulative_spectrum_shifts(wl, counts, threshold=threshold)
-            results = merge_dicts_overwrite(results, shifts, cumsum)
-        return results
+        return wl_uniform, counts_uniform, scale
 
     # ------------------------------------------------------------------
     # display + write (delegate to a fresh OpticalSpectrumAnalyzer view)

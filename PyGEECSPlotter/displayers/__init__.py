@@ -65,6 +65,14 @@ Thin, physical-units subclasses of the families above for
 waterfall), and ``MagSpecAllESampledShots`` /
 ``MagSpecAllERepresentativePerBin`` (allE images in GeV/c x mrad on one
 colour scale). Run them on ``MagSpecAllEReader`` to avoid re-analysing.
+
+Optical spectrum family
+-----------------------
+Lineout-family subclasses on the ``'wl'`` / ``'wl_lo'`` aux of
+``OpticalSpectrumAnalyzer`` and ``CombinedVisNIRSpectrum`` (which also
+returns ``'vis_wl'`` / ``'nir_wl'``): ``OpticalSpectrumWaterfall`` (every
+shot), ``OpticalSpectrumMeanPerBin`` (mean spectrum per bin panel, optionally
+overlaying VIS / NIR / combined) and ``OpticalSpectrumMeanWaterfall``.
 """
 
 from PyGEECSPlotter.displayers.scan_displayer import ScanDisplayer
@@ -91,6 +99,11 @@ from PyGEECSPlotter.displayers.magspec_alle_spectrum_per_bin import (
     MagSpecAllESpectrumPerBin,
     MagSpecAllESpectrumMeanWaterfall,
 )
+from PyGEECSPlotter.displayers.optical_spectrum import (
+    OpticalSpectrumWaterfall,
+    OpticalSpectrumMeanPerBin,
+    OpticalSpectrumMeanWaterfall,
+)
 
 __all__ = [
     "ScanDisplayer",
@@ -113,4 +126,7 @@ __all__ = [
     "MagSpecAllERepresentativePerBin",
     "MagSpecAllESpectrumPerBin",
     "MagSpecAllESpectrumMeanWaterfall",
+    "OpticalSpectrumWaterfall",
+    "OpticalSpectrumMeanPerBin",
+    "OpticalSpectrumMeanWaterfall",
 ]
