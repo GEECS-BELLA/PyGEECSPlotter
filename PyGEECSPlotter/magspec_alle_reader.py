@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from PyGEECSPlotter.diagnostic_analyzer import DiagnosticAnalyzer
+from PyGEECSPlotter.data_reader import DataReader
 try:
     import pw_py_magspec  # noqa: F401  (private BellaCenter package)
 except ImportError as err:
@@ -57,7 +57,7 @@ def load_ebeam_profile(top, scan, shot, diag):
     return {'image': 1e-6 * read_int_ac_png(png), 'x': x, 'y': y}   # aC -> pC
 
 
-class MagSpecAllEReader(DiagnosticAnalyzer):
+class MagSpecAllEReader(DataReader):
     """
     Load saved ``MagSpecAllEAnalyzer`` outputs instead of recomputing them.
 

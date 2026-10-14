@@ -60,6 +60,40 @@ def get_ecs_live_dumps_parameter_value(file_path, device_name, parameter_name, p
         print("Device or parameter not found.")
     return np.nan
     
+def read_ecs_live_dump(file_path):
+    """
+    Parse a whole ECS Live dump once.
+
+    Returns ``{device_name: {parameter_name: value}}``, with each value a
+    float where it parses as one and the (unquoted) string otherwise. Uses
+    the same device / ``name = value`` rules as
+    ``get_ecs_live_dumps_parameter_value``, so read several parameters from
+    one dict rather than re-reading the file per parameter. A missing file
+    gives ``{}``.
+    """
+    if not os.path.exists(file_path):
+        return {}
+    with open(file_path, 'r') as file:
+        devices = file.read().split("[Device")[1:]
+
+    out = {}
+    for device in devices:
+        params = {}
+        for line in device.split("\n"):
+            name, sep, value = line.strip().partition(' = ')
+            if not sep:
+                continue
+            value = value.strip().strip('"')
+            try:
+                params[name] = np.float64(value)
+            except ValueError:
+                params[name] = value
+        device_name = params.pop('Device Name', None)
+        if isinstance(device_name, str):
+            out[device_name] = params
+    return out
+
+
 def get_ecs_live_dumps_parameter_value_from_sfilename(sfilename, device, parameter):
     """
     Reads a scan file and retrieves the parameter value from ECS Live dumps if the scan is valid.

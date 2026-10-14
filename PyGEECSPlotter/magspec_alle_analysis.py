@@ -127,10 +127,9 @@ class MagSpecAllEAnalyzer(MultiDiagnosticAnalyzer):
                  display_dict=None, output_diagnostic='py-magspec',
                  calibration_kwargs=None, ebeam_diagnostic='py-ebeam',
                  xray_diagnostic=None):
-        cams = {name: _MagSpecCamera(diagnostic=name, file_ext='.png') for name in MAGSPEC_CAMERAS}
         super().__init__(
-            inputs=[(name, '.png') for name in MAGSPEC_CAMERAS],
-            sub_analyzers=cams,
+            sub_analyzers=[_MagSpecCamera(diagnostic=name, file_ext='.png')
+                           for name in MAGSPEC_CAMERAS],
             output_diagnostic=output_diagnostic,
             output_file_ext='.png',
             analyzer_dict=analyzer_dict,
