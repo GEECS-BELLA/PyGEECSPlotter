@@ -3,7 +3,7 @@
 # from another (e.g. combining VIS + NIR spectra, or normalising an image
 # by a separate energy meter reading).
 
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List, Tuple, Union
 
 from PyGEECSPlotter.diagnostic_analyzer import DiagnosticAnalyzer
 
@@ -12,9 +12,10 @@ class MultiDiagnosticAnalyzer(DiagnosticAnalyzer):
     """
     Per-shot analyzer consuming several diagnostics at once.
 
-    Declares its required diagnostics via ``inputs`` (a list of
-    ``(diagnostic_name, file_ext)`` tuples) and composes one
-    ``DiagnosticAnalyzer`` per input via ``sub_analyzers``. The base
+    Composes one ``DiagnosticAnalyzer`` per input diagnostic via
+    ``sub_analyzers``; each sub-analyzer's ``diagnostic`` / ``file_ext``
+    declare that input, so ``inputs`` (a list of ``(diagnostic_name,
+    file_ext)`` tuples) is derived from them unless given. The base
     ``ScanDataAnalyzer._iter_shots`` detects the multi case, looks up the
     per-shot file path for each declared input from the scan's
     ``<diagnostic> file_list`` columns, and passes a dict
@@ -41,8 +42,8 @@ class MultiDiagnosticAnalyzer(DiagnosticAnalyzer):
 
     def __init__(
         self,
-        inputs: List[Tuple[str, str]],
-        sub_analyzers: Optional[Dict[str, DiagnosticAnalyzer]] = None,
+        sub_analyzers: Union[List[DiagnosticAnalyzer], Dict[str, DiagnosticAnalyzer]],
+        inputs: Optional[List[Tuple[str, str]]] = None,
         output_diagnostic: Optional[str] = None,
         output_file_ext: Optional[str] = None,
         analyzer_dict: Optional[Dict[str, Any]] = None,
@@ -56,8 +57,18 @@ class MultiDiagnosticAnalyzer(DiagnosticAnalyzer):
             output_diagnostic=output_diagnostic,
             output_file_ext=output_file_ext,
         )
+        if isinstance(sub_analyzers, dict):
+            self.sub_analyzers = dict(sub_analyzers)
+        else:
+            self.sub_analyzers = {sub.diagnostic: sub for sub in sub_analyzers}
+        if inputs is None:
+            missing = [type(sub).__name__ for sub in self.sub_analyzers.values()
+                       if sub.diagnostic is None or sub.file_ext is None]
+            if missing:
+                raise ValueError(f"sub-analyzers {missing} need `diagnostic` and `file_ext` "
+                                 "set, or pass `inputs` explicitly.")
+            inputs = [(sub.diagnostic, sub.file_ext) for sub in self.sub_analyzers.values()]
         self.inputs = list(inputs)
-        self.sub_analyzers = dict(sub_analyzers or {})
 
     # ------------------------------------------------------------------
     # Scan-level integration

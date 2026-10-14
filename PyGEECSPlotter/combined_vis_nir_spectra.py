@@ -71,14 +71,7 @@ class CombinedVisNIRSpectrum(MultiDiagnosticAnalyzer):
             raise ValueError("Both sub-analyzers must have `diagnostic` set.")
 
         super().__init__(
-            inputs=[
-                (vis_analyzer.diagnostic, vis_analyzer.file_ext),
-                (nir_analyzer.diagnostic, nir_analyzer.file_ext),
-            ],
-            sub_analyzers={
-                vis_analyzer.diagnostic: vis_analyzer,
-                nir_analyzer.diagnostic: nir_analyzer,
-            },
+            sub_analyzers=[vis_analyzer, nir_analyzer],
             analyzer_dict=analyzer_dict,
             display_dict=display_dict,
             output_diagnostic=output_diagnostic or 'VIS_NIR_combined',
