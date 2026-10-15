@@ -135,9 +135,10 @@ class ImageGridDisplayer(ScanDisplayer):
         The pixel scale goes alongside, so the axes can be rebuilt on
         reload: ``dx``, ``dy`` and ``spatial_units`` from the analyzer
         (1, 1, ``'pixels'`` if unset), and ``extents``, each panel's
-        ``imshow_extent`` ``[x0, x1, y0, y1]`` where the analyzer gave one
-        (NaN otherwise, e.g. for per-bin means, which are in pixels from
-        the image corner: ``x = arange(nx) * dx``).
+        ``imshow_extent`` ``[x0, x1, y0, y1]`` (outer pixel edges) — from the
+        analyzer, or for panels it didn't analyse (per-bin means) from the
+        analyzer's ``_resolve_extent``, i.e. exactly as displayed. NaN only
+        for analyzers without one.
         """
         labels = np.asarray([label for label, _, _ in panels], dtype=object)
         images = [data for _, data, _ in panels]
@@ -147,8 +148,11 @@ class ImageGridDisplayer(ScanDisplayer):
         units = analyzer_display.get('spatial_units',
                                      analyzer_dict.get('spatial_units', 'pixels'))
         extents = np.full((len(panels), 4), np.nan)
-        for k, (_, _, return_dict) in enumerate(panels):
+        resolve = getattr(self.analyzer, '_resolve_extent', None)
+        for k, (_, data, return_dict) in enumerate(panels):
             ext = (return_dict or {}).get('imshow_extent')
+            if ext is None and resolve is not None and data is not None and np.ndim(data) == 2:
+                ext = resolve(data, return_dict)     # e.g. per-bin means
             if ext is not None:
                 extents[k] = np.asarray(ext, float)
 
