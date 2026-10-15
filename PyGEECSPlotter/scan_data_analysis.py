@@ -422,7 +422,7 @@ class ScanDataAnalyzer:
 
 
     def filter_scan_data(self, filter_parameter, lower_bound, upper_bound,
-                        filter_exclusive=False):
+                        filter_exclusive=False, print_data=False):
         """
         Filter scan data based on a specified parameter and value range.
 
@@ -458,10 +458,11 @@ class ScanDataAnalyzer:
 
         self._mask = self._mask & new_condition.to_numpy()
 
-        print(
-            '%d / %d shots included. Filtered based on: %s'
-            % (self._mask.sum(), len(self.data), get_parameter_alias(filter_parameter))
-        )
+        if print_data:
+            print(
+                '%d / %d shots included. Filtered based on: %s'
+                % (self._mask.sum(), len(self.data), get_parameter_alias(filter_parameter))
+            )
 
 
     def filter_scan_data_by_array(self, filter_parameter, values,

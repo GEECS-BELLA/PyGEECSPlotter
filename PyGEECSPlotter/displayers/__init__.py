@@ -12,6 +12,8 @@ concrete class either directly from its module or from this package:
         MeanImagePerBin,
         SampledImages,
         RepresentativeImagePerBin,
+        PeakWidthImages,
+        FocalScanDisplayer,
         MultiDiagnosticAlignment,
         TraceWaterfall,
         TraceMeanPerBin,
@@ -33,6 +35,15 @@ Image-grid family
 each bin; ``ShotSelectionGrid`` subclasses pick one real shot per panel —
 ``SampledImages`` (evenly spaced across the scan) and
 ``RepresentativeImagePerBin`` (first / last / max / min per bin).
+``PeakWidthImages`` is a three-panel ``RepresentativeImagePerBin``: the
+peak bin of a column's per-bin mean, and the bins one half width either
+side (``find_peak_bins``).
+
+Focal scan
+----------
+``FocalScanDisplayer`` is a custom composite for laser focal scans:
+``PeakWidthImages`` of the max counts on top, and max counts with the 2nd
+moments (x/y, x45/y45) vs stage position below.
 
 Trace family
 ------------
@@ -83,6 +94,8 @@ from PyGEECSPlotter.displayers.shot_selection_grid import ShotSelectionGrid
 from PyGEECSPlotter.displayers.mean_image_per_bin import MeanImagePerBin
 from PyGEECSPlotter.displayers.sampled_images import SampledImages
 from PyGEECSPlotter.displayers.representative_image_per_bin import RepresentativeImagePerBin
+from PyGEECSPlotter.displayers.peak_width_images import PeakWidthImages, find_peak_bins
+from PyGEECSPlotter.displayers.focal_scan import FocalScanDisplayer
 from PyGEECSPlotter.displayers.multi_diagnostic_alignment import MultiDiagnosticAlignment
 from PyGEECSPlotter.displayers.trace_waterfall import TraceWaterfall
 from PyGEECSPlotter.displayers.trace_mean_per_bin import TraceMeanPerBin
@@ -114,6 +127,9 @@ __all__ = [
     "MeanImagePerBin",
     "SampledImages",
     "RepresentativeImagePerBin",
+    "PeakWidthImages",
+    "find_peak_bins",
+    "FocalScanDisplayer",
     "MultiDiagnosticAlignment",
     "TraceWaterfall",
     "TraceMeanPerBin",
