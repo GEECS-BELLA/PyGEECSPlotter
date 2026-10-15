@@ -58,157 +58,129 @@ class ImageAnalyzer(DiagnosticAnalyzer):
         return ni_imread.read_imaq_image(filename).astype('float')
     
     def analyze_data(self, data, bg=None, context=None, analyzer_dict=None):
+        """
+        Run the analysis pipeline on one image.
+
+        The steps and their order come from ``analyzer_dict['pipeline']``, a
+        list of ``(step_name, kwargs)`` tuples, e.g.::
+
+            'pipeline': [
+                ('subtract_bg',    {}),
+                ('auto_roi',       {'size': 350, 'thresh': 0.8}),
+                ('threshold',      {'low': 16, 'units': 'counts'}),
+                ('median_filter',  {'N': 5}),
+                ('second_moments', {'r_max': 100}),
+            ]
+
+        Step names may repeat. Valid names are the keys of ``self.STEPS``;
+        each maps to a ``_step_<name>`` method, which wraps a static method
+        that can also be called on its own. Settings shared by several steps
+        (``dx``, ``dy``, ``spatial_units``, ``round_centroid``) stay at the
+        top level of ``analyzer_dict``.
+
+        A dict without ``'pipeline'`` uses the legacy flat keys
+        (``bg_file``, ``median_filter``, ``threshold_high``, ...), translated
+        to the old fixed order by ``legacy_to_pipeline``, with a warning.
+        """
         if analyzer_dict is None:
             analyzer_dict = self.analyzer_dict
+        analyzer_dict = analyzer_dict or {}
 
         if data is None:
             print("Warning: analyze_data() called with None input — skipping analysis.")
             return None, {}, {}
 
-        data_out = np.copy(data)
-        results = {}
+        pipeline = self._resolve_pipeline(analyzer_dict)
 
-        # 1) Saturation
-        if analyzer_dict.get('return_n_saturated', True):
-            results['n_saturated'] = self.compute_n_saturated(
-                data_out,
-                bit_depth=analyzer_dict.get('bit_depth', 12),
-                saturation_threshold=analyzer_dict.get('saturation_threshold', None)
-            )
+        s = {
+            'data': np.copy(data).astype(float),
+            'bg': bg,
+            'ad': analyzer_dict,
+            'results': {},
+            'lineouts': {},
+            'x': None, 'y': None, 'x0': None, 'y0': None,
+            'roi_offset': (0, 0),      # (row, col) of the ROI's corner in the full frame
+        }
+        for name, kwargs in pipeline:
+            getattr(self, self.STEPS[name])(s, **(kwargs or {}))
 
-        # 2) Background
-        if analyzer_dict.get('bg_file', False) and bg is not None:
-            data_out -= bg
-            
-        data_out -= analyzer_dict.get('bg_const', 0)
+        return s['data'], s['results'], s['lineouts']
 
-        # 3) ROI
-        if analyzer_dict.get('roi', None) is not None:
-            data_out = self.roi_data(data_out, analyzer_dict['roi'])
-            
-        if analyzer_dict.get('auto_roi', False):
-            x0_roi, y0_roi = ImageAnalyzer._get_centroid(data_out, 
-                                    thresh_min=analyzer_dict.get('auto_roi_thresh', 0.85)
-                                    )
-            data_out = ImageAnalyzer.extract_subarray(data_out, x0_roi, y0_roi, analyzer_dict.get('auto_roi_size', 500))
+    def _resolve_pipeline(self, analyzer_dict):
+        if 'pipeline' in analyzer_dict:
+            pipeline = [(step, {}) if isinstance(step, str) else tuple(step)
+                        for step in analyzer_dict['pipeline']]
+        else:
+            if not getattr(self, '_legacy_warned', False):
+                warnings.warn(
+                    "ImageAnalyzer: flat analyzer_dict keys are deprecated; use "
+                    "analyzer_dict['pipeline']. ImageAnalyzer.legacy_to_pipeline"
+                    "(analyzer_dict) returns the equivalent pipeline.",
+                    FutureWarning, stacklevel=3)
+                self._legacy_warned = True
+            pipeline = self.legacy_to_pipeline(analyzer_dict)
 
-        # 3.5) (Optional) remove outliers
-        if analyzer_dict.get('remove_outliers', False):
-            data_out = self.remove_outliers(
-                data_out,
-                threshold=analyzer_dict.get('outlier_threshold', 3),
-                mask=analyzer_dict.get('outlier_mask', None)
-            )
+        unknown = [name for name, _ in pipeline if name not in self.STEPS]
+        if unknown:
+            raise ValueError(f"Unknown pipeline step(s) {unknown}. "
+                             f"Valid steps: {sorted(self.STEPS)}")
+        return pipeline
 
-        # 3.75) Threshold high outliers
-        threshold_high = analyzer_dict.get('threshold_high', 0.995)
+    @staticmethod
+    def legacy_to_pipeline(analyzer_dict):
+        """
+        Translate a legacy flat ``analyzer_dict`` into the equivalent
+        ``pipeline`` list, reproducing the old fixed order of analyze_data.
+        """
+        ad = analyzer_dict
+        p = []
+        if ad.get('return_n_saturated', True):
+            p.append(('n_saturated', {'bit_depth': ad.get('bit_depth', 12),
+                                      'saturation_threshold': ad.get('saturation_threshold', None)}))
+        if ad.get('bg_file', False):
+            p.append(('subtract_bg', {}))
+        if ad.get('bg_const', 0):
+            p.append(('bg_const', {'value': ad['bg_const']}))
+        if ad.get('roi', None) is not None:
+            p.append(('roi', {'roi': ad['roi']}))
+        if ad.get('auto_roi', False):
+            p.append(('auto_roi', {'size': ad.get('auto_roi_size', 500),
+                                   'thresh': ad.get('auto_roi_thresh', 0.85),
+                                   'presmooth': 0}))
+        if ad.get('remove_outliers', False):
+            p.append(('remove_outliers', {'threshold': ad.get('outlier_threshold', 3),
+                                          'mask': ad.get('outlier_mask', None)}))
+        # the old code clipped the top 0.5 % by default before computing counts
+        threshold_high = ad.get('threshold_high', 0.995)
         if threshold_high > 0:
-            data_out = self.apply_threshold(data_out, -1, threshold_high)
-
-        # 4) Data stats
-        if analyzer_dict.get('return_data_counts', True):
-            results.update(self.compute_data_counts(data_out))
-
-        # 5) Median filter
-        if analyzer_dict.get('median_filter', False):
-            N_filt = analyzer_dict.get('N_filt', 3)
-            data_out = medfilt2d(data_out.astype(np.float64), [N_filt, N_filt])
-
-        # 6) Spatial coords + lineouts
-        lineouts = {}
-        if analyzer_dict.get('generate_lineouts', False):
-            x, y, x0, y0 = self.get_spatial_coords(
-                data_out,
-                method=analyzer_dict.get('centroid_method', 'center'),
-                x0=analyzer_dict.get('x0', None),
-                y0=analyzer_dict.get('y0', None),
-                dx=analyzer_dict.get('dx', 1),
-                dy=analyzer_dict.get('dy', 1),
-                centroid_thresh=analyzer_dict.get('centroid_threshold_low', 0.85),
-                round_centroid=analyzer_dict.get('round_centroid', True),
-            )
-            x_lo, y_lo = self.get_lineouts(
-                data_out,
-                x0,
-                y0,
-                method=analyzer_dict.get('lineout_method', 'center'),
-                Nlo=analyzer_dict.get('Nlo', 2)
-            )
-            lineouts['x']    = x
-            lineouts['y']    = y
-            lineouts['x_lo'] = x_lo
-            lineouts['y_lo'] = y_lo
-            results['x0'] = x0
-            results['y0'] = y0
-            results['imshow_extent'] = ImageAnalyzer.get_imshow_extent(x,y)
-
-        # 7) Fit super-Gaussian
-        if analyzer_dict.get('fit_super_gaussian', False):
-            include_exponent = analyzer_dict.get('include_exponent', True)
-            fit_x = self.fit_super_gaussian(x, x_lo, fit_exponent=include_exponent)
-            fit_y = self.fit_super_gaussian(y, y_lo, fit_exponent=include_exponent)
-            results['fit_x'] = fit_x
-            results['fit_y'] = fit_y
-            
-            if include_exponent:
-                keys_to_add = ['amplitude', 'center', 'sigma', 'offset', 'N']
-            else:
-                keys_to_add = ['amplitude', 'center', 'sigma', 'offset']
-            
-            filtered_data = {f'gauss fit x {key}': fit_x[key] for key in keys_to_add}
-            results.update(filtered_data)
-            filtered_data = {f'gauss fit y {key}': fit_y[key] for key in keys_to_add}
-            results.update(filtered_data)
-
-        # 8) Threshold final data
-        threshold_low  = analyzer_dict.get('threshold_low', -1)
-        threshold_high = analyzer_dict.get('threshold_high', -1)
+            p.append(('threshold', {'high': threshold_high}))
+        if ad.get('return_data_counts', True):
+            p.append(('counts', {}))
+        if ad.get('median_filter', False):
+            p.append(('median_filter', {'N': ad.get('N_filt', 3)}))
+        if ad.get('generate_lineouts', False):
+            p.append(('lineouts', {'centroid_method': ad.get('centroid_method', 'center'),
+                                   'x0': ad.get('x0', None),
+                                   'y0': ad.get('y0', None),
+                                   'centroid_thresh': ad.get('centroid_threshold_low', 0.85),
+                                   'lineout_method': ad.get('lineout_method', 'center'),
+                                   'Nlo': ad.get('Nlo', 2)}))
+        if ad.get('fit_super_gaussian', False):
+            p.append(('gauss_fit', {'fit_exponent': ad.get('include_exponent', True)}))
+        threshold_low = ad.get('threshold_low', -1)
+        threshold_high = ad.get('threshold_high', -1)
         if threshold_low >= 0 or threshold_high > 0:
-            data_out = self.apply_threshold(data_out, threshold_low, threshold_high)
-
-            
-        # 9) Second moment
-        # Doesn't work yet
-        
-        # 9.5) FWHM
-        if analyzer_dict.get('get_fwhm', False):
-            fwhm, hdx, ldx = get_lineout_width(x_lo)
-            results['fwhm x'] = fwhm*analyzer_dict.get('dx', 1)
-            fwhm, hdx, ldx = get_lineout_width(y_lo)
-            results['fwhm y'] = fwhm*analyzer_dict.get('dy', 1)
-            results['fwhm_av'] = np.nanmean([results['fwhm x'], results['fwhm y']])
-            results['fwhm_diff'] = np.abs(results['fwhm x'] - results['fwhm y'])
-        
-        # 10) Misalignment from target
-        if analyzer_dict.get('measured_misalignment', False):
-            x0=analyzer_dict.get('x0', None)
-            y0=analyzer_dict.get('y0', None)
-            results.update(self.calculate_misalignment(data_out, x0, y0, analyzer_dict=analyzer_dict))
-        if analyzer_dict.get('fitted_misalignment', False) and analyzer_dict.get('fit_super_gaussian', False):
-            fitted_x0 = fit_x['center']
-            fitted_y0 = fit_y['center']
-            results.update(self.calculate_misalignment(data_out, 0, 0, 
-                                           measured_x0=fitted_x0, 
-                                           measured_y0=fitted_y0, 
-                                           analyzer_dict={},
-                                           offset_type='fitted'
-                                          ))
-
-        if analyzer_dict.get('calibrate_to_fluence', False):
-            energy = analyzer_dict.get('pulse_energy', 41.2)
-            
-            data_out, fluence = self.adjust_data_to_fluence(
-                data_out,
-                energy,
-                analyzer_dict.get('dx', 1),
-                analyzer_dict.get('dy', 1),
-                spatial_units=analyzer_dict.get('spatial_units', 'microns'),
-            )
-            results['fluence_per_count'] = fluence
-            results['max fluence'] = np.nanmax(data_out)
-
-
-        return data_out, results, lineouts
+            p.append(('threshold', {'low': threshold_low, 'high': threshold_high}))
+        if ad.get('get_fwhm', False):
+            p.append(('fwhm', {}))
+        if ad.get('measured_misalignment', False):
+            p.append(('misalignment', {'target_x0': ad.get('x0', None),
+                                       'target_y0': ad.get('y0', None)}))
+        if ad.get('fitted_misalignment', False) and ad.get('fit_super_gaussian', False):
+            p.append(('misalignment', {'fitted': True}))
+        if ad.get('calibrate_to_fluence', False):
+            p.append(('fluence', {'pulse_energy': ad.get('pulse_energy', 41.2)}))
+        return p
 
     def display_data(self, data, display_dict=None, return_dict=None, title=None, fig=None, ax=None):
         if display_dict is None:
@@ -327,6 +299,177 @@ class ImageAnalyzer(DiagnosticAnalyzer):
 
 
     # -------------------------------------------------------------------
+    # Pipeline steps. Each _step_<name>(s, **kwargs) reads and updates the
+    # state dict s ('data', 'bg', 'ad', 'results', 'lineouts', 'x', 'y',
+    # 'x0', 'y0', 'roi_offset') and does the numerics through a static
+    # method. Subclasses add steps with
+    #     STEPS = {**ImageAnalyzer.STEPS, 'my_step': '_step_my_step'}
+    # -------------------------------------------------------------------
+    STEPS = {
+        'n_saturated':      '_step_n_saturated',
+        'subtract_bg':      '_step_subtract_bg',
+        'bg_const':         '_step_bg_const',
+        'roi':              '_step_roi',
+        'auto_roi':         '_step_auto_roi',
+        'remove_outliers':  '_step_remove_outliers',
+        'threshold':        '_step_threshold',
+        'median_filter':    '_step_median_filter',
+        'radial_mask':      '_step_radial_mask',
+        'counts':           '_step_counts',
+        'lineouts':         '_step_lineouts',
+        'gauss_fit':        '_step_gauss_fit',
+        'fwhm':             '_step_fwhm',
+        'second_moments':   '_step_second_moments',
+        'encircled_energy': '_step_encircled_energy',
+        'misalignment':     '_step_misalignment',
+        'fluence':          '_step_fluence',
+    }
+
+    def _step_n_saturated(self, s, bit_depth=12, saturation_threshold=None):
+        s['results']['n_saturated'] = self.compute_n_saturated(
+            s['data'], bit_depth=bit_depth, saturation_threshold=saturation_threshold)
+
+    def _step_subtract_bg(self, s, file=None, scale=1.0):
+        """Subtract `file` if given, else the bg passed to analyze_data (skipped if None)."""
+        bg = self.load_data(file) if file is not None else s['bg']
+        if bg is None:
+            return
+        bg = np.asarray(bg, dtype=float)
+        if bg.shape != s['data'].shape:
+            raise ValueError(f"subtract_bg: background shape {bg.shape} != image shape "
+                             f"{s['data'].shape}; put subtract_bg before any ROI step.")
+        s['data'] = s['data'] - scale*bg
+
+    def _step_bg_const(self, s, value=0):
+        s['data'] = s['data'] - value
+
+    def _step_roi(self, s, roi=None):
+        if roi is None:
+            return
+        r0, _, c0, _ = self.clip_roi(roi, s['data'].shape)
+        s['data'] = self.roi_data(s['data'], roi)
+        self._shift_roi_offset(s, r0, c0)
+
+    def _step_auto_roi(self, s, size=500, thresh=0.85, method='centroid', presmooth=3):
+        """Square (int size) or rectangular ((ny, nx) size) ROI centred on the beam."""
+        x0, y0 = self.find_beam_center(s['data'], method=method, thresh=thresh,
+                                       presmooth=presmooth)
+        ny, nx = (size, size) if np.isscalar(size) else size
+        N, M = s['data'].shape
+        # same centre rounding/clipping as extract_subarray
+        xi, yi = np.clip(int(x0), 0, M - 1), np.clip(int(y0), 0, N - 1)
+        s['data'] = self.extract_subarray(s['data'], x0, y0, nx, ny)
+        self._shift_roi_offset(s, int(yi) - ny//2, int(xi) - nx//2)
+
+    def _shift_roi_offset(self, s, dr, dc):
+        r, c = s['roi_offset']
+        s['roi_offset'] = (r + dr, c + dc)
+        # coordinates from earlier steps refer to the old frame
+        s['x'] = s['y'] = s['x0'] = s['y0'] = None
+
+    def _step_remove_outliers(self, s, threshold=3, mask=None):
+        s['data'] = self.remove_outliers(s['data'], threshold=threshold, mask=mask)
+
+    def _step_threshold(self, s, low=-1, high=-1, units='auto'):
+        s['data'] = self.apply_threshold(s['data'], low, high, units=units)
+
+    def _step_median_filter(self, s, N=3):
+        s['data'] = self.median_filter(s['data'], N)
+
+    def _step_radial_mask(self, s, r_max=None, x0=None, y0=None, fill_value=0):
+        """Set pixels further than r_max pixels from (x0, y0) (default: centroid) to fill_value."""
+        if r_max is None:
+            return
+        if x0 is None or y0 is None:
+            x0, y0 = self.centroid(s['data'])
+        s['data'] = self.apply_radial_mask(s['data'], x0, y0, r_max, fill_value=fill_value)
+
+    def _step_counts(self, s):
+        s['results'].update(self.compute_data_counts(s['data']))
+
+    def _step_lineouts(self, s, centroid_method='center', x0=None, y0=None,
+                       centroid_thresh=0.85, lineout_method='center', Nlo=2):
+        ad = s['ad']
+        x, y, x0, y0 = self.get_spatial_coords(
+            s['data'], method=centroid_method, x0=x0, y0=y0,
+            dx=ad.get('dx', 1), dy=ad.get('dy', 1),
+            centroid_thresh=centroid_thresh,
+            round_centroid=ad.get('round_centroid', True))
+        x_lo, y_lo = self.get_lineouts(s['data'], x0, y0, method=lineout_method, Nlo=Nlo)
+        s.update(x=x, y=y, x0=x0, y0=y0)
+        s['lineouts'].update({'x': x, 'y': y, 'x_lo': x_lo, 'y_lo': y_lo})
+        res = s['results']
+        res['x0'] = x0
+        res['y0'] = y0
+        res['x0 frame'] = x0 + s['roi_offset'][1]
+        res['y0 frame'] = y0 + s['roi_offset'][0]
+        res['imshow_extent'] = self.get_imshow_extent(x, y)
+
+    def _ensure_lineouts(self, s):
+        """Lineouts from the last 'lineouts' step, or centroid lineouts of the current data."""
+        if 'x_lo' not in s['lineouts']:
+            self._step_lineouts(s, centroid_method='centroid')
+        lo = s['lineouts']
+        return lo['x'], lo['y'], lo['x_lo'], lo['y_lo']
+
+    def _step_gauss_fit(self, s, fit_exponent=True):
+        x, y, x_lo, y_lo = self._ensure_lineouts(s)
+        fit_x = self.fit_super_gaussian(x, x_lo, fit_exponent=fit_exponent)
+        fit_y = self.fit_super_gaussian(y, y_lo, fit_exponent=fit_exponent)
+        res = s['results']
+        res['fit_x'] = fit_x
+        res['fit_y'] = fit_y
+        keys = ['amplitude', 'center', 'sigma', 'offset'] + (['N'] if fit_exponent else [])
+        for ax_name, fit in (('x', fit_x), ('y', fit_y)):
+            res.update({f'gauss fit {ax_name} {k}': fit.get(k, np.nan) for k in keys})
+
+    def _step_fwhm(self, s):
+        ad = s['ad']
+        _, _, x_lo, y_lo = self._ensure_lineouts(s)
+        res = s['results']
+        res['fwhm x'] = get_lineout_width(x_lo)[0]*ad.get('dx', 1)
+        res['fwhm y'] = get_lineout_width(y_lo)[0]*ad.get('dy', 1)
+        res['fwhm_av'] = np.nanmean([res['fwhm x'], res['fwhm y']])
+        res['fwhm_diff'] = np.abs(res['fwhm x'] - res['fwhm y'])
+
+    def _step_second_moments(self, s, r_max=None, x0=None, y0=None, n_iter=1, prefix='2nd moment'):
+        ad = s['ad']
+        m = self.compute_second_moments(s['data'], dx=ad.get('dx', 1), dy=ad.get('dy', 1),
+                                        x0=x0, y0=y0, r_max=r_max, n_iter=n_iter)
+        res = s['results']
+        for k in ('x', 'y', 'x45', 'y45', 'major', 'minor'):
+            res[f'{prefix} {k}'] = m[k]
+        res[f'{prefix} angle'] = m['angle']
+        res[f'{prefix} x0'] = m['x0'] + s['roi_offset'][1]    # full-frame pixels
+        res[f'{prefix} y0'] = m['y0'] + s['roi_offset'][0]
+
+    def _step_encircled_energy(self, s, radii=(), fractions=(0.5, 0.865), x0=None, y0=None):
+        """radii in spatial units (dx); fractions of total energy, 0-1."""
+        ad = s['ad']
+        res = s['results']
+        res.update(self.compute_encircled_energy(s['data'], dx=ad.get('dx', 1), dy=ad.get('dy', 1),
+                                                 x0=x0, y0=y0, radii=radii, fractions=fractions))
+
+    def _step_misalignment(self, s, target_x0=None, target_y0=None, fitted=False):
+        res = s['results']
+        if fitted:
+            res.update(self.calculate_misalignment(
+                s['data'], 0, 0,
+                measured_x0=res['fit_x']['center'], measured_y0=res['fit_y']['center'],
+                analyzer_dict={}, offset_type='fitted'))
+        else:
+            res.update(self.calculate_misalignment(s['data'], target_x0, target_y0,
+                                                   analyzer_dict=s['ad']))
+
+    def _step_fluence(self, s, pulse_energy=41.2):
+        ad = s['ad']
+        s['data'], fluence = self.adjust_data_to_fluence(
+            s['data'], pulse_energy, ad.get('dx', 1), ad.get('dy', 1),
+            spatial_units=ad.get('spatial_units', 'microns'))
+        s['results']['fluence_per_count'] = fluence
+        s['results']['max fluence'] = np.nanmax(s['data'])
+
+    # -------------------------------------------------------------------
     # Utility methods (can be overridden or extended in subclasses)
     # -------------------------------------------------------------------
 
@@ -334,9 +477,11 @@ class ImageAnalyzer(DiagnosticAnalyzer):
     def roi_data(data, roi):
         """
         Crop data to region of interest.
-        ROI should be [row_start, row_end, col_start, col_end].
+        ROI should be [row_start, row_end, col_start, col_end]; it is
+        clipped to the image (see clip_roi), None ends mean the image edge.
         """
-        return data[roi[0]:roi[1], roi[2]:roi[3]]
+        r0, r1, c0, c1 = ImageAnalyzer.clip_roi(roi, data.shape)
+        return data[r0:r1, c0:c1]
 
     @staticmethod
     def compute_data_counts(data):
@@ -381,18 +526,33 @@ class ImageAnalyzer(DiagnosticAnalyzer):
         return np.count_nonzero(data >= saturation_threshold)
 
     @staticmethod
-    def apply_threshold(data, threshold_low, threshold_high):
+    def apply_threshold(data, threshold_low, threshold_high, units='auto'):
         """
-        Zero‐out pixels outside [threshold_low, threshold_high].
-        Thresholds can be absolute or fractional (0–1 of max).
+        Zero‐out pixels outside [threshold_low, threshold_high): pixels equal
+        to threshold_low are kept (as in the LabVIEW focus analysis).
+        A negative threshold_low or non-positive threshold_high is ignored.
+
+        units: 'auto' (legacy) — low > 1 / high >= 1 are counts, otherwise
+        a fraction of the max; 'counts' — always counts; 'frac' — always a
+        fraction of the max.
         """
+        if units not in ('auto', 'counts', 'frac'):
+            raise ValueError(f"apply_threshold: unknown units {units!r}")
         data_copy = np.copy(data)
+
+        if units != 'auto':
+            peak = np.nanmax(data) if units == 'frac' else 1.0
+            if threshold_low >= 0:
+                data_copy *= (data >= threshold_low*peak).astype(np.uint8)
+            if threshold_high > 0:
+                data_copy *= (data < threshold_high*peak).astype(np.uint8)
+            return data_copy
 
         if threshold_low >= 0:
             if threshold_low > 1:
-                data_copy *= (data > threshold_low).astype(np.uint8)
+                data_copy *= (data >= threshold_low).astype(np.uint8)
             else:
-                data_copy *= (data > threshold_low * np.nanmax(data)).astype(np.uint8)
+                data_copy *= (data >= threshold_low * np.nanmax(data)).astype(np.uint8)
 
         if threshold_high > 0:
             if threshold_high < 1:
@@ -626,6 +786,168 @@ class ImageAnalyzer(DiagnosticAnalyzer):
             result.update({'amplitude': amp, 'center': cen, 'sigma': sig,
                            'offset': off})
         return result
+
+    @staticmethod
+    def clip_roi(roi, shape):
+        """
+        ROI [row_start, row_end, col_start, col_end] clipped to an image of
+        `shape`. None ends mean the image edge; negative values count from
+        the end, as in Python slicing.
+        """
+        N, M = shape[:2]
+        r0, r1, c0, c1 = roi
+        r0, r1, _ = slice(r0, r1).indices(N)
+        c0, c1, _ = slice(c0, c1).indices(M)
+        return r0, max(r0, r1), c0, max(c0, c1)
+
+    @staticmethod
+    def median_filter(data, N=3):
+        """N x N median filter (N odd). NaNs are treated as 0."""
+        return medfilt2d(np.nan_to_num(np.asarray(data, dtype=np.float64)), [N, N])
+
+    @staticmethod
+    def centroid(data, x0=None, y0=None, r_max=None, n_iter=1):
+        """
+        Intensity-weighted centroid (x0, y0) in pixels, negative and NaN
+        pixels counted as 0. With r_max, the centroid is recomputed n_iter
+        times using only pixels within r_max pixels of the previous estimate
+        (starting from x0, y0 if given), so isolated far-out pixels can't
+        pull it.
+        """
+        w = np.clip(np.nan_to_num(np.asarray(data, dtype=float)), 0, None)
+        N, M = w.shape
+        xx, yy = np.arange(M)[None, :], np.arange(N)[:, None]
+        total = w.sum()
+        if total <= 0:
+            return 0.5*M, 0.5*N
+        if x0 is None or y0 is None:
+            x0, y0 = (w*xx).sum()/total, (w*yy).sum()/total
+        if r_max is not None:
+            for _ in range(n_iter):
+                wm = w*(((xx - x0)**2 + (yy - y0)**2) <= r_max**2)
+                total = wm.sum()
+                if total <= 0:
+                    break
+                x0, y0 = (wm*xx).sum()/total, (wm*yy).sum()/total
+        return x0, y0
+
+    @staticmethod
+    def find_beam_center(data, method='centroid', thresh=0.85, presmooth=3):
+        """
+        Beam centre (x0, y0) in pixels, for placing an automatic ROI.
+
+        method 'centroid': thresholded centroid (_get_centroid with
+        thresh_min=thresh); 'peak': position of the maximum. presmooth > 1
+        median-filters a copy first so single hot pixels can't move the
+        centre (presmooth=0 reproduces the legacy auto_roi exactly). Falls
+        back to the image centre if the result isn't finite.
+        """
+        d = np.asarray(data, dtype=float)
+        if presmooth and presmooth > 1:
+            d = ImageAnalyzer.median_filter(d, int(presmooth) | 1)
+        N, M = d.shape
+        if method == 'peak':
+            if not np.any(np.isfinite(d)):
+                return 0.5*M, 0.5*N
+            y0, x0 = np.unravel_index(np.nanargmax(d), d.shape)
+        elif method == 'centroid':
+            with np.errstate(invalid='ignore', divide='ignore'):
+                x0, y0 = ImageAnalyzer._get_centroid(d, thresh_min=thresh)
+        else:
+            raise ValueError(f"find_beam_center: unknown method {method!r}")
+        if not (np.isfinite(x0) and np.isfinite(y0)):
+            return 0.5*M, 0.5*N
+        return x0, y0
+
+    @staticmethod
+    def apply_radial_mask(data, x0, y0, r_max, fill_value=0):
+        """Copy of data with pixels further than r_max pixels from (x0, y0) set to fill_value."""
+        N, M = data.shape
+        r2 = (np.arange(M)[None, :] - x0)**2 + (np.arange(N)[:, None] - y0)**2
+        return np.where(r2 <= r_max**2, data, fill_value)
+
+    @staticmethod
+    def compute_second_moments(data, dx=1, dy=1, x0=None, y0=None, r_max=None, n_iter=1):
+        """
+        Second-moment (ISO 11146) beam widths.
+
+        Negative and NaN pixels count as 0. The centre is the intensity
+        centroid unless x0, y0 (pixels) are given. With r_max (pixels), only
+        pixels within r_max of the centre are used, and the centroid is
+        re-found inside that circle n_iter times.
+
+        Widths are 2*sigma (sigma = rms width), in dx/dy units, matching the
+        LabVIEW focus analysis. Returns a dict:
+          'x', 'y'          2*sigma along x and y
+          'x45', 'y45'      2*sigma along the +45 deg (x=y) and -45 deg
+                            diagonals: sigma45^2 = (sx^2 + sy^2)/2 +- sxy
+          'major', 'minor'  2*sigma along the principal axes
+          'angle'           deg, major axis from +x
+          'cov xy'          the xy covariance sxy, in (dx units)^2
+          'x0', 'y0'        centre used, pixels
+        """
+        w = np.clip(np.nan_to_num(np.asarray(data, dtype=float)), 0, None)
+        N, M = w.shape
+        cx, cy = ImageAnalyzer.centroid(w, x0=x0, y0=y0, r_max=r_max, n_iter=n_iter)
+        if x0 is not None and y0 is not None:
+            cx, cy = x0, y0
+        xx = (np.arange(M)[None, :] - cx)
+        yy = (np.arange(N)[:, None] - cy)
+        if r_max is not None:
+            w = w*((xx**2 + yy**2) <= r_max**2)
+        total = w.sum()
+        out = {'x0': cx, 'y0': cy}
+        if total <= 0:
+            for k in ('x', 'y', 'x45', 'y45', 'major', 'minor'):
+                out[k] = np.nan
+            out.update({'cov xy': np.nan, 'angle': np.nan})
+            return out
+        X, Y = xx*dx, yy*dy
+        sxx = (w*X**2).sum()/total
+        syy = (w*Y**2).sum()/total
+        sxy = (w*X*Y).sum()/total
+        mean = 0.5*(sxx + syy)
+        diff = np.sqrt((0.5*(sxx - syy))**2 + sxy**2)
+        var = {'x': sxx, 'y': syy, 'x45': mean + sxy, 'y45': mean - sxy,
+               'major': mean + diff, 'minor': mean - diff}
+        for k, v in var.items():
+            out[k] = 2*np.sqrt(max(v, 0))
+        out['cov xy'] = sxy
+        out['angle'] = np.degrees(0.5*np.arctan2(2*sxy, sxx - syy))
+        return out
+
+    @staticmethod
+    def compute_encircled_energy(data, dx=1, dy=1, x0=None, y0=None, radii=(), fractions=(0.5, 0.865)):
+        """
+        Encircled energy about (x0, y0) (pixels; default: centroid).
+
+        Returns 'ee r=<R>' (fraction of the total within radius R, R in dx
+        units) for each of `radii`, 'ee radius <p>%' (radius holding a
+        fraction p of the total) for each of `fractions`, and
+        'peak fraction' (max pixel / total). Negative and NaN pixels count
+        as 0.
+        """
+        w = np.clip(np.nan_to_num(np.asarray(data, dtype=float)), 0, None)
+        N, M = w.shape
+        if x0 is None or y0 is None:
+            x0, y0 = ImageAnalyzer.centroid(w)
+        r = np.sqrt(((np.arange(M)[None, :] - x0)*dx)**2 + ((np.arange(N)[:, None] - y0)*dy)**2)
+        total = w.sum()
+        out = {}
+        if total <= 0:
+            out.update({f'ee r={R:g}': np.nan for R in radii})
+            out.update({f'ee radius {100*p:g}%': np.nan for p in fractions})
+            out['peak fraction'] = np.nan
+            return out
+        order = np.argsort(r, axis=None)
+        r_sorted = r.ravel()[order]
+        cum = np.cumsum(w.ravel()[order])/total
+        for R in radii:
+            out[f'ee r={R:g}'] = w[r <= R].sum()/total
+        for p in fractions:
+            out[f'ee radius {100*p:g}%'] = float(np.interp(p, cum, r_sorted))
+        out['peak fraction'] = w.max()/total
+        return out
 
     # -------------------------------------------------------------------
     # Optional / Misc: plotting, rotating, or special calculations
@@ -879,7 +1201,13 @@ class ImageAnalyzer(DiagnosticAnalyzer):
         return masked_array
     
     @staticmethod    
-    def extract_subarray(array, x0, y0, n):
+    def extract_subarray(array, x0, y0, n, ny=None):
+        """
+        n x n (or ny x n) window centred on pixel (x0, y0), zero-padded where
+        it runs off the image.
+        """
+        if ny is None:
+            ny = n
         x0, y0 = int(x0), int(y0)
         N, M = array.shape
 
@@ -887,13 +1215,10 @@ class ImageAnalyzer(DiagnosticAnalyzer):
         x0 = np.clip(x0, 0, M - 1)
         y0 = np.clip(y0, 0, N - 1)
 
-        half_left = n // 2
-        half_right = n - half_left
-
-        row_start = y0 - half_left
-        row_end   = y0 + half_right
-        col_start = x0 - half_left
-        col_end   = x0 + half_right
+        row_start = y0 - ny // 2
+        row_end   = row_start + ny
+        col_start = x0 - n // 2
+        col_end   = col_start + n
 
         row_start_clip = max(0, row_start)
         row_end_clip   = min(N, row_end)
