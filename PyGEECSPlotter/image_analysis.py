@@ -32,6 +32,10 @@ class ImageAnalyzer(DiagnosticAnalyzer):
     Derive from this class to customize analysis steps for specific image types.
     """
 
+    # Where coordinate (0, 0) goes when analyzer_dict has no 'origin':
+    # 'centroid', 'center', 'pixel' or (x0, y0) (see coords_for_origin).
+    DEFAULT_ORIGIN = 'centroid'
+
     def __init__(self,
                  diagnostic=None,
                  file_ext=None,
@@ -103,8 +107,24 @@ class ImageAnalyzer(DiagnosticAnalyzer):
         }
         for name, kwargs in pipeline:
             getattr(self, self.STEPS[name])(s, **(kwargs or {}))
+        self._set_extent(s)
 
         return s['data'], s['results'], s['lineouts']
+
+    def _set_extent(self, s):
+        """Give every analysed image an imshow extent: from the last
+        coordinates a step set, else from analyzer_dict 'origin' / dx / dy."""
+        if s['x'] is not None and len(s['x']) == s['data'].shape[1]                 and len(s['y']) == s['data'].shape[0]:
+            s['results']['imshow_extent'] = self.get_imshow_extent(s['x'], s['y'])
+            return
+        if np.ndim(s['data']) != 2:
+            return
+        ad = s['ad']
+        x, y, _, _ = self.coords_for_origin(
+            s['data'], origin=ad.get('origin', self.DEFAULT_ORIGIN),
+            dx=ad.get('dx', 1), dy=ad.get('dy', 1),
+            round_centroid=ad.get('round_centroid', True))
+        s['results']['imshow_extent'] = self.get_imshow_extent(x, y)
 
     def _resolve_pipeline(self, analyzer_dict):
         if 'pipeline' in analyzer_dict:
@@ -183,17 +203,31 @@ class ImageAnalyzer(DiagnosticAnalyzer):
         return p
 
     def display_data(self, data, display_dict=None, return_dict=None, title=None, fig=None, ax=None):
+        """
+        Show one image in physical coordinates.
+
+        The extent comes from, in order: display_dict['extent'];
+        return_dict['imshow_extent'] (set by analyze_data); or, for images
+        that weren't analysed one by one (per-bin means, direct calls), the
+        analyzer_dict 'origin' / 'dx' / 'dy' applied to `data` itself. So
+        'axlims' always windows around the same origin the analysis used.
+
+        display_dict keys: figsize, aspect, norm, cmap, interpolation, vmin,
+        vmax, cbar_off, cbar_label, spatial_units, xtitle, ytitle,
+        axlims (L, (Lx, Ly) or [x0, x1, y0, y1]; see apply_axlims), tick_dx,
+        v_lines, h_lines, extent, and for lineout overlays:
+        show_lineouts (default False), lineout_method ('center': rows /
+        columns through the origin, averaged over Nlo; 'all': mean over the
+        image), Nlo (default 2), lineout_amp (default 0.25), lineout_style
+        (matplotlib line keywords).
+        """
         if display_dict is None:
             display_dict = self.display_dict
-            
+
         if fig is None or ax is None:
             fig, ax = plt.subplots(constrained_layout=True, figsize=display_dict.get('figsize', (6, 5)))
 
-        if return_dict is not None:
-            extent = return_dict.get( 'imshow_extent', None )
-        else:
-            extent = display_dict.get('extent', None)
-
+        extent = self._resolve_extent(data, return_dict, display_dict)
         im = ax.imshow(data,
                         aspect=display_dict.get('aspect', 'equal'),
                         norm=display_dict.get('norm', None),
@@ -215,16 +249,7 @@ class ImageAnalyzer(DiagnosticAnalyzer):
         ax.set_xlabel(r'$%s \ (\mathrm{%s})$' %(xtitle, spatial_units))
         ax.set_ylabel(r'$%s \ (\mathrm{%s})$' %(ytitle, spatial_units))
 
-        axlims = display_dict.get('axlims', None)
-        tick_dx = display_dict.get('tick_dx', None)
-        if tick_dx is not None and axlims is not None:
-            ax.set_xticks(np.arange(-axlims, axlims+tick_dx, tick_dx))
-            ax.set_yticks(np.arange(-axlims, axlims+tick_dx, tick_dx))
-
-        if axlims is not None:
-            ax.set_xlim([-axlims, axlims])
-            ax.set_ylim([-axlims, axlims])
-
+        self.apply_axlims(ax, display_dict.get('axlims', None), display_dict.get('tick_dx', None))
 
         for v_line in display_dict.get('v_lines', []):
             ax.axvline(x=v_line, color='k', linestyle='--')
@@ -232,10 +257,50 @@ class ImageAnalyzer(DiagnosticAnalyzer):
         for h_line in display_dict.get('h_lines', []):
             ax.axhline(y=h_line, color='k', linestyle='--')
 
+        if display_dict.get('show_lineouts', False):
+            self._overlay_image_lineouts(ax, data, extent, display_dict)
+
         if title is not None:
             ax.set_title(title)
 
         return fig, ax
+
+    def _resolve_extent(self, data, return_dict=None, display_dict=None):
+        """The imshow extent display_data uses (see its docstring)."""
+        display_dict = display_dict if display_dict is not None else (self.display_dict or {})
+        if display_dict.get('extent') is not None:
+            return np.asarray(display_dict['extent'], float)
+        if return_dict is not None and return_dict.get('imshow_extent') is not None:
+            return np.asarray(return_dict['imshow_extent'], float)
+        ad = self.analyzer_dict or {}
+        x, y, _, _ = self.coords_for_origin(
+            data, origin=ad.get('origin', self.DEFAULT_ORIGIN), dx=ad.get('dx', 1), dy=ad.get('dy', 1),
+            round_centroid=ad.get('round_centroid', True))
+        return self.get_imshow_extent(x, y)
+
+    def _overlay_image_lineouts(self, ax, data, extent, display_dict):
+        """Lineouts of `data` through coordinate (0, 0) (or the centroid if
+        that lies outside the image, e.g. origin='pixel'), drawn inside the
+        current window."""
+        data = np.asarray(data, float)
+        ny, nx = data.shape
+        x = np.linspace(extent[0], extent[1], nx + 1)
+        y = np.linspace(extent[2], extent[3], ny + 1)
+        x, y = 0.5*(x[1:] + x[:-1]), 0.5*(y[1:] + y[:-1])     # pixel centres
+        origin = (self.analyzer_dict or {}).get('origin', self.DEFAULT_ORIGIN)
+        if origin == 'pixel' or not (min(x) <= 0 <= max(x) and min(y) <= 0 <= max(y)):
+            with np.errstate(invalid='ignore', divide='ignore'):
+                i0, j0 = self._get_centroid(data)
+            if not (np.isfinite(i0) and np.isfinite(j0)):
+                i0, j0 = 0.5*nx, 0.5*ny
+        else:
+            i0, j0 = np.argmin(np.abs(x)) + 0.5, np.argmin(np.abs(y)) + 0.5
+        x_lo, y_lo = self.get_lineouts(data, i0, j0,
+                                       method=display_dict.get('lineout_method', 'center'),
+                                       Nlo=display_dict.get('Nlo', 2))
+        self.overlay_lineouts(ax, x, y, x_lo, y_lo,
+                              amp=display_dict.get('lineout_amp', 0.25),
+                              style_dict=display_dict.get('lineout_style', None))
 
     def display_lineout(self, x, x_lo, display_dict=None, title=None, fig=None, ax=None):
         if display_dict is None:
@@ -387,14 +452,23 @@ class ImageAnalyzer(DiagnosticAnalyzer):
     def _step_counts(self, s):
         s['results'].update(self.compute_data_counts(s['data']))
 
-    def _step_lineouts(self, s, centroid_method='center', x0=None, y0=None,
+    def _step_lineouts(self, s, centroid_method=None, x0=None, y0=None,
                        centroid_thresh=0.85, lineout_method='center', Nlo=2):
+        """Coordinates + lineouts. centroid_method (get_spatial_coords
+        'center' / 'pixel' / 'manual' / 'centroid') defaults to the
+        analyzer_dict 'origin'."""
         ad = s['ad']
-        x, y, x0, y0 = self.get_spatial_coords(
-            s['data'], method=centroid_method, x0=x0, y0=y0,
-            dx=ad.get('dx', 1), dy=ad.get('dy', 1),
-            centroid_thresh=centroid_thresh,
-            round_centroid=ad.get('round_centroid', True))
+        if centroid_method is None:
+            x, y, x0, y0 = self.coords_for_origin(
+                s['data'], origin=ad.get('origin', self.DEFAULT_ORIGIN),
+                dx=ad.get('dx', 1), dy=ad.get('dy', 1), centroid_thresh=centroid_thresh,
+                round_centroid=ad.get('round_centroid', True))
+        else:
+            x, y, x0, y0 = self.get_spatial_coords(
+                s['data'], method=centroid_method, x0=x0, y0=y0,
+                dx=ad.get('dx', 1), dy=ad.get('dy', 1),
+                centroid_thresh=centroid_thresh,
+                round_centroid=ad.get('round_centroid', True))
         x_lo, y_lo = self.get_lineouts(s['data'], x0, y0, method=lineout_method, Nlo=Nlo)
         s.update(x=x, y=y, x0=x0, y0=y0)
         s['lineouts'].update({'x': x, 'y': y, 'x_lo': x_lo, 'y_lo': y_lo})
@@ -658,20 +732,10 @@ class ImageAnalyzer(DiagnosticAnalyzer):
     
     @staticmethod
     def display_imshow_lineouts(fig, ax, extent, x=None, y=None, x_lo=None, y_lo=None, amp=0.15, color='k', ls='-'):
-        if x is not None and x_lo is not None:
-            ax.plot(
-                x,
-                amp * x_lo * (extent[3] - extent[2]) + extent[2] ,
-                c=color,
-                ls=ls,
-            )
-        if y is not None and y_lo is not None:
-            ax.plot(
-                amp * y_lo * (extent[1] - extent[0]) + extent[0],
-                y,
-                c=color,
-                ls=ls,
-            )
+        """Legacy wrapper for overlay_lineouts (extent is unused: the current
+        view window is used instead)."""
+        ImageAnalyzer.overlay_lineouts(ax, x, y, x_lo, y_lo, amp=amp,
+                                       style_dict={'color': color, 'ls': ls})
         return fig, ax
 
     @staticmethod
@@ -712,7 +776,108 @@ class ImageAnalyzer(DiagnosticAnalyzer):
 
     @staticmethod
     def get_imshow_extent(x, y):
-        return np.array([x[0], x[-1], y[0], y[-1]])
+        """
+        imshow extent [left, right, bottom, top] for pixel-centre coordinates
+        x, y: the outer pixel edges, half a pixel beyond the first and last
+        centres, so each pixel is drawn centred on its coordinate.
+        """
+        x = np.asarray(x, float)
+        y = np.asarray(y, float)
+        hx = 0.5*(x[1] - x[0]) if x.size > 1 else 0.5
+        hy = 0.5*(y[1] - y[0]) if y.size > 1 else 0.5
+        return np.array([x[0] - hx, x[-1] + hx, y[0] - hy, y[-1] + hy])
+
+    @staticmethod
+    def coords_for_origin(data, origin='centroid', dx=1, dy=1, centroid_thresh=0.85,
+                          round_centroid=True):
+        """
+        Pixel-centre coordinates (x, y) of `data` and the origin (x0, y0, in
+        pixels) for an analyzer_dict 'origin' setting:
+
+          'centroid'  thresholded centroid (rounded to a whole pixel for the
+                      axes if round_centroid); falls back to 'center' if the
+                      image has no signal
+          'center'    the image centre
+          'pixel'     the image corner, in pixels (dx, dy ignored)
+          (x0, y0)    fixed pixel position in this image
+
+        Returns x, y, x0, y0 as get_spatial_coords does.
+        """
+        if isinstance(origin, str):
+            if origin not in ('centroid', 'center', 'pixel'):
+                raise ValueError(f"origin must be 'centroid', 'center', 'pixel' or (x0, y0), "
+                                 f"got {origin!r}")
+            method, x0, y0 = origin, None, None
+        else:
+            method, (x0, y0) = 'manual', origin
+        if method == 'centroid':
+            with np.errstate(invalid='ignore', divide='ignore'):
+                cx, cy = ImageAnalyzer._get_centroid(np.asarray(data, float),
+                                                     thresh_min=centroid_thresh)
+            if not (np.isfinite(cx) and np.isfinite(cy)):
+                method = 'center'
+        return ImageAnalyzer.get_spatial_coords(
+            data, method=method, x0=x0, y0=y0, dx=dx, dy=dy,
+            centroid_thresh=centroid_thresh, round_centroid=round_centroid)
+
+    @staticmethod
+    def apply_axlims(ax, axlims, tick_dx=None):
+        """
+        Set the view window. axlims: a number L (x and y in [-L, L]),
+        (Lx, Ly) (x in [-Lx, Lx], y in [-Ly, Ly]) or [x0, x1, y0, y1].
+        tick_dx: tick spacing, ticks at multiples of it inside the window.
+        """
+        if axlims is None:
+            return
+        a = np.atleast_1d(np.asarray(axlims, dtype=float)).ravel()
+        if a.size == 1:
+            xl = yl = (-a[0], a[0])
+        elif a.size == 2:
+            xl, yl = (-a[0], a[0]), (-a[1], a[1])
+        elif a.size == 4:
+            xl, yl = (a[0], a[1]), (a[2], a[3])
+        else:
+            raise ValueError(f"axlims must be L, (Lx, Ly) or [x0, x1, y0, y1], got {axlims!r}")
+        ax.set_xlim(xl)
+        ax.set_ylim(yl)
+        if tick_dx is not None:
+            for lims, setter in ((xl, ax.set_xticks), (yl, ax.set_yticks)):
+                lo, hi = min(lims), max(lims)
+                setter(np.arange(np.ceil(lo/tick_dx)*tick_dx, hi + 0.5*tick_dx, tick_dx))
+
+    @staticmethod
+    def overlay_lineouts(ax, x=None, y=None, x_lo=None, y_lo=None, amp=0.25, normalize=True,
+                         style_dict=None):
+        """
+        Draw lineouts over an image, inside the current view window: x_lo
+        along the bottom edge (peak at `amp` of the window height), y_lo
+        along the left edge (peak at `amp` of the window width). Call after
+        the axis limits are set. Each lineout is scaled to its own max when
+        normalize=True; otherwise it is used as given (already 0-1).
+
+        style_dict: matplotlib line keywords (default color 'C3', lw 1,
+        alpha 0.8). Returns (x_lines, y_lines), lists of Line2D (empty if
+        that lineout wasn't given).
+        """
+        style = {'color': 'C3', 'lw': 1, 'alpha': 0.8}
+        style.update(style_dict or {})
+        xw, yw = ax.get_xlim(), ax.get_ylim()
+
+        def scaled(v):
+            v = np.asarray(v, dtype=float)
+            if not normalize:
+                return v
+            m = np.nanmax(np.abs(v)) if np.any(np.isfinite(v)) else np.nan
+            return v/m if np.isfinite(m) and m > 0 else np.full_like(v, np.nan)
+
+        x_lines, y_lines = [], []
+        if x is not None and x_lo is not None:
+            x_lines = ax.plot(x, yw[0] + amp*(yw[1] - yw[0])*scaled(x_lo), **style)
+        if y is not None and y_lo is not None:
+            y_lines = ax.plot(xw[0] + amp*(xw[1] - xw[0])*scaled(y_lo), y, **style)
+        ax.set_xlim(xw)     # plotting must not move the window
+        ax.set_ylim(yw)
+        return x_lines, y_lines
 
     @staticmethod
     def fit_super_gaussian(xdata, ydata, fit_exponent=False, p0=None, bounds=None,
@@ -1242,59 +1407,20 @@ class ImageAnalyzer(DiagnosticAnalyzer):
         return subarray
 
     @staticmethod
-    def add_lineout_to_imshow(ax, x, y, x_lo, y_lo, axlims, normalize=True, style_dict=None):
+    def add_lineout_to_imshow(ax, x, y, x_lo, y_lo, axlims=None, normalize=True, style_dict=None):
         """
-        Plots a scaled line on the given Axes, using x for the horizontal coordinate
-        and a rescaled version of x_lo for the vertical coordinate.
-
-        Parameters
-        ----------
-        ax : matplotlib.axes.Axes
-            The Axes on which to draw the plot.
-        x : array-like
-            The x-coordinates to plot.
-        y : array-like
-            The x-coordinates to plot.
-        x_lo : array-like
-            Data used to determine the line's vertical extent. It will be rescaled
-            based on its max value and the provided axlims.
-        y_lo : array-like
-            Data used to determine the line's vertical extent. It will be rescaled
-            based on its max value and the provided axlims.
-        axlims : float
-            A scaling factor applied after normalizing x_lo.
-        style_dict : dict, optional
-            Dictionary of style parameters. Recognized keys include:
-            - 'color' (default: 'k')
-            - 'linestyle' (default: '-')
-            - 'alpha' (default: 0.75)
-
-        Returns
-        -------
-        lines : list of matplotlib.lines.Line2D
-            List of Line2D objects that were plotted (the return value of ax.plot).
+        Legacy wrapper for overlay_lineouts: x_lo along the bottom, y_lo
+        along the left of the current view window, peaking at 1/8 of it
+        (the old 0.25*axlims in a 2*axlims window). axlims is unused.
+        style_dict keys: 'color' (default 'k'), 'linestyle' ('-'), 'alpha' (0.75).
+        Returns (x_lines, y_lines).
         """
-        if style_dict is None:
-            style_dict = {}
-        color = style_dict.get('color', 'k')
-        linestyle = style_dict.get('linestyle', '-')
-        alpha = style_dict.get('alpha', 0.75)
-        
-        if normalize:
-            max_x = np.nanmax(x_lo)
-            max_y = np.nanmax(y_lo)
-        else:
-            max_x = 1.0
-            max_y = 1.0
-            
-        
-        # Plot the lines
-        line_x = ax.plot(x, 0.25*axlims*x_lo/max_x-axlims, 
-                        color=color, linestyle=linestyle, alpha=alpha)
-        line_y = ax.plot(0.25*axlims*y_lo/max_y-axlims, y, 
-                        color=color, linestyle=linestyle, alpha=alpha)
-        
-        return line_x, line_y
+        style_dict = style_dict or {}
+        style = {'color': style_dict.get('color', 'k'),
+                 'ls': style_dict.get('linestyle', '-'),
+                 'alpha': style_dict.get('alpha', 0.75)}
+        return ImageAnalyzer.overlay_lineouts(ax, x, y, x_lo, y_lo, amp=0.125,
+                                              normalize=normalize, style_dict=style)
 
     @staticmethod
     def overlay_fitted_curve(ax, return_dict, curve_function, axlims, style_dict=None):

@@ -58,6 +58,9 @@ class WavefrontAnalyzer(ImageAnalyzer):
     Derive from this class to customize analysis steps for specific image types.
     """
 
+    # phase maps: display in pixels from the corner
+    DEFAULT_ORIGIN = 'pixel'
+
     def __init__(
         self,
         # >>> base-class params

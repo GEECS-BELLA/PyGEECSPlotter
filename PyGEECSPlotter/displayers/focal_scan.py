@@ -35,11 +35,16 @@ class FocalScanDisplayer(ScanDisplayer):
         See ``PeakWidthImages``. Defaults: FWHM, images at +-1 HWHM.
     label_fmt : str, optional
         Format of the stage position in the image labels.
+    show_lineouts : bool, optional
+        Overlay x / y lineouts through the origin on each image (default
+        True), drawn inside the view window (``axlims``). Styled by the
+        analyzer display_dict's ``lineout_*`` keys.
     display_dict : dict, optional
         ``figsize`` (default (12, 8)); ``vmin`` / ``vmax`` for the images
         (default: shared range of the three images); ``show_shots``
         (default True) draws every shot faintly behind the bin means;
-        ``moment_ylabel``.
+        ``moment_ylabel``; ``axlims`` (window around the beam, as in
+        ``ImageAnalyzer.display_data``) for the images.
     """
 
     _MOMENT_STYLE = {'x': 'C0', 'y': 'C1', 'x45': 'C0', 'y45': 'C1'}
@@ -53,6 +58,7 @@ class FocalScanDisplayer(ScanDisplayer):
         width_at: float = 0.5,
         width_multiple: float = 1.0,
         label_fmt: str = '{:.4g}',
+        show_lineouts: bool = True,
         display_dict: Optional[Dict[str, Any]] = None,
         output_subdir: Optional[str] = None,
         timestamp_files: bool = True,
@@ -67,6 +73,7 @@ class FocalScanDisplayer(ScanDisplayer):
         self.bg = bg
         self.width_at = width_at
         self.width_multiple = width_multiple
+        self.show_lineouts = show_lineouts
         self.images = PeakWidthImages(analyzer, parameter=max_counts_col, width_at=width_at,
                                       width_multiple=width_multiple, bg=bg, label_fmt=label_fmt)
 
@@ -121,9 +128,12 @@ class FocalScanDisplayer(ScanDisplayer):
     def _draw_images(self, fig, img_axes, panels):
         data = [d for _, d, _ in panels if d is not None]
         dd = self.analyzer.display_dict
-        saved = {k: dd[k] for k in ('vmin', 'vmax') if k in dd}
+        keys = ('vmin', 'vmax', 'show_lineouts', 'axlims')
+        saved = {k: dd[k] for k in keys if k in dd}
         dd['vmin'] = self.display_dict.get('vmin', dd.get('vmin', min(np.nanmin(d) for d in data)))
         dd['vmax'] = self.display_dict.get('vmax', dd.get('vmax', max(np.nanmax(d) for d in data)))
+        dd['show_lineouts'] = self.show_lineouts
+        dd['axlims'] = self.display_dict.get('axlims', dd.get('axlims'))
         try:
             for a, (label, d, rd) in zip(img_axes, panels):
                 if d is None:
@@ -131,8 +141,8 @@ class FocalScanDisplayer(ScanDisplayer):
                     continue
                 self.images._render_panel(fig, a, d, rd, label)
         finally:
-            for k in ('vmin', 'vmax'):
-                dd.pop(k)
+            for k in keys:
+                dd.pop(k, None)
             dd.update(saved)
         for a in img_axes[len(panels):]:
             a.set_visible(False)
