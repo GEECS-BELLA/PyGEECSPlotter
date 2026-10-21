@@ -55,6 +55,10 @@ scan.display_scan(SampledImages(a, n_samples=12))
 `write_columns_to_sfile=True` changes shared experimental data. Leave it off
 while exploring.
 
+More worked examples (camera images, lineouts, FROG, spectra, multi-diagnostic
+and multi-scan views, batch runs, magspec) are in [Examples/](Examples/README.md),
+as scripts and notebooks.
+
 ## How it fits together
 
 ```
