@@ -1,0 +1,12 @@
+"""Scan-level analysis: load an sfile, filter / bin it, run analyzers over its shots.
+
+``ScanDataAnalyzer`` is the hub. ``ParallelScanDataAnalyzer`` runs the per-shot
+analysis in threads; ``DataDirAnalyzer`` treats a plain folder of files as a
+scan (no sfile). ``live_analysis`` watches for new sfiles during a run.
+"""
+
+from PyGEECSPlotter.scan_data_analyzers.scan_data_analysis import ScanDataAnalyzer
+from PyGEECSPlotter.scan_data_analyzers.parallel_scan_data_analyzer import ParallelScanDataAnalyzer
+from PyGEECSPlotter.scan_data_analyzers.data_dir_analysis import DataDirAnalyzer
+
+__all__ = ["ScanDataAnalyzer", "ParallelScanDataAnalyzer", "DataDirAnalyzer"]
