@@ -7,7 +7,10 @@
     ni_imread          12-bit / IMAQ PNG reader
     plotting, geecs_cmaps, pix_cmaps   matplotlib configuration and colormaps
     widgets            ipywidgets pickers
-    general            miscellaneous helpers (the old ``PyGEECSPlotter.utils`` module)
+    analysis_2d_utils  image maths: ROI, threshold, centroids, moments, lineouts, masks
+    analysis_1d_utils  lineout / trace / spectrum maths: widths, centroids, resampling
+    io_utils           controls JSON, lineout text files, scaled 16-bit PNGs
+    general            deprecated re-exports of the old ``PyGEECSPlotter.utils`` module
 
 ``from PyGEECSPlotter.utils import <name>`` still works for names from the old
 ``utils`` module, with a ``DeprecationWarning``.
@@ -20,10 +23,15 @@ import warnings as _warnings
 def __getattr__(name):
     if name.startswith('__'):
         raise AttributeError(name)
+    try:  # a submodule, e.g. `from PyGEECSPlotter.utils import ni_imread`
+        return _importlib.import_module(f'PyGEECSPlotter.utils.{name}')
+    except ModuleNotFoundError as e:
+        if e.name != f'PyGEECSPlotter.utils.{name}':
+            raise
     general = _importlib.import_module('PyGEECSPlotter.utils.general')
     if hasattr(general, name):
         _warnings.warn(f"'PyGEECSPlotter.utils.{name}' has moved to "
-                       f"'PyGEECSPlotter.utils.general.{name}'; the old path is deprecated.",
+                       f"its new module (see PyGEECSPlotter.utils.general); the old path is deprecated.",
                        DeprecationWarning, stacklevel=2)
         return getattr(general, name)
     raise AttributeError(f"module 'PyGEECSPlotter.utils' has no attribute {name!r}")

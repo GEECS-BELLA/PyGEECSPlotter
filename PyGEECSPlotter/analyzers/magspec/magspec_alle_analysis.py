@@ -24,12 +24,13 @@ except ImportError as err:
 
 from pw_py_magspec.calibration import MAGSPEC_CAMERAS, MagSpecCalibration
 from pw_py_magspec.infoe import draw_infoe
-from pw_py_magspec.io import open_12bit_png, read_int_ac_png, write_int_ac_png, write_table
+from pw_py_magspec.io import open_12bit_png, write_int_ac_png, write_table
 from pw_py_magspec.matlab_compat import interp1
 from pw_py_magspec.pipeline import run_alle
 from pw_py_magspec.stage1 import ebeam_y_angle
 from PyGEECSPlotter.analyzers.multi_diagnostic_analyzer import MultiDiagnosticAnalyzer
 from PyGEECSPlotter.utils.navigation_utils import get_analysed_shot_save_path
+from PyGEECSPlotter.analyzers.magspec.magspec_alle_reader import load_ebeam_profile
 
 FIELD_COLUMN = 'HALLPROBE-TEA-MAGSPEC Field'
 ICT_COLUMN = 'TurboICT charge [pc]'
@@ -289,14 +290,8 @@ class MagSpecAllEAnalyzer(MultiDiagnosticAnalyzer):
             top = os.path.dirname(os.path.normpath(self.bg_dir))
         else:
             return None
-        scan, shot, diag = int(context['scan']), int(context['Shotnumber']), self.ebeam_diagnostic
-        folder = os.path.join(top, 'analysis', f'Scan{scan:03d}', diag)
-        png = os.path.join(folder, f'Scan{scan:03d}_{diag}_{shot:03d}.png')
-        tables = [os.path.join(folder, f'Scan{scan:03d}_{diag}{ax}_{shot:03d}.txt') for ax in 'XY']
-        if not all(os.path.exists(p) for p in [png] + tables):
-            return None
-        x, y = (pd.read_csv(p, sep='\t')['mrad'].to_numpy() for p in tables)
-        return {'image': 1e-6 * read_int_ac_png(png), 'x': x, 'y': y}   # aC -> pC
+        return load_ebeam_profile(top, int(context['scan']), int(context['Shotnumber']),
+                                  self.ebeam_diagnostic)
 
     def display_data(self, data, return_dict=None, title=None, fig=None, ax=None, aux=None):
         """infoE summary figure by default; the simple allE + spectrum view

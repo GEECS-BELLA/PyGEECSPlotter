@@ -8,7 +8,6 @@ import numpy as np
 from typing import Optional, Dict, Tuple  
 import pandas as pd
 import matplotlib.pyplot as plt
-import imageio as imio
 import warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning, message="Mean of empty slice")
 
@@ -16,8 +15,8 @@ import sys, os
 import time
 import ctypes
 
-import PyGEECSPlotter.utils.ni_imread as ni_imread
 from PyGEECSPlotter.utils.navigation_utils import get_analysed_shot_save_path
+from PyGEECSPlotter.utils.io_utils import read_scaled_png, write_scaled_png
 
 
 from PyGEECSPlotter.analyzers.image_analysis import ImageAnalyzer
@@ -151,14 +150,7 @@ class WavefrontAnalyzer(ImageAnalyzer):
         elif 'has' in file_ext:
             return load_wavekit().HasoSlopes(has_file_path = filename)
         elif 'png' in file_ext:
-            data = ni_imread.read_imaq_image('%s' % filename)
-
-            with open('%s.txt' % filename[:-4]) as f:
-                lines = f.readlines()
-            scale_min = float(lines[1].split(' ')[2])
-            scale_max = float(lines[2].split(' ')[2])
-
-            return data * (scale_max - scale_min) / (2**16 - 1) + scale_min
+            return read_scaled_png(filename)
         elif 'npy' in file_ext:
             return np.load( filename )
         else: 
@@ -269,26 +261,7 @@ class WavefrontAnalyzer(ImageAnalyzer):
 
         np.save(save_path + '.npy', data, allow_pickle=True)
 
-        # Replace NaN values with the specified scalar
-        data = np.nan_to_num(data, nan=nan_value)
-
-        # Scale to the full 16-bit range; a flat frame has nothing to scale
-        data_min, data_max = np.min(data), np.max(data)
-        span = data_max - data_min
-        if span > 0:
-            data_int = (65535 * ((data - data_min) / span)).astype(np.uint16)
-        else:
-            data_int = np.zeros_like(data, dtype=np.uint16)
-
-        # Create scaling information lines
-        lines = ['[Scaling]', 'min = %f' % data_min, 'max = %f' % data_max]
-
-        # Write scaling information to a text file
-        with open(save_path + '.txt', 'w') as f:
-            f.write('\n'.join(lines))
-
-        # Save the scaled data as a binary PNG image
-        imio.imwrite(save_path + '.png', data_int)
+        write_scaled_png(save_path, data, nan_value=nan_value)
 
 
 

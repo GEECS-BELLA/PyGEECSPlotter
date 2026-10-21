@@ -6,11 +6,7 @@ from scipy.signal import medfilt
 
 from PyGEECSPlotter.analyzers.diagnostic_analyzer import DiagnosticAnalyzer
 from PyGEECSPlotter.utils.navigation_utils import get_analysed_shot_save_path
-from PyGEECSPlotter.utils.general import (
-    calculate_moving_average_and_std,
-    get_lineout_width,
-    merge_dicts_overwrite,
-)
+import PyGEECSPlotter.utils.analysis_1d_utils as a1d
 
 # Misspelt keys used by the pre-port notebooks, still accepted so old
 # analyzer_dicts run unchanged.
@@ -141,30 +137,12 @@ class OpticalSpectrumAnalyzer(DiagnosticAnalyzer):
         else:
             results = dict.fromkeys(['peak wl (nm)', 'max counts', 'mean counts', 'sum counts'], np.nan)
         if analyzer_dict.get('calculate_red_blue_shifts', False):
-            results = merge_dicts_overwrite(results, self.shift_results(wl, counts, analyzer_dict))
+            results.update(self.shift_results(wl, counts, analyzer_dict))
         for name, (cam_wl, cam_response) in analyzer_dict.get('camera_responses', {}).items():
             results[f'{name} response ratio'] = self.camera_response_ratio(wl, counts, cam_wl, cam_response)
         return results
 
-    @staticmethod
-    def camera_response_ratio(wl, counts, cam_wl, cam_response):
-        """
-        Fraction of the spectrum a camera registers:
-        ``sum(S * r) / sum(S)``, with ``r`` the camera's spectral response
-        interpolated onto ``wl`` (0 outside the curve's range) and ``S`` the
-        spectrum clipped at 0 (residual negative counts after background
-        subtraction would otherwise make the ratio noisy on dim shots).
-
-        Plain sums, so ``r`` is taken as a response per unit energy and
-        ``wl`` as a uniform grid (true for ``wl_lin`` and the combined
-        spectrum). NaN when the spectrum has no positive signal.
-        """
-        s = np.clip(np.nan_to_num(np.asarray(counts, dtype=float), nan=0.0), 0, None)
-        total = s.sum()
-        if total <= 0:
-            return np.nan
-        r = np.interp(wl, cam_wl, cam_response, left=0.0, right=0.0)
-        return float(np.sum(s * r) / total)
+    camera_response_ratio = staticmethod(a1d.camera_response_ratio)
 
     def load_camera_response(self, path):
         """``(wl, response)`` arrays from a 2-column (wavelength, response)
@@ -238,37 +216,13 @@ class OpticalSpectrumAnalyzer(DiagnosticAnalyzer):
         if analyzer_dict.get('bg_constant', False):
             bg_low = analyzer_dict.get('bg_constant_low_wl', 340)
             bg_high = analyzer_dict.get('bg_constant_high_wl', 380)
-            bg_ldx = int(np.argmin(np.abs(wl - bg_low)))
-            bg_hdx = int(np.argmin(np.abs(wl - bg_high)))
-            if bg_hdx > bg_ldx:
-                counts = counts - np.nanmean(counts[bg_ldx:bg_hdx])
+            level = a1d.window_mean(wl, counts, bg_low, bg_high)
+            if level is not None:
+                counts = counts - level
 
         return counts
 
-    @staticmethod
-    def _bg_counts_on(bg, wl):
-        """
-        Background counts on the shot's wavelength axis ``wl``. ``bg`` is a
-        'Wavelength (nm)' / 'Counts' DataFrame, a (n, 2) array of the same
-        columns (as ``scan.mean_std_diagnostic`` returns), or a bare counts
-        array already on ``wl``. With a wavelength column, a background on
-        a different axis is interpolated rather than mis-subtracted.
-        """
-        if isinstance(bg, pd.DataFrame):
-            bg_wl = np.asarray(bg['Wavelength (nm)'].values, dtype=float)
-            bg_counts = np.asarray(bg['Counts'].values, dtype=float)
-        else:
-            arr = np.asarray(bg, dtype=float)
-            if arr.ndim == 2 and arr.shape[1] == 2:
-                bg_wl, bg_counts = arr[:, 0], arr[:, 1]
-            else:
-                if arr.shape != wl.shape:
-                    raise ValueError(f"Background has {arr.shape} counts but the spectrum has "
-                                     f"{wl.shape}; pass a DataFrame with a wavelength column.")
-                return arr
-        if bg_wl.shape == wl.shape and np.allclose(bg_wl, wl):
-            return bg_counts
-        return np.interp(wl, bg_wl, bg_counts)
+    _bg_counts_on = staticmethod(a1d.background_on_axis)
 
     def _apply_filters(self, counts, analyzer_dict):
         if analyzer_dict.get('apply_median_filter', False):
@@ -276,7 +230,7 @@ class OpticalSpectrumAnalyzer(DiagnosticAnalyzer):
             counts = medfilt(counts.astype(np.float64), n_filt)
         if analyzer_dict.get('apply_mov_mean_filter', False):
             n_filt = int(analyzer_dict.get('N_filt', 5))
-            counts, _ = calculate_moving_average_and_std(counts, n_filt)
+            counts, _ = a1d.calculate_moving_average_and_std(counts, n_filt)
         return counts
 
     def _apply_diagnostic_response(self, wl, counts, analyzer_dict):
@@ -330,7 +284,7 @@ class OpticalSpectrumAnalyzer(DiagnosticAnalyzer):
         fill = analyzer_dict.get('below_threshold_value', 0)
         shifts = self.compute_spectrum_shifts(counts, wl, threshold=threshold, fill=fill)
         cumsum = self.compute_cumulative_spectrum_shifts(wl, counts, threshold=threshold, fill=fill)
-        return merge_dicts_overwrite(shifts, cumsum)
+        return {**shifts, **cumsum}
 
     @staticmethod
     def clip_spectrum(data, wl_low=700, wl_high=900):
@@ -343,73 +297,18 @@ class OpticalSpectrumAnalyzer(DiagnosticAnalyzer):
         std_data = all_data.groupby('Wavelength (nm)')['Counts'].std().reset_index()
         return mean_data, std_data
 
-    @staticmethod
-    def _safe_index(arr, idx):
-        try:
-            return arr[int(idx)]
-        except (IndexError, ValueError, TypeError):
-            return np.nan
+    _safe_index = staticmethod(a1d.safe_index)
 
-    _WIDTH_LEVELS = [('half max', 0.5), ('1/e', 1.0 / np.e), ('5pct', 0.05), ('1pct', 0.01)]
+    _WIDTH_LEVELS = a1d.WIDTH_LEVELS
+    _CUMULATIVE_LEVELS = a1d.CUMULATIVE_LEVELS
 
     def compute_spectrum_shifts(self, data, wl, threshold=0, fill=0):
-        """
-        Compute FWHM / 1-e / 5% / 1% widths and the bracketing (blue, red)
-        wavelengths. Every value is ``fill`` if ``max(data) < threshold``.
-        """
-        if not np.any(np.isfinite(data)) or np.nanmax(data) < threshold:
-            keys = []
-            for label, _ in self._WIDTH_LEVELS:
-                keys += ['fwhm (nm)' if label == 'half max' else f'width at {label} (nm)',
-                         f'lambda_b {label} (nm)', f'lambda_r {label} (nm)']
-            return dict.fromkeys(keys, fill)
-
-        safe = self._safe_index
-        x0 = int(np.argmax(np.nan_to_num(data, nan=-np.inf)))
-
-        result = {}
-        for label, frac in self._WIDTH_LEVELS:
-            _, ldx, hdx = get_lineout_width(data, x0, from_center=False, width_at=frac)
-            lam_b = safe(wl, ldx)
-            lam_r = safe(wl, hdx)
-            width_key = 'fwhm (nm)' if label == 'half max' else f'width at {label} (nm)'
-            result[width_key] = lam_r - lam_b
-            result[f'lambda_b {label} (nm)'] = lam_b
-            result[f'lambda_r {label} (nm)'] = lam_r
-        return result
-
-    # (label, fraction of the total) for the cumulative-sum edges; the red
-    # side uses 1 - fraction
-    _CUMULATIVE_LEVELS = [('1pct', 0.01), ('5pct', 0.05), ('10pct', 0.10),
-                          ('20pct', 0.20), ('1/e', 1.0 / np.e)]
+        """FWHM / 1-e / 5% / 1% widths and edge wavelengths (``a1d.compute_spectrum_shifts``)."""
+        return a1d.compute_spectrum_shifts(data, wl, threshold=threshold, fill=fill)
 
     def compute_cumulative_spectrum_shifts(self, wl, data, threshold=0, fill=0):
-        """
-        Wavelengths at which the cumulative sum first crosses 1%, 5%, 10%,
-        20%, 1/e of the total (blue side, ``lambda_b``) and 1 minus those
-        (red side, ``lambda_r``). Every value is ``fill`` if
-        ``max(data) < threshold``.
-        """
-        keys = [f'lambda_{side} cumulative {label} (nm)'
-                for side in 'br' for label, _ in self._CUMULATIVE_LEVELS]
-        if not np.any(np.isfinite(data)) or np.nanmax(data) < threshold:
-            return dict.fromkeys(keys, fill)
-
-        cumsum = np.nancumsum(data)
-        total = np.nansum(data)
-        if total <= 0:
-            return dict.fromkeys(keys, fill)
-
-        def first_wl_above(frac):
-            idx = np.where(cumsum > frac * total)[0]
-            return float(wl[idx[0]]) if idx.size else np.nan
-
-        result = {}
-        for label, frac in self._CUMULATIVE_LEVELS:
-            result[f'lambda_b cumulative {label} (nm)'] = first_wl_above(frac)
-        for label, frac in self._CUMULATIVE_LEVELS:
-            result[f'lambda_r cumulative {label} (nm)'] = first_wl_above(1.0 - frac)
-        return result
+        """Cumulative-sum edge wavelengths (``a1d.compute_cumulative_spectrum_shifts``)."""
+        return a1d.compute_cumulative_spectrum_shifts(wl, data, threshold=threshold, fill=fill)
 
 
 class _RawSpectrum(OpticalSpectrumAnalyzer):

@@ -8,6 +8,7 @@ import pandas as pd
 
 from PyGEECSPlotter.analyzers.multi_diagnostic_analyzer import MultiDiagnosticAnalyzer
 from PyGEECSPlotter.analyzers.spectrum_analysis import OpticalSpectrumAnalyzer, get_config
+import PyGEECSPlotter.utils.analysis_1d_utils as a1d
 
 
 class CombinedVisNIRSpectrum(MultiDiagnosticAnalyzer):
@@ -168,13 +169,11 @@ class CombinedVisNIRSpectrum(MultiDiagnosticAnalyzer):
         high = analyzer_dict.get('check_2nd_order_800_high_wl', 1500)
         thresh = analyzer_dict.get('check_2nd_order_800_thresh', 750)
 
-        ldx = int(np.argmin(np.abs(wl - low)))
-        hdx = int(np.argmin(np.abs(wl - high)))
-        if hdx <= ldx:
+        check_mean = a1d.window_mean(wl, counts, low, high)
+        if check_mean is None:
             return nir_data
-
-        check_mean = np.nanmean(counts[ldx:hdx])
         if check_mean < thresh:
+            hdx = int(np.argmin(np.abs(wl - high)))
             nir_data = nir_data.copy()
             nir_data.iloc[hdx:, nir_data.columns.get_loc('Counts')] = 0.0
         return nir_data

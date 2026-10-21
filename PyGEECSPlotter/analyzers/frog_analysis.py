@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 
 from PyGEECSPlotter.analyzers.diagnostic_analyzer import DiagnosticAnalyzer
 from PyGEECSPlotter.utils.navigation_utils import get_analysed_shot_save_path
-from PyGEECSPlotter.utils.general import get_lineout_width
+import PyGEECSPlotter.utils.analysis_1d_utils as a1d
 
 
 class FrogAnalyzer(DiagnosticAnalyzer):
@@ -180,37 +180,7 @@ class FrogAnalyzer(DiagnosticAnalyzer):
     # ------------------------------------------------------------------
     # Trimming / extraction
     # ------------------------------------------------------------------
-    @staticmethod
-    def valid_length(axis):
-        """
-        Number of leading rows before the zero padding starts.
-
-        The retrieval writes a monotonic axis and pads the remainder with
-        zeros, so the padding begins where the axis first stops moving in its
-        initial direction. Returns the full length if it never does.
-
-        A descending axis needs the extra zero-strip below: its step down into
-        the padding is still a decrease, so monotonicity alone does not spot
-        the first padded row (only the flat 0 -> 0 after it).
-        """
-        axis = np.asarray(axis, dtype=float)
-        if axis.size < 2:
-            return axis.size
-
-        steps = np.diff(axis)
-        direction = steps[0]
-        if direction == 0:
-            return 1
-
-        stalled = np.where(steps * np.sign(direction) <= 0)[0]
-        n = int(stalled[0]) + 1 if stalled.size else axis.size
-
-        # Trailing exact zeros are padding. A real axis may pass through 0
-        # (time does), but only in its interior, never at the end of the run.
-        while n > 1 and axis[n - 1] == 0:
-            n -= 1
-
-        return n
+    valid_length = staticmethod(a1d.valid_length)
 
     def _extract(self, data, cols, ascending=True):
         """Pull one trace out of the frame, trimmed and optionally sorted."""
@@ -229,51 +199,14 @@ class FrogAnalyzer(DiagnosticAnalyzer):
 
         return axis, amp, phase
 
-    @staticmethod
-    def _normalise(amp):
-        peak = np.nanmax(amp) if amp.size else np.nan
-        return amp / peak if np.isfinite(peak) and peak > 0 else amp
+    _normalise = staticmethod(a1d.normalise)
 
     # ------------------------------------------------------------------
     # Resampling
     # ------------------------------------------------------------------
-    @staticmethod
-    def _resolve_grid(grid, axis):
-        """
-        Turn a grid spec into an array.
+    _resolve_grid = staticmethod(a1d.resolve_grid)
 
-        Accepts an explicit array, a ``(min, max, n)`` triple, or ``None`` to
-        keep the shot's own axis (which leaves shots un-alignable, so the
-        scan-level displayers ask for an explicit grid).
-        """
-        if grid is None:
-            return np.asarray(axis, dtype=float)
-        grid = np.asarray(grid, dtype=float)
-        if grid.size == 3 and grid.ndim == 1:
-            lo, hi, n = grid
-            return np.linspace(lo, hi, int(n))
-        return grid
-
-    @staticmethod
-    def _resample(axis, grid, amp, phase):
-        """
-        Interpolate a trace onto ``grid``.
-
-        Points outside the shot's own support become NaN rather than being
-        clamped to the edge value, so a short retrieval does not masquerade as
-        a wide flat pulse.
-        """
-        grid = np.asarray(grid, dtype=float)
-        if axis.size < 2:
-            nan = np.full(grid.shape, np.nan)
-            return grid, nan, nan.copy()
-
-        outside = (grid < axis[0]) | (grid > axis[-1])
-        amp_out = np.interp(grid, axis, amp)
-        phase_out = np.interp(grid, axis, phase)
-        amp_out[outside] = np.nan
-        phase_out[outside] = np.nan
-        return grid, amp_out, phase_out
+    _resample = staticmethod(a1d.resample_trace)
 
     # ------------------------------------------------------------------
     # Statistics
@@ -326,64 +259,11 @@ class FrogAnalyzer(DiagnosticAnalyzer):
             'phase support high wl (nm)': high_wl,
         }
 
-    @staticmethod
-    def _width_on_axis(axis, amp, width_at=0.5):
-        """
-        Width of ``amp`` at ``width_at`` of its peak, in axis units.
+    _width_on_axis = staticmethod(a1d.width_on_axis)
 
-        ``get_lineout_width`` returns ``(width, high_idx, low_idx)`` — note the
-        high index comes first.
-        """
-        _, hdx, ldx = get_lineout_width(amp, from_center=False, width_at=width_at)
-        if not np.isfinite(hdx) or not np.isfinite(ldx):
-            return np.nan
-        return float(axis[int(hdx)] - axis[int(ldx)])
+    _centroid = staticmethod(a1d.centroid_1d)
 
-    @staticmethod
-    def _centroid(axis, amp):
-        weights = np.nan_to_num(amp, nan=0.0)
-        total = np.sum(weights)
-        return float(np.sum(axis * weights) / total) if total > 0 else np.nan
-
-    @staticmethod
-    def get_TW_per_J(t_fs, intensity, t_min=None, t_max=None):
-        """
-        Peak laser power per joule of pulse energy, in TW/J.
-
-        Parameters
-        ----------
-        t_fs : array
-            Time axis in femtoseconds.
-        intensity : array
-            FROG-retrieved temporal intensity in arbitrary units (the
-            normalisation cancels).
-        t_min, t_max : float or None
-            Integration bounds in fs. If None, use the full range.
-
-        Returns
-        -------
-        float
-            ``max(I) / integral(I dt)``. With time in fs the 1e15 s/fs and the
-            1e-12 W/TW combine into the factor of 1000.
-        """
-        t_fs = np.asarray(t_fs, dtype=float)
-        intensity = np.asarray(intensity, dtype=float)
-
-        mask = np.ones_like(t_fs, dtype=bool)
-        if t_min is not None:
-            mask &= t_fs >= t_min
-        if t_max is not None:
-            mask &= t_fs <= t_max
-        if mask.sum() < 2:
-            return np.nan
-
-        t_sel = t_fs[mask]
-        i_sel = intensity[mask]
-        integral = np.trapezoid(i_sel, t_sel)
-        if not np.isfinite(integral) or integral <= 0:
-            return np.nan
-
-        return float(1000 * np.nanmax(i_sel) / integral)
+    get_TW_per_J = staticmethod(a1d.get_TW_per_J)
 
     # ------------------------------------------------------------------
     # Plot helpers

@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 from PyGEECSPlotter.analyzers.multi_diagnostic_analyzer import MultiDiagnosticAnalyzer
 from PyGEECSPlotter.analyzers.data_reader import DataReader
 from PyGEECSPlotter.utils.ecs_live_dumps import read_ecs_live_dump
-from PyGEECSPlotter.utils.general import plot_target_ellipse
+from PyGEECSPlotter.utils.plotting import plot_target_ellipse
 
 # ECS Live dump parameters for each crosshair number: centre x, y; size x, y.
 _CROSSHAIR_PARAMS = {

@@ -21,7 +21,7 @@ from PyGEECSPlotter.utils.navigation_utils import (
     get_analysis_dir, get_parameter_alias, get_scan_parameter, get_sfilename_from_top_dir,
     get_top_dir, get_top_dir_from_sfilename, open_directory_in_explorer,
 )
-from PyGEECSPlotter.utils.general import parse_controls_from_python, write_controls_from_python
+from PyGEECSPlotter.utils.io_utils import parse_controls_from_python, write_controls_from_python
 from PyGEECSPlotter.scan_data_analyzers.binning import compute_bin_numbers
 from PyGEECSPlotter.analyzers.multi_diagnostic_analyzer import MultiDiagnosticAnalyzer
 

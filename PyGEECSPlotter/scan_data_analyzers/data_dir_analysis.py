@@ -15,7 +15,7 @@ import pandas as pd
 from pathlib import Path
 
 from PyGEECSPlotter.scan_data_analyzers.scan_data_analysis import ScanDataAnalyzer
-from PyGEECSPlotter.utils.general import parse_controls_from_python, write_controls_from_python
+from PyGEECSPlotter.utils.io_utils import parse_controls_from_python, write_controls_from_python
 
 import PyGEECSPlotter.utils.plotting as gplt
 colors = gplt.configure_plotting()

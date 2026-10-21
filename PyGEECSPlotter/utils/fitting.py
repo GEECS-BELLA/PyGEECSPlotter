@@ -21,7 +21,7 @@ import warnings
 import numpy as np
 from scipy import optimize, stats
 
-from PyGEECSPlotter.utils.general import super_gaussian
+from PyGEECSPlotter.utils.analysis_1d_utils import super_gaussian
 
 
 # ----------------------------------------------------------------------
