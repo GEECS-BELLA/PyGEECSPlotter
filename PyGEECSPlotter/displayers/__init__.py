@@ -8,6 +8,7 @@ concrete class either directly from its module or from this package:
         ScanDisplayer,
         ScalarVsParameter,
         CorrelationHeatmap,
+        ScanStatsTable,
         ImageGridDisplayer,
         MeanImagePerBin,
         SampledImages,
@@ -15,6 +16,7 @@ concrete class either directly from its module or from this package:
         PeakWidthImages,
         FocalScanDisplayer,
         MultiDiagnosticAlignment,
+        ShotCompare,
         TraceWaterfall,
         TraceMeanPerBin,
         TraceMeanWaterfall,
@@ -26,7 +28,39 @@ concrete class either directly from its module or from this package:
         MagSpecAllERepresentativePerBin,
         MagSpecAllESpectrumPerBin,
         MagSpecAllESpectrumMeanWaterfall,
+        MultiScanDisplayer,
+        MultiScanScalarVsParameter,
+        MultiScanLineoutMean,
+        display_scans,
     )
+
+Scalars, fits and statistics
+----------------------------
+``ScalarVsParameter`` plots one scalar against the scan parameter (or any
+column), with an optional fit from ``PyGEECSPlotter.fitting``: preset
+models (gaussian, super gaussian, lorentzian (+ slope), boltzmann, extreme,
+with / without offset), a polynomial, linear regression with a confidence
+band and R², or any callable; on the shots or on the per-bin summary.
+``CorrelationHeatmap`` shows pairwise correlations; ``ScanStatsTable``
+draws ``describe()`` of the active shots as a table.
+
+Single-shot compare
+-------------------
+``ShotCompare`` shows several diagnostics' ``display_data`` for the same
+shot side by side, one figure per selected shot, read through a
+``ShotCompareReader`` (``PyGEECSPlotter.shot_compare_analysis``) built from
+one analyzer per diagnostic. Same pattern as ``MultiDiagnosticAlignment``.
+``extra_panels`` adds ``ScalarVsParameter`` plots (with the shot
+highlighted) and a table of the shot's scalars next to the scan's.
+
+Multi-scan
+----------
+``MultiScanDisplayer`` subclasses take a list of scans (each keeping its own
+filters) and are run with ``display_scans(displayer, scans, save=True)``.
+``MultiScanScalarVsParameter`` overlays one scalar vs parameter per scan
+(legend: scan number, or a scan's mean / max of another column);
+``MultiScanLineoutMean`` overlays each scan's mean lineouts, per bin or over
+the whole scan.
 
 Image-grid family
 -----------------
@@ -89,6 +123,7 @@ overlaying VIS / NIR / combined) and ``OpticalSpectrumMeanWaterfall``.
 from PyGEECSPlotter.displayers.scan_displayer import ScanDisplayer
 from PyGEECSPlotter.displayers.scalar_vs_parameter import ScalarVsParameter
 from PyGEECSPlotter.displayers.correlation_heatmap import CorrelationHeatmap
+from PyGEECSPlotter.displayers.scan_stats_table import ScanStatsTable
 from PyGEECSPlotter.displayers.image_grid import ImageGridDisplayer
 from PyGEECSPlotter.displayers.shot_selection_grid import ShotSelectionGrid
 from PyGEECSPlotter.displayers.mean_image_per_bin import MeanImagePerBin
@@ -97,6 +132,7 @@ from PyGEECSPlotter.displayers.representative_image_per_bin import Representativ
 from PyGEECSPlotter.displayers.peak_width_images import PeakWidthImages, find_peak_bins
 from PyGEECSPlotter.displayers.focal_scan import FocalScanDisplayer
 from PyGEECSPlotter.displayers.multi_diagnostic_alignment import MultiDiagnosticAlignment
+from PyGEECSPlotter.displayers.shot_compare import ShotCompare
 from PyGEECSPlotter.displayers.trace_waterfall import TraceWaterfall
 from PyGEECSPlotter.displayers.trace_mean_per_bin import TraceMeanPerBin
 from PyGEECSPlotter.displayers.trace_mean_waterfall import TraceMeanWaterfall
@@ -117,11 +153,15 @@ from PyGEECSPlotter.displayers.optical_spectrum import (
     OpticalSpectrumMeanPerBin,
     OpticalSpectrumMeanWaterfall,
 )
+from PyGEECSPlotter.displayers.multi_scan_displayer import MultiScanDisplayer, display_scans
+from PyGEECSPlotter.displayers.multi_scan_scalar_vs_parameter import MultiScanScalarVsParameter
+from PyGEECSPlotter.displayers.multi_scan_lineout_mean import MultiScanLineoutMean
 
 __all__ = [
     "ScanDisplayer",
     "ScalarVsParameter",
     "CorrelationHeatmap",
+    "ScanStatsTable",
     "ImageGridDisplayer",
     "ShotSelectionGrid",
     "MeanImagePerBin",
@@ -131,6 +171,7 @@ __all__ = [
     "find_peak_bins",
     "FocalScanDisplayer",
     "MultiDiagnosticAlignment",
+    "ShotCompare",
     "TraceWaterfall",
     "TraceMeanPerBin",
     "TraceMeanWaterfall",
@@ -145,4 +186,8 @@ __all__ = [
     "OpticalSpectrumWaterfall",
     "OpticalSpectrumMeanPerBin",
     "OpticalSpectrumMeanWaterfall",
+    "MultiScanDisplayer",
+    "MultiScanScalarVsParameter",
+    "MultiScanLineoutMean",
+    "display_scans",
 ]

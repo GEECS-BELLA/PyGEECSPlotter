@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from PyGEECSPlotter.displayers.scan_displayer import ScanDisplayer
+from PyGEECSPlotter.displayers._shot_selection import select_position
 
 
 class MultiDiagnosticAlignment(ScanDisplayer):
@@ -66,22 +67,7 @@ class MultiDiagnosticAlignment(ScanDisplayer):
 
     def _select_position(self, scan):
         """Row position in ``scan.active_data`` of the shot to show, or None."""
-        active = scan.active_data
-        if len(active) == 0:
-            return None
-        sel = self.shot_selector
-        if isinstance(sel, (int, np.integer)):
-            matches = np.flatnonzero(active['Shotnumber'].to_numpy() == int(sel))
-            return int(matches[0]) if len(matches) else None
-        if callable(sel):
-            return int(sel(active))
-
-        exists = [f'{name} file_exists' for name, _ in self.analyzer.inputs
-                  if f'{name} file_exists' in active.columns]
-        n_present = (active[exists] != 0).sum(axis=1).to_numpy() if exists \
-            else np.zeros(len(active))
-        best = np.flatnonzero(n_present == n_present.max())
-        return int(best[-1] if sel == 'last' else best[0])
+        return select_position(scan.active_data, self.analyzer.inputs, self.shot_selector)
 
     def display(self, scan, fig=None, ax=None):
         if any(f'{name} file_list' not in scan.data.columns for name, _ in self.analyzer.inputs):
