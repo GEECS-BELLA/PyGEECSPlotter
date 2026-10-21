@@ -1,43 +1,29 @@
 """
 Scan-level displayers.
 
-Each concrete displayer lives in its own module. Import the base or the
-concrete class either directly from its module or from this package:
+Every public displayer is importable from this package:
 
-    from PyGEECSPlotter.displayers import (
-        ScanDisplayer,
-        ScalarVsParameter,
-        CorrelationHeatmap,
-        ScanStatsTable,
-        ImageGridDisplayer,
-        MeanImagePerBin,
-        SampledImages,
-        RepresentativeImagePerBin,
-        PeakWidthImages,
-        FocalScanDisplayer,
-        MultiDiagnosticAlignment,
-        ShotCompare,
-        TraceWaterfall,
-        TraceMeanPerBin,
-        TraceMeanWaterfall,
-        LineoutWaterfall,
-        LineoutMeanPerBin,
-        LineoutMeanWaterfall,
-        MagSpecAllEWaterfall,
-        MagSpecAllESampledShots,
-        MagSpecAllERepresentativePerBin,
-        MagSpecAllESpectrumPerBin,
-        MagSpecAllESpectrumMeanWaterfall,
-        MultiScanDisplayer,
-        MultiScanScalarVsParameter,
-        MultiScanLineoutMean,
-        display_scans,
-    )
+    from PyGEECSPlotter.displayers import ScalarVsParameter, MeanImagePerBin, ...
+
+Modules are grouped by what they show:
+
+    scan_displayer.py        ScanDisplayer base (display / save / export)
+    multi_scan_displayer.py  MultiScanDisplayer base + display_scans()
+    _lineout_binning.py, _trace_binning.py, _shot_selection.py   shared helpers
+    scalars/    sfile columns: ScalarVsParameter, CorrelationHeatmap, ScanStatsTable
+    lineouts/   1-D per-shot output: Lineout*, Trace*, OpticalSpectrum*
+    images/     2-D per-shot output: ImageGridDisplayer, MeanImagePerBin,
+                ShotSelectionGrid, SampledImages, RepresentativeImagePerBin,
+                PeakWidthImages
+    hybrid/     several diagnostics or several scans in one view: ShotCompare,
+                MultiDiagnosticAlignment, FocalScanDisplayer, MultiScan*
+    magspec/    MagSpecAllE* (physical-units subclasses of the lineout and
+                image families)
 
 Scalars, fits and statistics
 ----------------------------
 ``ScalarVsParameter`` plots one scalar against the scan parameter (or any
-column), with an optional fit from ``PyGEECSPlotter.fitting``: preset
+column), with an optional fit from ``PyGEECSPlotter.utils.fitting``: preset
 models (gaussian, super gaussian, lorentzian (+ slope), boltzmann, extreme,
 with / without offset), a polynomial, linear regression with a confidence
 band and R², or any callable; on the shots or on the per-bin summary.
@@ -48,7 +34,7 @@ Single-shot compare
 -------------------
 ``ShotCompare`` shows several diagnostics' ``display_data`` for the same
 shot side by side, one figure per selected shot, read through a
-``ShotCompareReader`` (``PyGEECSPlotter.shot_compare_analysis``) built from
+``ShotCompareReader`` (``PyGEECSPlotter.analyzers.shot_compare_analysis``) built from
 one analyzer per diagnostic. Same pattern as ``MultiDiagnosticAlignment``.
 ``extra_panels`` adds ``ScalarVsParameter`` plots (with the shot
 highlighted) and a table of the shot's scalars next to the scan's.
@@ -121,41 +107,41 @@ overlaying VIS / NIR / combined) and ``OpticalSpectrumMeanWaterfall``.
 """
 
 from PyGEECSPlotter.displayers.scan_displayer import ScanDisplayer
-from PyGEECSPlotter.displayers.scalar_vs_parameter import ScalarVsParameter
-from PyGEECSPlotter.displayers.correlation_heatmap import CorrelationHeatmap
-from PyGEECSPlotter.displayers.scan_stats_table import ScanStatsTable
-from PyGEECSPlotter.displayers.image_grid import ImageGridDisplayer
-from PyGEECSPlotter.displayers.shot_selection_grid import ShotSelectionGrid
-from PyGEECSPlotter.displayers.mean_image_per_bin import MeanImagePerBin
-from PyGEECSPlotter.displayers.sampled_images import SampledImages
-from PyGEECSPlotter.displayers.representative_image_per_bin import RepresentativeImagePerBin
-from PyGEECSPlotter.displayers.peak_width_images import PeakWidthImages, find_peak_bins
-from PyGEECSPlotter.displayers.focal_scan import FocalScanDisplayer
-from PyGEECSPlotter.displayers.multi_diagnostic_alignment import MultiDiagnosticAlignment
-from PyGEECSPlotter.displayers.shot_compare import ShotCompare
-from PyGEECSPlotter.displayers.trace_waterfall import TraceWaterfall
-from PyGEECSPlotter.displayers.trace_mean_per_bin import TraceMeanPerBin
-from PyGEECSPlotter.displayers.trace_mean_waterfall import TraceMeanWaterfall
-from PyGEECSPlotter.displayers.lineout_waterfall import LineoutWaterfall
-from PyGEECSPlotter.displayers.lineout_mean_per_bin import LineoutMeanPerBin
-from PyGEECSPlotter.displayers.lineout_mean_waterfall import LineoutMeanWaterfall
-from PyGEECSPlotter.displayers.magspec_alle_waterfall import MagSpecAllEWaterfall
-from PyGEECSPlotter.displayers.magspec_alle_gallery import (
+from PyGEECSPlotter.displayers.scalars.scalar_vs_parameter import ScalarVsParameter
+from PyGEECSPlotter.displayers.scalars.correlation_heatmap import CorrelationHeatmap
+from PyGEECSPlotter.displayers.scalars.scan_stats_table import ScanStatsTable
+from PyGEECSPlotter.displayers.images.image_grid import ImageGridDisplayer
+from PyGEECSPlotter.displayers.images.shot_selection_grid import ShotSelectionGrid
+from PyGEECSPlotter.displayers.images.mean_image_per_bin import MeanImagePerBin
+from PyGEECSPlotter.displayers.images.sampled_images import SampledImages
+from PyGEECSPlotter.displayers.images.representative_image_per_bin import RepresentativeImagePerBin
+from PyGEECSPlotter.displayers.images.peak_width_images import PeakWidthImages, find_peak_bins
+from PyGEECSPlotter.displayers.hybrid.focal_scan import FocalScanDisplayer
+from PyGEECSPlotter.displayers.hybrid.multi_diagnostic_alignment import MultiDiagnosticAlignment
+from PyGEECSPlotter.displayers.hybrid.shot_compare import ShotCompare
+from PyGEECSPlotter.displayers.lineouts.trace_waterfall import TraceWaterfall
+from PyGEECSPlotter.displayers.lineouts.trace_mean_per_bin import TraceMeanPerBin
+from PyGEECSPlotter.displayers.lineouts.trace_mean_waterfall import TraceMeanWaterfall
+from PyGEECSPlotter.displayers.lineouts.lineout_waterfall import LineoutWaterfall
+from PyGEECSPlotter.displayers.lineouts.lineout_mean_per_bin import LineoutMeanPerBin
+from PyGEECSPlotter.displayers.lineouts.lineout_mean_waterfall import LineoutMeanWaterfall
+from PyGEECSPlotter.displayers.magspec.magspec_alle_waterfall import MagSpecAllEWaterfall
+from PyGEECSPlotter.displayers.magspec.magspec_alle_gallery import (
     MagSpecAllESampledShots,
     MagSpecAllERepresentativePerBin,
 )
-from PyGEECSPlotter.displayers.magspec_alle_spectrum_per_bin import (
+from PyGEECSPlotter.displayers.magspec.magspec_alle_spectrum_per_bin import (
     MagSpecAllESpectrumPerBin,
     MagSpecAllESpectrumMeanWaterfall,
 )
-from PyGEECSPlotter.displayers.optical_spectrum import (
+from PyGEECSPlotter.displayers.lineouts.optical_spectrum import (
     OpticalSpectrumWaterfall,
     OpticalSpectrumMeanPerBin,
     OpticalSpectrumMeanWaterfall,
 )
 from PyGEECSPlotter.displayers.multi_scan_displayer import MultiScanDisplayer, display_scans
-from PyGEECSPlotter.displayers.multi_scan_scalar_vs_parameter import MultiScanScalarVsParameter
-from PyGEECSPlotter.displayers.multi_scan_lineout_mean import MultiScanLineoutMean
+from PyGEECSPlotter.displayers.hybrid.multi_scan_scalar_vs_parameter import MultiScanScalarVsParameter
+from PyGEECSPlotter.displayers.hybrid.multi_scan_lineout_mean import MultiScanLineoutMean
 
 __all__ = [
     "ScanDisplayer",
