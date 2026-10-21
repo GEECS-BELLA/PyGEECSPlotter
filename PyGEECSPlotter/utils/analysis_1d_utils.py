@@ -422,7 +422,8 @@ def compute_spectrum_shifts(data, wl, threshold=0, fill=0):
 
     result = {}
     for label, frac in WIDTH_LEVELS:
-        _, ldx, hdx = get_lineout_width(data, x0, from_center=False, width_at=frac)
+        # get_lineout_width returns (width, high_idx, low_idx)
+        _, hdx, ldx = get_lineout_width(data, x0, from_center=False, width_at=frac)
         lam_b = safe(wl, ldx)
         lam_r = safe(wl, hdx)
         width_key = 'fwhm (nm)' if label == 'half max' else f'width at {label} (nm)'
