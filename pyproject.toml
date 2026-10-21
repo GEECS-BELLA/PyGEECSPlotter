@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "PyGEECSPlotter"
+version = "0.1.0"
+description = "Scan analysis and plotting for GEECS / BELLA experimental data"
+readme = "README.md"
+authors = [{ name = "Alex Picksley" }]
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "scipy",
+    "pandas",
+    "matplotlib",
+    "scikit-learn",
+    "opencv-python",
+    "imageio",
+    "pypng",
+    "tqdm",
+    "ipywidgets",
+]
+
+[project.optional-dependencies]
+# DirectoryWatcherSFile (live_analysis): watch for new sfiles while running
+live = ["watchdog", "filelock"]
+# The magnetic spectrometer and e-beam profile analyzers additionally need the
+# private pw_py_magspec package (BellaCenter/PW-py-magspec), installed
+# separately. WavefrontAnalyzer needs the Imagine Optic WaveKit SDK
+# (see PYGEECS_WAVEKIT_PATH in the README).
+
+[tool.setuptools.packages.find]
+include = ["PyGEECSPlotter*"]

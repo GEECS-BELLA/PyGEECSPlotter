@@ -5,6 +5,14 @@ CLAUDE.local.md
 # Working example notebooks - local scratch, not for the repo
 ongoing_analysis/
 
+# OS / editor clutter
+.DS_Store
+.virtual_documents/
+*.zip
+
+# MATLAB reference code for the magspec port - local only
+tmp_matlab_magspec/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
