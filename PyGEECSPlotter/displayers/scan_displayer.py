@@ -146,6 +146,15 @@ class ScanDisplayer:
             top.set_xlabel(label)
         return top
 
+    @staticmethod
+    def _hide_ticks(a):
+        """Strip a panel's axis labels, tick labels and tick marks (major and
+        minor, all four sides), for clean thumbnail grids."""
+        a.set_xlabel(None)
+        a.set_ylabel(None)
+        a.tick_params(which='both', bottom=False, top=False, left=False, right=False,
+                      labelbottom=False, labeltop=False, labelleft=False, labelright=False)
+
     def _apply_panel_aspect(self, axes):
         """Make each plot area ``display_dict['panel_aspect']`` times wider
         than tall (``set_box_aspect``). Off when None: panels keep whatever

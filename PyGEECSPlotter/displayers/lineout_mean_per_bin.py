@@ -55,7 +55,8 @@ class LineoutMeanPerBin(ScanDisplayer):
     label_fmt : str, optional
         Format string for the label column's value, e.g. ``'{:.3g} mm'``.
     suppress_labels : bool, optional
-        Strip inner axis labels for a cleaner grid (default True).
+        Strip axis labels, tick labels and tick marks for a cleaner grid
+        (default True); False keeps them.
     align : {'snap', 'interp'}, optional
         How shots whose coordinate axes are shifted (e.g. ImageAnalyzer
         ``centroid_method='centroid'``) are put on one axis: ``'snap'``
@@ -146,10 +147,7 @@ class LineoutMeanPerBin(ScanDisplayer):
                 a.legend(fontsize='small')
                 legend_done = True
             if self.suppress_labels:
-                a.set_xlabel(None)
-                a.set_ylabel(None)
-                a.set_xticklabels([])
-                a.set_yticklabels([])
+                self._hide_ticks(a)
 
         for k in range(n_panels, nrows * ncols):
             axes_arr.flat[k].set_visible(False)

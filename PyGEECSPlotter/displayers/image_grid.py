@@ -26,8 +26,9 @@ class ImageGridDisplayer(ScanDisplayer):
         If True, render each panel with ``analyzer.display_data`` (preserves
         colormap / extent / lineouts settings). If False, plain ``imshow``.
     suppress_labels : bool, optional
-        If True (default), strip per-panel axis labels and tick labels for
-        a cleaner thumbnail grid. Pass False to keep the analyzer's axes.
+        If True (default), strip per-panel axis labels, tick labels and tick
+        marks for a cleaner thumbnail grid. Pass False to keep the
+        analyzer's axes.
     display_dict : dict, optional
         Style overrides: ``cmap``; ``panel_aspect`` (plot-area width /
         height, default 1 for square panels, e.g. 4 for 4:1; None leaves
@@ -205,7 +206,4 @@ class ImageGridDisplayer(ScanDisplayer):
         # Label inside the panel rather than as a title, so rows pack tight.
         self._corner_label(a, label)
         if self.suppress_labels:
-            a.set_xlabel(None)
-            a.set_ylabel(None)
-            a.set_xticklabels([])
-            a.set_yticklabels([])
+            self._hide_ticks(a)
