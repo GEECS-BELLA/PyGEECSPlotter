@@ -5,6 +5,11 @@ a GEECS scan's scalar table (the "sfile"), filters/bins/correlates it, runs
 per-shot diagnostic analyzers over camera images, spectra and traces, writes
 new scalars back to the sfile, and makes scan-level plots.
 
+Layout: `PyGEECSPlotter/scan_data_analyzers/` (ScanDataAnalyzer), `analyzers/`
+(per-shot analyzers and readers), `displayers/{scalars,lineouts,images,hybrid,magspec}/`,
+`utils/` (`analysis_2d_utils`, `analysis_1d_utils`, `fitting`, navigation, I/O).
+Old flat import paths still work via `_legacy.py` but new code uses the new ones.
+
 - Changing or extending library code → use the `pygeecsplotter-dev` skill.
 - Analysing or plotting a scan with the library → use the
   `pygeecsplotter-usage` skill.
