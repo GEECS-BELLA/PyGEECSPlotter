@@ -74,15 +74,19 @@ def mean_lineouts_per_bin(scan, analyzer, bg=None, bins=None, axes=None, align='
         for b in bins:
             scan.restore_mask(saved)
             scan.filter_scan_data('temp Bin number', b - 0.1, b + 0.1)
-            per_bin.append(_mean_lineouts_over_active(scan, analyzer, bg, axes, align))
+            per_bin.append(mean_lineouts_over_active(scan, analyzer, bg, axes, align))
     finally:
         scan.restore_mask(saved)
 
     return bins, per_bin
 
 
-def _mean_lineouts_over_active(scan, analyzer, bg, axes, align):
-    """Stack the currently-active shots' lineouts and average them, per axis."""
+def mean_lineouts_over_active(scan, analyzer, bg=None, axes=None, align='snap'):
+    """
+    ``{axis: (coord, mean, std)}`` over the currently-active shots (the
+    whole scan, unless the caller has filtered it), or None if no shot
+    gave a lineout. The first shot's axis is the reference; see ``on_grid``.
+    """
     stacks = {}
     for _, _, _, aux in scan._iter_shots(analyzer, bg=bg, show_progress=False):
         if not aux:
