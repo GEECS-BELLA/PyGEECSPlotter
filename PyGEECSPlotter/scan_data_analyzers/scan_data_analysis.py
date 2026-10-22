@@ -23,11 +23,13 @@ from PyGEECSPlotter.utils.navigation_utils import (
     get_analysis_dir, get_parameter_alias, get_scan_parameter, get_sfilename_from_top_dir,
     get_top_dir, get_top_dir_from_sfilename, open_directory_in_explorer,
 )
-from PyGEECSPlotter.utils.io_utils import parse_controls_from_python, write_controls_from_python
+from PyGEECSPlotter.utils.io_utils import write_controls_from_python
 from PyGEECSPlotter.scan_data_analyzers.binning import compute_bin_numbers
 from PyGEECSPlotter.scan_data_analyzers.filters import Filter, combined_mask, summary
 from PyGEECSPlotter.scan_data_analyzers.sfile_frame import (
-    drop_incomplete_rows, merge_results, rename_result_columns)
+    apply_column_math, apply_search_replace, drop_incomplete_rows, merge_results,
+    parse_column_math_from_lv_controls, parse_search_replace_from_lv_controls, read_controls,
+    rename_result_columns, search_replace_text)
 from PyGEECSPlotter.analyzers.multi_diagnostic_analyzer import MultiDiagnosticAnalyzer
 
 import PyGEECSPlotter.utils.plotting as gplt
@@ -438,76 +440,23 @@ class ScanDataAnalyzer:
 
         
     def add_search_replace_column_names(self, search_replace_filename, parse_from='labview'):
-        if parse_from == 'labview':
-            search_replace_pairs = ScanDataAnalyzer.parse_search_replace_from_lv_controls(search_replace_filename)
-        elif parse_from == 'python':
-            search_replace_pairs = parse_controls_from_python(search_replace_filename)
-        else:
-            print("parse_from options 'labview' or 'python'. No search and replace done")
-            return
-        
-        for col in self.data.columns:
-            new_col_name = col
-            for pair in search_replace_pairs:
-                new_col_name = new_col_name.replace(pair['Search'], pair['Replace'])
-            self.data.rename(columns={col: new_col_name}, inplace=True)
+        """Rename columns with a search / replace controls file (``sfile_frame.apply_search_replace``)."""
+        pairs = read_controls(search_replace_filename, 'search_replace', parse_from)
+        self.data = apply_search_replace(self.data, pairs)
 
     def add_search_replace_scan_parameter(self, search_replace_filename, parse_from='labview'):
-        if parse_from == 'labview':
-            search_replace_pairs = ScanDataAnalyzer.parse_search_replace_from_lv_controls(search_replace_filename)
-        elif parse_from == 'python':
-            search_replace_pairs = parse_controls_from_python(search_replace_filename)
-        else:
-            print("parse_from options 'labview' or 'python'. No search and replace done")
-            return
-        
-        new_param = self.scan_parameter
-        for pair in search_replace_pairs:
-            new_param = new_param.replace(pair['Search'], pair['Replace'])
-        self.scan_parameter = new_param
+        """Apply the same search / replace to the scan parameter's name."""
+        pairs = read_controls(search_replace_filename, 'search_replace', parse_from)
+        self.scan_parameter = search_replace_text(self.scan_parameter, pairs)
 
     def add_column_math(self, column_math_filename, parse_from='labview'):
-        if parse_from == 'labview':
-            math_clusters_list = ScanDataAnalyzer.parse_column_math_from_lv_controls(column_math_filename)
-        elif parse_from == 'python':
-            math_clusters_list = parse_controls_from_python(column_math_filename)
-        else:
-            print("parse_from options 'labview' or 'python'. No column math added")
-            return
-
-        for math_cluster in math_clusters_list:
-            column_name = math_cluster['column_name']
-            all_vars_present = all(
-                v['column_name'] in self.data.columns for v in math_cluster['variables']
-            )
-
-            if all_vars_present:
-                formula = math_cluster['formula'].replace('^', '**')
-                for func in ["sqrt", "exp", "sin", "cos", "abs", "min", "max"]:
-                    formula = formula.replace(func, f"np.{func}")
-
-                # Make variable assignments
-                local_vars = {}
-                for v in math_cluster['variables']:
-                    local_vars[v['vars']] = self.data[v['column_name']]
-                
-                # Evaluate and assign result
-                try:
-                    result = eval(formula, {"np": np}, local_vars)
-                    self.data[column_name] = result
-                except Exception as e:
-                    if self.print_data:
-                        print(f"Error evaluating formula for {column_name}: {e}")
-            else:
-                if self.print_data:
-                    print(f"Column {column_name} not added — missing input columns.")
+        """Add computed columns from a column-math controls file (``sfile_frame.apply_column_math``)."""
+        clusters = read_controls(column_math_filename, 'column_math', parse_from)
+        self.data = apply_column_math(self.data, clusters, verbose=self.print_data)
 
     def merge_column_math_to_sfile(self, column_math_filename, parse_from='labview'):
         if not self.aborted:
-            if parse_from == 'labview':
-                math_clusters_list = ScanDataAnalyzer.parse_column_math_from_lv_controls(column_math_filename)
-            elif parse_from == 'python':
-                math_clusters_list = parse_controls_from_python(column_math_filename)
+            math_clusters_list = read_controls(column_math_filename, 'column_math', parse_from)
             cols_to_add = ['scan', 'Shotnumber']
             for math_cluster in math_clusters_list:
                 cols_to_add.append( math_cluster['column_name'] )
@@ -1416,62 +1365,9 @@ class ScanDataAnalyzer:
 
         return center_df, spread_df
 
-    @staticmethod
-    def parse_column_math_from_lv_controls(file_path):
-        clusters = []
-        current_cluster = {}
-        variables = []
-
-        with open(file_path, 'r') as file:
-            for line in file:
-                line = line.strip()
-                if line.startswith('Value') and '.Cluster.New (or old) column name' in line:
-                    if current_cluster:
-                        current_cluster['variables'] = variables
-                        clusters.append(current_cluster)
-                        variables = []
-                    current_cluster = {'column_name': line.split('=')[1].strip()}
-                elif line.startswith('Value') and '.Cluster.Formula' in line:
-                    current_cluster['formula'] = line.split('=')[1].strip()
-                elif '.Cluster.vars' in line and '.Cluster.Column name' in line:
-                    # This is not expected to happen as per the provided format,
-                    # it seems to be a misunderstanding of the format.
-                    pass
-                elif '.Cluster.vars' in line or '.Cluster.Column name' in line:
-                    var_name = line.split('=')[1].strip()
-                    var_key = 'vars' if '.Cluster.vars' in line else 'column_name'
-                    if variables and var_key in variables[-1]:
-                        # If the last variable already has this key, start a new variable
-                        variables.append({var_key: var_name})
-                    elif variables:
-                        variables[-1][var_key] = var_name
-                    else:
-                        variables.append({var_key: var_name})
-
-            # Add the last cluster if it exists
-            if current_cluster:
-                current_cluster['variables'] = variables
-                clusters.append(current_cluster)
-
-        return clusters
-
-    @staticmethod
-    def parse_search_replace_from_lv_controls(file_path):
-        search_replace_pairs = []
-        
-        with open(file_path, 'r') as file:
-            text_content = file.read()
-
-        lines = text_content.strip().split('\n')
-        for line in lines:
-            if 'Cluster.Search=' in line:
-                search_term = line.split('=')[1]
-                if "Bella" in search_term:
-                    continue
-                replace_term = next((l.split('=')[1] for l in lines if l.startswith(line.split('.Search')[0] + '.Replace=')), '')
-                search_replace_pairs.append({'Search': search_term, 'Replace': replace_term})
-
-        return search_replace_pairs
+    # LabVIEW controls parsers, kept as static methods for existing callers
+    parse_column_math_from_lv_controls = staticmethod(parse_column_math_from_lv_controls)
+    parse_search_replace_from_lv_controls = staticmethod(parse_search_replace_from_lv_controls)
 
     def open_scan_dir(self):
         scan_dir = os.path.join(self.top_dir, 'scans', 'Scan%03d' %self.scan)
