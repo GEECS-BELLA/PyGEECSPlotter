@@ -353,8 +353,10 @@ class ScanDataAnalyzer:
 
     # bins ---------------------------------------------------------------
     def bins(self):
-        """Sorted bin numbers (``temp Bin number``) present among the selected shots."""
-        return np.unique(self.active_data['temp Bin number'].to_numpy())
+        """Sorted bin numbers (``temp Bin number``, as int) present among the selected shots."""
+        values = self.active_data['temp Bin number'].to_numpy()
+        values = values[np.isfinite(values)] if values.dtype.kind == 'f' else values
+        return np.unique(values).astype(int)
 
     def rows_in_bin(self, b):
         """Selected shots in bin ``b`` (pass as ``rows=`` to ``_iter_shots`` etc.)."""

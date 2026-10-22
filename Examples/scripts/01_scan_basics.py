@@ -70,6 +70,8 @@ scan.reset_bins()
 #   (shots with missing diagnostic files are a rule too, kept by `clear_filters`)
 # - `with scan.filtered(): ...` or `with scan.temporary_filter(...)` undoes
 #   whatever the block changed when it ends
+#
+# Example 11 covers filters and binning in full.
 
 # %%
 scan.filter(COUNTS, 200, 4096)

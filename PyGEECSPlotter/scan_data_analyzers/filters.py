@@ -94,9 +94,12 @@ def summary(filters, data):
     for i, f in enumerate(filters.values(), 1):
         own = f.evaluate(data)
         running &= own
-        tag = ' (files)' if f.file_rule else ''
+        tag = ''
         desc = f.describe()
-        label = desc if f.name in (desc, f.column) else f'{f.name}: {desc}'
+        if f.file_rule:
+            label = f'{f.name} (shots with a file)'
+        else:
+            label = desc if f.name in (desc, f.column) else f'{f.name}: {desc}'
         lines.append(f'{i}. {label}{tag}  -> keeps {int(own.sum())}, '
                      f'{int(running.sum())} / {n} remain')
     return '\n'.join(lines)
