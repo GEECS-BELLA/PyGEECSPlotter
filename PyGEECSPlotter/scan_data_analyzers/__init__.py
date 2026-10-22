@@ -1,7 +1,8 @@
 """Scan-level analysis: load an sfile, filter / bin it, run analyzers over its shots.
 
-``ScanDataAnalyzer`` is the hub. ``ParallelScanDataAnalyzer`` runs the per-shot
-analysis in threads; ``DataDirAnalyzer`` treats a plain folder of files as a
+``ScanDataAnalyzer`` is the hub; its ``analyze_scan`` runs shots in threads by
+default (``parallel=False`` for serial; ``ParallelScanDataAnalyzer`` is a
+deprecated alias). ``DataDirAnalyzer`` treats a plain folder of files as a
 scan (no sfile). ``live_analysis`` watches for new sfiles during a run.
 """
 

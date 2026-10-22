@@ -12,6 +12,7 @@ import glob
 import json
 import datetime
 import inspect
+import concurrent.futures
 import warnings
 import pandas as pd
 from contextlib import contextmanager
@@ -721,7 +722,7 @@ class ScanDataAnalyzer:
         file(s), resolve its background, and call ``analyzer.analyze_data``.
 
         This is the per-row body shared by ``_iter_shots`` (serial) and
-        ``ParallelScanDataAnalyzer._iter_shots_parallel`` (threaded) —
+        ``_iter_shots_parallel`` (threaded) —
         kept in exactly one place so the multi-vs-single-diagnostic
         branching and background resolution can't drift between the two
         paths.
@@ -814,6 +815,54 @@ class ScanDataAnalyzer:
         for _, row in it:
             yield self._process_row(analyzer, bg, row)
 
+    def _iter_shots_parallel(self, analyzer, bg=None, rows=None, max_workers=None,
+                             show_progress=True, process=None):
+        """
+        Thread-parallel counterpart of ``_iter_shots``.
+
+        Submits ``self._process_row(analyzer, bg, row)`` for every row up
+        front to a ``ThreadPoolExecutor``, then yields the results in the
+        same order ``_iter_shots`` would (i.e. ``rows``' original order —
+        the row order of ``active_data``/``rows``, *not* completion order),
+        so downstream output (``add_columns_df`` row order, per-shot
+        display/write side effects) is identical to the serial path.
+
+        Parameters, yields — same as ``_iter_shots``, plus:
+
+        max_workers : int, optional
+            Forwarded to ``ThreadPoolExecutor``.
+        process : callable, optional
+            ``process(row) -> (context, data, results, aux)`` run in the
+            worker thread instead of ``_process_row`` (e.g. to also write
+            the shot's analysed files there).
+        """
+        if process is None:
+            def process(row):
+                return self._process_row(analyzer, bg, row)
+        rows = self._selected_rows(rows)
+        # list(...) freezes row order up front; a DataFrame's row order can't
+        # change under us mid-analysis since nothing here mutates self.data.
+        row_list = [row for _, row in rows.iterrows()]
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(process, row) for row in row_list]
+
+            # Yield in submission order as each result becomes ready, so the
+            # caller's main-thread display/write work overlaps with the
+            # workers still analysing later shots. The bar tracks shots
+            # consumed by the caller (i.e. including its side effects).
+            # .result() re-raises any exception from that shot's thread.
+            progress = tqdm(total=len(futures)) if show_progress else None
+            try:
+                for future in futures:
+                    result = future.result()
+                    yield result
+                    if progress is not None:
+                        progress.update(1)
+            finally:
+                if progress is not None:
+                    progress.close()
+
     def analyze_scan(self, analyzer,
         bg=None,
         display_data=False,
@@ -826,6 +875,8 @@ class ScanDataAnalyzer:
         write_displayed=False,
         close_displayed=True,
         keep_unanalysed=True,
+        parallel=True,
+        max_workers=None,
         ):
         """
         Run the per-shot pipeline over active shots and handle side effects.
@@ -858,6 +909,15 @@ class ScanDataAnalyzer:
         extra_info_str : str, optional
             Extra tag inserted into the summary filename (and appended to the
             merged sfile column names, same as ``analysis_label``).
+        parallel : bool, optional
+            True (default): load and analyse shots in a thread pool (and
+            write their analysed files there); display / write_displayed and
+            the result merge still run one shot at a time on the main thread,
+            in row order, so the output is the same as serial. False: one
+            shot at a time. Analyzers with ``thread_safe = False`` (e.g.
+            ``WavefrontAnalyzer``) need ``parallel=False``.
+        max_workers : int, optional
+            Thread-pool size (default: Python's, ``min(32, cpu_count + 4)``).
         keep_unanalysed : bool, optional
             True (default): re-running an analysis on a subset of shots only
             replaces those shots' values; the other shots keep theirs, in
@@ -878,12 +938,44 @@ class ScanDataAnalyzer:
         analysis_dir = None
         self._warn_if_write_displayed_is_a_noop(display_data, write_displayed)
 
-        for context, data, results, aux in self._iter_shots(analyzer, bg=bg):
+        if parallel:
+            if not getattr(analyzer, 'thread_safe', True):
+                raise ValueError(
+                    f"{type(analyzer).__name__} is not thread-safe (thread_safe = False); "
+                    f"use analyze_scan(..., parallel=False).")
+            if display_data:
+                warnings.warn(
+                    "display_data figures are drawn one shot at a time on the main thread "
+                    "(pyplot is not thread-safe), so they dominate the runtime; "
+                    "parallel=False gives the same result.", stacklevel=2)
+
+            def process(row):
+                context, data, results, aux = self._process_row(analyzer, bg, row)
+                if write_analyzed and data is not None:
+                    # Each shot's own scan dir (an sfile can span several scans).
+                    scan, shot_num = int(context['scan']), int(context['Shotnumber'])
+                    shot_dir = self._shot_analysis_dir(scan)
+                    analyzer.write_analyzed_data(data, shot_dir, scan, shot_num, context=context,
+                                                 **_aux_kwarg(analyzer.write_analyzed_data, aux))
+                    if write_lineouts:
+                        analyzer.write_analyzed_lineouts(aux, shot_dir, scan, shot_num)
+                return context, data, results, aux
+
+            shots = self._iter_shots_parallel(analyzer, bg=bg, max_workers=max_workers,
+                                              process=process)
+        else:
+            shots = self._iter_shots(analyzer, bg=bg)
+
+        for context, data, results, aux in shots:
             rows.append({'scan': int(context['scan']), 'Shotnumber': int(context['Shotnumber']), **results})
+            if parallel and write_analyzed and analysis_dir is None and data is not None:
+                # written in the worker; still record the first shot's dir
+                # as the default for the scan-level files
+                analysis_dir = self._shot_analysis_dir(int(context['scan']))
             analysis_dir = self._apply_shot_side_effects(
                 analyzer, context, data, results, aux, analysis_dir,
-                display_data=display_data, write_analyzed=write_analyzed,
-                write_lineouts=write_lineouts, write_displayed=write_displayed,
+                display_data=display_data, write_analyzed=write_analyzed and not parallel,
+                write_lineouts=write_lineouts and not parallel, write_displayed=write_displayed,
                 close_displayed=close_displayed,
             )
 
@@ -907,7 +999,7 @@ class ScanDataAnalyzer:
         """
         Run one shot's display/write side effects, exactly as ``analyze_scan``
         did inline before this was extracted so it could also be called, in
-        the same order, from ``ParallelScanDataAnalyzer``.
+        the same order, from the parallel path of ``analyze_scan``.
 
         Returns the (possibly newly-resolved) ``analysis_dir``, so the caller
         can thread it through to the next shot and to ``_finish_analyze_scan``
@@ -958,7 +1050,7 @@ class ScanDataAnalyzer:
         back to the sfile plus the standalone controls/summary files.
 
         Shared by the serial ``analyze_scan`` and
-        ``ParallelScanDataAnalyzer.analyze_scan`` so this logic exists in
+        parallel ``analyze_scan`` paths so this logic exists in
         exactly one place. ``analysis_dir`` is whatever the shot loop already
         resolved (``None`` if neither ``write_analyzed`` nor
         ``write_displayed`` needed it); this method resolves it itself,

@@ -57,6 +57,10 @@ class WavefrontAnalyzer(ImageAnalyzer):
     Derive from this class to customize analysis steps for specific image types.
     """
 
+    # holds a live WaveKit HasoEngine and reused compute objects with no lock:
+    # analyse with ScanDataAnalyzer.analyze_scan(..., parallel=False)
+    thread_safe = False
+
     # phase maps: display in pixels from the corner
     DEFAULT_ORIGIN = 'pixel'
 

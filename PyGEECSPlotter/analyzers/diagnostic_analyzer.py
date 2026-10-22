@@ -33,6 +33,11 @@ class DiagnosticAnalyzer:
     ``NotImplementedError``.
     """
 
+    # analyze_scan runs load_data / analyze_data in a thread pool by default.
+    # Set False in a subclass whose per-shot calls share unguarded mutable
+    # state (it then needs analyze_scan(..., parallel=False)).
+    thread_safe = True
+
     def __init__(
         self,
         diagnostic: Optional[str] = None,

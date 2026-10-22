@@ -87,7 +87,7 @@ DataFrames → trace displayers.
 
 ```
 PyGEECSPlotter/
-  scan_data_analyzers/   ScanDataAnalyzer, ParallelScanDataAnalyzer, DataDirAnalyzer,
+  scan_data_analyzers/   ScanDataAnalyzer (parallel analyze_scan), DataDirAnalyzer,
                          live_analysis (watch for new sfiles), binning
   analyzers/             per-shot analyzers and readers (below)
     magspec/             MagSpecAllEAnalyzer / Reader, EBeamProfileAnalyzer (need pw_py_magspec)

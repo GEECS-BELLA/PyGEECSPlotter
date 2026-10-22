@@ -22,7 +22,7 @@ Example data: the BELLA PL1 axicon line focus (`CAM-PL1-LPMode`),
 # %%
 import matplotlib.pyplot as plt
 
-from PyGEECSPlotter.scan_data_analyzers import ParallelScanDataAnalyzer
+from PyGEECSPlotter.scan_data_analyzers import ScanDataAnalyzer
 from PyGEECSPlotter.analyzers import ImageAnalyzer
 from PyGEECSPlotter.displayers import (ScalarVsParameter, MeanImagePerBin, LineoutWaterfall,
                                       LineoutMeanPerBin, LineoutMeanWaterfall)
@@ -66,7 +66,7 @@ analyzer = ImageAnalyzer(
                   'cbar_off': True, 'spatial_units': r'\mu m'},
 )
 
-scan = ParallelScanDataAnalyzer(experiment_dir=DATA_ROOT, year=YEAR, month=MONTH, day=DAY, scan=SCAN)
+scan = ScanDataAnalyzer(experiment_dir=DATA_ROOT, year=YEAR, month=MONTH, day=DAY, scan=SCAN)
 scan.load_scan_data(analyzer=analyzer)
 bg = analyzer.load_data(scan.get_bg_file_path(DIAGNOSTIC, which_scan=BG_SCAN))
 print(scan, '| scan parameter:', scan.scan_parameter)
