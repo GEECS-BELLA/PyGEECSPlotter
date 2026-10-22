@@ -59,15 +59,15 @@ def new_scan():
 # ## Analyse shots
 #
 # `bg_dir` holds the day's averaged camera backgrounds. Here a handful of
-# shots run in memory; for a real run use the whole scan (or
-# `ParallelScanDataAnalyzer`) with `WRITE_ANALYZED = True`.
+# shots run in memory; for a real run use the whole scan with
+# `WRITE_ANALYZED = True` (shots are analysed in parallel threads).
 
 # %%
 alle = MagSpecAllEAnalyzer(CALIB_DIR, CALIB_DAY, bg_dir=os.path.join(new_scan().top_dir, 'analysis'),
                            output_diagnostic=SAVED_DIAG)
 scan = new_scan()
 scan.load_scan_data(analyzer=alle)
-scan.filter_scan_data_by_array('Shotnumber', scan.active_data['Shotnumber'].values[::100])
+scan.filter_values('Shotnumber', scan.active_data['Shotnumber'].values[::100], name='every 100th')
 df = scan.analyze_scan(alle, write_analyzed=WRITE_ANALYZED, write_columns_to_sfile=WRITE_SFILE,
                        analysis_label=LABEL if WRITE_SFILE else '')
 print(len(df), 'shots analysed; charge (pC):', df['charge_pC'].round(1).tolist())
@@ -108,19 +108,19 @@ scan.display_scan(MagSpecAllERepresentativePerBin(image, mode='max', parameter=c
 # ## A full run, for reference
 #
 # ```python
-# from PyGEECSPlotter.scan_data_analyzers import ParallelScanDataAnalyzer
+# from PyGEECSPlotter.scan_data_analyzers import ScanDataAnalyzer
 # from PyGEECSPlotter.analyzers.magspec.ebeam_profile_analysis import EBeamProfileAnalyzer
 #
 # bg_dir = os.path.join(top_dir, 'analysis')
 # # 1. e-beam profile -> angle columns the allE analysis reads
 # ebeam = EBeamProfileAnalyzer(CALIB_DIR, CALIB_DAY, bg_dir=bg_dir, output_diagnostic='py-ebeam')
-# scan = ParallelScanDataAnalyzer(sfilename=sfile); scan.load_scan_data(analyzer=ebeam)
+# scan = ScanDataAnalyzer(sfilename=sfile); scan.load_scan_data(analyzer=ebeam)
 # scan.analyze_scan(ebeam, write_analyzed=True, write_columns_to_sfile=True, max_workers=8)
 # # 2. allE, saved once
 # alle = MagSpecAllEAnalyzer(CALIB_DIR, CALIB_DAY, bg_dir=bg_dir, output_diagnostic='py-magspec',
 #                            ebeam_diagnostic='py-ebeam',
 #                            analyzer_dict={'ebeam_columns': ('py-ebeam', '')})
-# scan = ParallelScanDataAnalyzer(sfilename=sfile); scan.load_scan_data(analyzer=alle)
+# scan = ScanDataAnalyzer(sfilename=sfile); scan.load_scan_data(analyzer=alle)
 # scan.analyze_scan(alle, write_analyzed=True, write_columns_to_sfile=True, max_workers=8)
 # # 3. views from MagSpecAllEReader, as above
 # ```

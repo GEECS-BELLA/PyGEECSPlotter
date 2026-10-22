@@ -22,7 +22,7 @@ Example data: the BELLA PL1 axicon line focus (`CAM-PL1-LPMode`),
 # %%
 import matplotlib.pyplot as plt
 
-from PyGEECSPlotter.scan_data_analyzers import ParallelScanDataAnalyzer
+from PyGEECSPlotter.scan_data_analyzers import ScanDataAnalyzer
 from PyGEECSPlotter.analyzers import ImageAnalyzer
 from PyGEECSPlotter.displayers import (ScalarVsParameter, MeanImagePerBin, LineoutWaterfall,
                                       LineoutMeanPerBin, LineoutMeanWaterfall)
@@ -66,7 +66,7 @@ analyzer = ImageAnalyzer(
                   'cbar_off': True, 'spatial_units': r'\mu m'},
 )
 
-scan = ParallelScanDataAnalyzer(experiment_dir=DATA_ROOT, year=YEAR, month=MONTH, day=DAY, scan=SCAN)
+scan = ScanDataAnalyzer(experiment_dir=DATA_ROOT, year=YEAR, month=MONTH, day=DAY, scan=SCAN)
 scan.load_scan_data(analyzer=analyzer)
 bg = analyzer.load_data(scan.get_bg_file_path(DIAGNOSTIC, which_scan=BG_SCAN))
 print(scan, '| scan parameter:', scan.scan_parameter)
@@ -90,7 +90,7 @@ for name in ['fwhm x', 'fwhm y', 'max_counts']:
 lineouts = dict(bg=bg, align='snap', output_subdir=OUTPUT_SUBDIR)
 scan.display_scan(LineoutWaterfall(analyzer, axis='x', display_dict=analyzer.display_dict, **lineouts))
 # this scan has ~140 stage positions: show every 10th bin in the panel grid
-some_bins = sorted(scan.active_data['temp Bin number'].unique())[::10]
+some_bins = scan.bins()[::10]
 scan.display_scan(LineoutMeanPerBin(analyzer, axes=['x', 'y'], bins=some_bins, ncols=5,
                                     label_column=scan.scan_parameter, **lineouts))
 scan.display_scan(LineoutMeanWaterfall(analyzer, axis='x', display_dict=analyzer.display_dict,

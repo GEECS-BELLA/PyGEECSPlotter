@@ -41,7 +41,7 @@ a = ImageAnalyzer(diagnostic='CAM-HPD-CCD', file_ext='.png', analyzer_dict={
 
 scan = ScanDataAnalyzer(sfilename=r'<data root>\Y2024\01-Jan\24_0131\analysis\s23.txt')
 scan.load_scan_data(analyzer=a)
-scan.filter_scan_data('HPD stage position', 200, 260)      # a mask; data is untouched
+scan.filter('HPD stage position', 200, 260)                # a named rule; data is untouched
 scan.rebin('kmeans', n_bins=8)                              # or unique / rounding / quantile ...
 
 bg = a.load_data(r'<data root>\...\analysis\Scan003CAM-HPD-CCD_averaged.png')
@@ -87,7 +87,7 @@ DataFrames → trace displayers.
 
 ```
 PyGEECSPlotter/
-  scan_data_analyzers/   ScanDataAnalyzer, ParallelScanDataAnalyzer, DataDirAnalyzer,
+  scan_data_analyzers/   ScanDataAnalyzer (parallel analyze_scan), DataDirAnalyzer,
                          live_analysis (watch for new sfiles), binning
   analyzers/             per-shot analyzers and readers (below)
     magspec/             MagSpecAllEAnalyzer / Reader, EBeamProfileAnalyzer (need pw_py_magspec)

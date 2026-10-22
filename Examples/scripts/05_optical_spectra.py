@@ -143,7 +143,7 @@ df = scan.analyze_scan(combined, bg=bg_combined, write_columns_to_sfile=WRITE_SF
 print('NIR scale factor, median: %.3g' % df['nir scale'].median())
 
 # drop near-empty shots before the views
-scan.filter_scan_data('SPEC-Combined max counts', 3000, np.inf)
+scan.filter('SPEC-Combined max counts', low=3000)
 
 scan.display_scan(OpticalSpectrumWaterfall(combined, bg=bg_combined, overlay_y_values=True, **VIEW))
 scan.display_scan(OpticalSpectrumMeanPerBin(combined, axes=['wl', 'vis_wl', 'nir_wl'],
@@ -171,10 +171,8 @@ if CAM_RESPONSE:
 
     energy = CameraEnergyAnalyzer(f'{CAM_DIAG} sum_counts', f'SPEC-Combined {CAM_DIAG} response ratio',
                                   output_diagnostic=f'{CAM_DIAG} energy')
-    saved = scan.save_mask()
-    scan.filter_scan_data('temp Bin number', 0.9, 1.1)
-    energy.reference = energy.reference_from_scan(scan)
-    scan.restore_mask(saved)
+    with scan.temporary_filter('temp Bin number', 1, 1):
+        energy.reference = energy.reference_from_scan(scan)
     scan.analyze_scan(energy, write_columns_to_sfile=WRITE_SFILE)
     scan.display_scan(ScalarVsParameter(f'{CAM_DIAG} energy relative energy', bin_summary='mean',
                                         output_subdir=OUTPUT_SUBDIR))

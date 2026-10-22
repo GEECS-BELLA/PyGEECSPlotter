@@ -12,8 +12,10 @@ import glob
 import json
 import datetime
 import inspect
+import concurrent.futures
 import warnings
 import pandas as pd
+from contextlib import contextmanager
 from pathlib import Path
 from tqdm import tqdm
 
@@ -21,13 +23,23 @@ from PyGEECSPlotter.utils.navigation_utils import (
     get_analysis_dir, get_parameter_alias, get_scan_parameter, get_sfilename_from_top_dir,
     get_top_dir, get_top_dir_from_sfilename, open_directory_in_explorer,
 )
-from PyGEECSPlotter.utils.io_utils import parse_controls_from_python, write_controls_from_python
+from PyGEECSPlotter.utils.io_utils import write_controls_from_python
 from PyGEECSPlotter.scan_data_analyzers.binning import compute_bin_numbers
+from PyGEECSPlotter.scan_data_analyzers.filters import Filter, combined_mask, summary
+from PyGEECSPlotter.scan_data_analyzers.sfile_frame import (
+    apply_column_math, apply_search_replace, drop_incomplete_rows, merge_results,
+    parse_column_math_from_lv_controls, parse_search_replace_from_lv_controls, read_controls,
+    rename_result_columns, search_replace_text)
 from PyGEECSPlotter.analyzers.multi_diagnostic_analyzer import MultiDiagnosticAnalyzer
 
 import PyGEECSPlotter.utils.plotting as gplt
 colors = gplt.configure_plotting()
 
+
+
+def _as_path_str(path):
+    """``str`` for a str / Path / os.PathLike, None for None."""
+    return None if path is None else os.fspath(path)
 
 
 def _aux_kwarg(method, aux):
@@ -46,79 +58,115 @@ def _aux_kwarg(method, aux):
     return {'aux': aux} if 'aux' in params else {}
 
 
+class FilterSummary(str):
+    """``scan.filters``: a string that prints as a readable list in the REPL."""
+
+    def __repr__(self):
+        return str(self)
+
+
 class ScanDataAnalyzer:
-    def __init__(self, 
-                sfilename=None, 
-                top_dir=None, 
-                experiment_dir=None,
-                year=None, 
-                month=None, 
-                day=None, 
-                scan=None
-                ):
-                
-        self.sfilename = sfilename
-        self.top_dir = top_dir
-        self.experiment_dir = experiment_dir
-        self._year = None
-        self._month = None
-        self._day = None
-        self._scan = None
+    """
+    One GEECS scan: its sfile as a DataFrame, shot selection (filters),
+    bins, per-shot analysis and scan-level displays.
+
+    Construct from one of:
+      1. ``sfilename``                                (``.../yy_mmdd/analysis/sN.txt``)
+      2. ``top_dir`` + ``scan``                       (``top_dir`` is the day folder)
+      3. ``experiment_dir`` + ``year``, ``month``, ``day``, ``scan``
+
+    ``year``, ``month``, ``day`` and ``scan`` are always stored as ``int``
+    (strings such as ``'05'`` are converted; invalid values raise). Paths
+    may be ``str`` or ``pathlib.Path`` and are stored as ``str``.
+    """
+
+    def __init__(self,
+                 sfilename=None,
+                 top_dir=None,
+                 experiment_dir=None,
+                 year=None,
+                 month=None,
+                 day=None,
+                 scan=None,
+                 ):
+        self._init_common()
+        self.sfilename = _as_path_str(sfilename)
+        self.top_dir = _as_path_str(top_dir)
+        self.experiment_dir = _as_path_str(experiment_dir)
         self.year = year
         self.month = month
         self.day = day
         self.scan = scan
-        self.scan_parameter = 'Shotnumber'
 
-        if sfilename:
+        if self.sfilename:
             self._init_from_sfilename()
-        elif top_dir and scan:
+        elif self.top_dir and self.scan is not None:
             self._init_from_top_dir_and_scan()
-        elif experiment_dir and all([year, month, day, scan]):
+        elif self.experiment_dir and None not in (self.year, self.month, self.day, self.scan):
             self._init_from_experiment_path()
         else:
             raise ValueError("Invalid initialization arguments. Use one of:\n"
-                            "1. sfilename\n"
-                            "2. top_dir and scan\n"
-                            "3. experiment_dir, year, month, day, scan")
-            
+                             "1. sfilename\n"
+                             "2. top_dir and scan\n"
+                             "3. experiment_dir, year, month, day, scan")
+        self.scan_title = self.scan_data_title()
+
+    def _init_common(self):
+        """State every scan object has, before any data is loaded (also used by subclasses)."""
+        self.sfilename = None
+        self.top_dir = None
+        self.experiment_dir = None
+        self._year = self._month = self._day = self._scan = None
+        self.scan_parameter = 'Shotnumber'
         self.analysis_dir = None
         self.data_columns = None
         self.data = None
         self.aborted = False
         self.print_data = False
-
-        self.scan_title = self.scan_data_title()
-        self._mask = None
+        self._filters = {}
+        self._order = None           # (column, ascending, per_bin) set by order_by
+        self.verbose = True          # print a line for each user filter call
         self.last_merged_columns = []
 
     def _init_from_sfilename(self):
         top_dir, year, month, day = get_top_dir_from_sfilename(self.sfilename)
         self.top_dir = top_dir
-        self.year = year
-        self.month = month
-        self.day = day
+        self.year, self.month, self.day = year, month, day
+        match = re.search(r's(\d+)\.txt$', os.path.basename(self.sfilename))
+        if self.scan is None and match:
+            self.scan = int(match.group(1))
 
     def _init_from_top_dir_and_scan(self):
         self.sfilename = get_sfilename_from_top_dir(self.top_dir, self.scan)
         top_dir, year, month, day = get_top_dir_from_sfilename(self.sfilename)
         self.top_dir = top_dir
-        self.year = year
-        self.month = month
-        self.day = day
+        self.year, self.month, self.day = year, month, day
 
     def _init_from_experiment_path(self):
         self.top_dir = get_top_dir(self.experiment_dir, self.year, self.month, self.day)
         self.sfilename = get_sfilename_from_top_dir(self.top_dir, self.scan)
 
-    @staticmethod
-    def _to_int(value, name):
+    # identity: always int (or None until known) -------------------------
+    _RANGES = {'year': (2000, 2999), 'month': (1, 12), 'day': (1, 31), 'scan': (0, None)}
+
+    @classmethod
+    def _to_int(cls, value, name):
         if value is None:
             return None
         try:
-            return int(value)
+            as_float = float(value)
+            if as_float != int(as_float):
+                raise ValueError
+            out = int(as_float)
         except (TypeError, ValueError):
-            raise TypeError(f"'{name}' must be an integer or integer-castable value, got {type(value).__name__!r}: {value!r}")
+            raise TypeError(f"'{name}' must be a whole number, got {type(value).__name__} {value!r}")
+        if name == 'year' and 0 <= out < 100:
+            out += 2000                            # '26' -> 2026
+        low, high = cls._RANGES.get(name, (None, None))
+        if (low is not None and out < low) or (high is not None and out > high):
+            raise ValueError(f"'{name}' = {out} is out of range "
+                             f"[{low}, {'...' if high is None else high}]")
+        return out
 
     @property
     def year(self):
@@ -152,39 +200,332 @@ class ScanDataAnalyzer:
     def scan(self, value):
         self._scan = self._to_int(value, 'scan')
 
+    @property
+    def date(self):
+        """The experiment date as ``datetime.date``, or None if not known."""
+        if None in (self.year, self.month, self.day):
+            return None
+        return datetime.date(self.year, self.month, self.day)
 
+    @property
+    def scan_label(self):
+        """``'Scan023'`` (or ``'Scan???'`` if the scan number isn't known)."""
+        return f'Scan{self.scan:03d}' if self.scan is not None else 'Scan???'
 
     def __repr__(self):
-        return (f"ExperimentFile(sfilename={self.sfilename}, scan={self.scan}, "
-                f"date={self.year}-{self.month:02d}-{self.day:02d}, "
-                f"experiment_dir={self.experiment_dir})")
-    
-    
+        return (f"{type(self).__name__}(sfilename={self.sfilename}, scan={self.scan}, "
+                f"date={self.date}, experiment_dir={self.experiment_dir})")
+
+    # -------------------------------------------------------------------
+    # Shot selection: named filter rules, re-evaluated against self.data
+    # (see scan_data_analyzers/filters.py). Nothing here modifies self.data.
+    # -------------------------------------------------------------------
     def _init_mask(self):
-        """Initialize the inclusion mask to include all rows."""
-        self._mask = np.ones(len(self.data), dtype=bool)
+        """Clear every filter rule, including the missing-file rules."""
+        self._filters = {}
 
-    def save_mask(self):
-        """Save the current mask state."""
-        return self._mask.copy()
-
-    def restore_mask(self, saved_mask):
-        """Restore a previously saved mask state."""
-        self._mask = saved_mask
-
+    @property
+    def _mask(self):
+        """Boolean ndarray over self.data: the rows every filter keeps."""
+        if self.data is None:
+            return None
+        return combined_mask(self._filters, self.data)
 
     @property
     def active_data(self):
-        """Return only the rows currently included by the mask."""
-        return self.data[self._mask].reset_index(drop=True)
-    
-    def scan_data_title(self, append_text=None):
-        if append_text is not None:
-            title = f'{self.year}-{self.month:02d}-{self.day:02d} - {os.path.basename(self.sfilename)} - {append_text}'
+        """
+        The selected rows of ``self.data`` (every filter applied).
+
+        The index is ``self.data``'s, so a row keeps its id across filters;
+        use ``.iloc`` for positions within the selection. Rows are in sfile
+        order unless ``order_by`` has set an order.
+        """
+        active = self.data[self._mask]
+        if self._order is not None:
+            active = self._sort(active, *self._order)
+        return active
+
+    @property
+    def n_active(self):
+        """Number of selected shots."""
+        return int(self._mask.sum())
+
+    @property
+    def filters(self):
+        """Printable summary of the filters: each rule and how many shots remain."""
+        return FilterSummary(summary(self._filters, self.data))
+
+    def _add_filter(self, rule, quiet=False):
+        self._filters[rule.name] = rule
+        if self.verbose and not quiet:
+            print(f'{self.n_active} / {len(self.data)} shots after {rule.describe()}')
+
+    def filter(self, column, low=None, high=None, exclusive=False, name=None):
+        """
+        Keep shots with ``low <= column <= high`` (bounds inclusive; either
+        may be None for a one-sided cut). NaNs are dropped. ``exclusive=True``
+        keeps the shots outside the range instead.
+
+        Rules combine with AND. ``name`` (default: the column) identifies the
+        rule for ``remove_filter``; adding a rule with an existing name
+        replaces it.
+        """
+        self._check_column(column)
+        self._add_filter(Filter(name or column, 'range', column=column, low=low, high=high,
+                                exclusive=exclusive))
+
+    def filter_values(self, column, values, exclusive=False, name=None):
+        """Keep shots whose ``column`` value is in ``values`` (or not, with ``exclusive=True``)."""
+        self._check_column(column)
+        self._add_filter(Filter(name or f'{column} values', 'values', column=column,
+                                values=np.asarray(values), exclusive=exclusive))
+
+    def filter_rows(self, rule, name):
+        """
+        Keep shots where ``rule`` is True. ``rule`` is either a function
+        ``rule(data) -> bool Series / array`` (re-evaluated whenever the data
+        changes) or a fixed boolean array over ``self.data``.
+        """
+        if callable(rule):
+            func = rule
         else:
-            title = f'{self.year}-{self.month:02d}-{self.day:02d} - {os.path.basename(self.sfilename)}'
-        return title
-    
+            fixed = pd.Series(np.asarray(rule, dtype=bool), index=self.data.index)
+            func = lambda data: fixed.reindex(data.index, fill_value=False).to_numpy()  # noqa: E731
+        self._add_filter(Filter(name, 'rows', func=func))
+
+    def remove_filter(self, name):
+        """Remove one filter rule by name."""
+        if name not in self._filters:
+            raise KeyError(f"No filter named {name!r}. Filters: {list(self._filters)}")
+        del self._filters[name]
+        if self.verbose:
+            print(f'{self.n_active} / {len(self.data)} shots after removing {name!r}')
+
+    def clear_filters(self, keep_file_filters=True):
+        """Remove every filter (by default keeping the missing-file rules)."""
+        self._filters = {k: f for k, f in self._filters.items() if keep_file_filters and f.file_rule}
+        if self.verbose:
+            print(f'Filters cleared. {self.n_active} / {len(self.data)} shots included.')
+
+    @contextmanager
+    def temporary_filter(self, column, low=None, high=None, exclusive=False):
+        """
+        ``with scan.temporary_filter(col, lo, hi): ...`` applies a range
+        filter inside the block and restores the previous filters on exit,
+        even on error.
+        """
+        saved = dict(self._filters)
+        try:
+            self._check_column(column)
+            self._add_filter(Filter(f'temporary {column}', 'range', column=column, low=low,
+                                    high=high, exclusive=exclusive), quiet=True)
+            yield self
+        finally:
+            self._filters = saved
+
+    @contextmanager
+    def filtered(self):
+        """
+        ``with scan.filtered(): scan.filter(...); ...`` restores the filters
+        as they were on entry when the block exits, whatever was added or
+        removed inside.
+        """
+        saved = dict(self._filters)
+        try:
+            yield self
+        finally:
+            self._filters = saved
+
+    def save_mask(self):
+        """Snapshot of the current filters, for ``restore_mask`` (prefer ``filtered()``)."""
+        return dict(self._filters)
+
+    def restore_mask(self, saved):
+        """Restore filters saved by ``save_mask``."""
+        self._filters = dict(saved)
+
+    def _unique_name(self, base):
+        """``base``, or ``base #2``, ``#3``... if a filter already has that name."""
+        name, i = base, 1
+        while name in self._filters:
+            i += 1
+            name = f'{base} #{i}'
+        return name
+
+    def _check_column(self, column):
+        if column not in self.data.columns:
+            raise KeyError(f"Column {column!r} not in the scan data.")
+
+    # bins ---------------------------------------------------------------
+    def bins(self):
+        """Sorted bin numbers (``temp Bin number``, as int) present among the selected shots."""
+        values = self.active_data['temp Bin number'].to_numpy()
+        values = values[np.isfinite(values)] if values.dtype.kind == 'f' else values
+        return np.unique(values).astype(int)
+
+    def rows_in_bin(self, b):
+        """Selected shots in bin ``b`` (pass as ``rows=`` to ``_iter_shots`` etc.)."""
+        active = self.active_data
+        return active[active['temp Bin number'] == b]
+
+    def iter_bins(self, bins=None):
+        """Yield ``(bin, rows)`` for each bin (default: every bin among the selected shots)."""
+        for b in (self.bins() if bins is None else bins):
+            yield b, self.rows_in_bin(b)
+
+    # ordering -----------------------------------------------------------
+    @staticmethod
+    def _sort(rows, column, ascending=True, per_bin=False):
+        """``rows`` sorted by ``column`` (NaNs last), grouped by bin first if ``per_bin``."""
+        if column not in rows.columns:
+            raise KeyError(f"Column {column!r} not in the scan data.")
+        by = ['temp Bin number', column] if per_bin else [column]
+        asc = [True, ascending] if per_bin else [ascending]
+        return rows.sort_values(by, ascending=asc, na_position='last', kind='stable')
+
+    def sorted_rows(self, column, ascending=True, per_bin=False):
+        """
+        Selected shots sorted by ``column`` (NaNs last). ``per_bin=True``
+        sorts within each bin, bins in order. Doesn't change the scan.
+        """
+        return self._sort(self.data[self._mask], column, ascending, per_bin)
+
+    def top(self, column, n=1, ascending=False, per_bin=False):
+        """
+        The ``n`` selected shots with the largest ``column`` values
+        (``ascending=True``: the smallest), or the top ``n`` of each bin with
+        ``per_bin=True``. Shots where ``column`` is NaN are never picked.
+        Pass the result as ``rows=``, or index ``.iloc`` / ``['Shotnumber']``.
+        """
+        rows = self.sorted_rows(column, ascending=ascending, per_bin=per_bin)
+        rows = rows[rows[column].notna()]
+        if per_bin:
+            return rows.groupby('temp Bin number', sort=True).head(n)
+        return rows.head(n)
+
+    def order_by(self, column=None, ascending=True, per_bin=False):
+        """
+        Set the order of ``active_data`` (and so of every displayer that
+        walks the shots in order, e.g. waterfalls and ``SampledImages``)
+        until cleared with ``order_by(None)``. Most of the time ``top`` /
+        ``sorted_rows`` are what you want; this is for when every view
+        should follow one order.
+        """
+        if column is None:
+            self._order = None
+            if self.verbose:
+                print('Shots back in sfile order.')
+            return
+        self._check_column(column)
+        self._order = (column, ascending, per_bin)
+        if self.verbose:
+            print(f"Shots ordered by {column} ({'ascending' if ascending else 'descending'}"
+                  f"{', within each bin' if per_bin else ''}).")
+
+    # quick look-ups ----------------------------------------------------
+    def find_columns(self, *terms, regex=False, show=True):
+        """
+        Column names containing every one of ``terms`` (case-insensitive;
+        ``regex=True`` treats them as regular expressions). Prints them
+        with a count of non-NaN values among the selected shots, and
+        returns the list.
+        """
+        flags = re.IGNORECASE
+        cols = [c for c in self.data.columns
+                if all((re.search(t, c, flags) if regex else t.lower() in c.lower()) for t in terms)]
+        if show:
+            active = self.data[self._mask]
+            width = max((len(c) for c in cols), default=0)
+            for c in cols:
+                print(f'  {c:<{width}}  ({int(active[c].notna().sum())} / {len(active)} values)')
+            if not cols:
+                print(f'  no columns contain {" and ".join(map(repr, terms))}')
+        return cols
+
+    def describe_columns(self, columns):
+        """
+        Count, NaN count, mean, std, min, median and max of numeric
+        ``columns`` (a list, or a search term as for ``find_columns``) over
+        the selected shots, as a DataFrame.
+        """
+        if isinstance(columns, str):
+            columns = self.find_columns(columns, show=False)
+        active = self.data[self._mask]
+        numeric = [c for c in columns if pd.api.types.is_numeric_dtype(active[c])]
+        desc = active[numeric].agg(['count', 'mean', 'std', 'min', 'median', 'max']).T
+        desc.insert(1, 'nan', len(active) - desc['count'])
+        return desc
+
+    def shot(self, shotnumber):
+        """One shot's row (from all the data, filtered or not) as a dict."""
+        match = self.data[self.data['Shotnumber'] == int(shotnumber)]
+        if match.empty:
+            raise KeyError(f"No shot {shotnumber} in {self.scan_label}.")
+        return match.iloc[0].to_dict()
+
+    def shot_files(self, shotnumber):
+        """``{diagnostic: path}`` of one shot's registered diagnostic files."""
+        row = self.shot(shotnumber)
+        return {k[:-len(' file_list')]: v for k, v in row.items()
+                if k.endswith(' file_list') and isinstance(v, str) and v}
+
+    def summary(self, show=True):
+        """Date, scan, scan parameter, shots, bins, filters and diagnostics, as text."""
+        lines = [f'{self.scan_data_title()}  ({self.scan_label})']
+        if self.data is None:
+            lines.append('  no data loaded (load_scan_data)')
+        else:
+            active = self.data[self._mask]
+            lines.append(f'  shots      : {len(active)} selected of {len(self.data)}')
+            param = self.scan_parameter
+            if param in active.columns and len(active) and pd.api.types.is_numeric_dtype(active[param]):
+                lines.append(f'  parameter  : {param}  ({active[param].min():g} to {active[param].max():g})')
+            else:
+                lines.append(f'  parameter  : {param}')
+            if 'temp Bin number' in active.columns:
+                lines.append(f'  bins       : {len(self.bins())}')
+            diags = [c[:-len(' file_list')] for c in self.data.columns if c.endswith(' file_list')]
+            lines.append(f"  diagnostics: {', '.join(diags) if diags else 'none registered'}")
+            if self._order is not None:
+                col, asc, per_bin = self._order
+                lines.append(f"  ordered by : {col} ({'ascending' if asc else 'descending'}"
+                             f"{', per bin' if per_bin else ''})")
+            lines.append('  filters    :')
+            lines += ['    ' + line for line in summary(self._filters, self.data).splitlines()]
+        text = '\n'.join(lines)
+        if show:
+            print(text)
+            return None
+        return text
+
+    def filter_outliers(self, column, n_sigma=3.0, per_bin=True, name=None):
+        """
+        Drop shots whose ``column`` is more than ``n_sigma`` robust standard
+        deviations (1.4826 x median absolute deviation) from the median of
+        their bin (``per_bin=True``) or of the whole scan. A named rule
+        (default ``'outliers: <column>'``), computed over all shots, so it
+        doesn't depend on the other filters. NaN values are dropped.
+        """
+        self._check_column(column)
+
+        def within_n_sigma(data):
+            values = data[column]
+            groups = data['temp Bin number'] if per_bin else pd.Series(0, index=data.index)
+            median = values.groupby(groups).transform('median')
+            deviation = (values - median).abs()
+            mad = deviation.groupby(groups).transform('median') * 1.4826
+            return (deviation <= n_sigma * mad).to_numpy()
+
+        within_n_sigma.__name__ = (f'{column} within {n_sigma:g} sigma of its '
+                                   f"{'bin' if per_bin else 'scan'} median")
+        self._add_filter(Filter(name or f'outliers: {column}', 'rows', func=within_n_sigma))
+
+    def scan_data_title(self, append_text=None):
+        """``'2024-01-31 - s23.txt'`` plus `` - append_text`` if given."""
+        parts = [str(self.date) if self.date else None,
+                 os.path.basename(self.sfilename) if self.sfilename else self.scan_label,
+                 append_text]
+        return ' - '.join(p for p in parts if p)
 
     def load_scan_data(self, 
         search_replace_filename=None, 
@@ -203,6 +544,9 @@ class ScanDataAnalyzer:
 
         else:
             scan_parameter, scan = get_scan_parameter(self.top_dir, sfile_data)
+            if self.scan is not None and int(scan) not in (0, self.scan):
+                warnings.warn(f"{os.path.basename(self.sfilename)} records scan {int(scan)}, "
+                              f"not {self.scan}; using {int(scan)}.", stacklevel=2)
             self.scan = scan
             self.scan_parameter = scan_parameter
 
@@ -225,24 +569,8 @@ class ScanDataAnalyzer:
 
     @staticmethod
     def _drop_incomplete_rows(sfile_data):
-        """
-        Drop sfile rows with no ``scan`` or ``Shotnumber`` (e.g. a partial
-        last row logged as the scan stopped). They can't be matched to any
-        diagnostic file, and building file names from them fails. Only the
-        loaded data is affected: ``merge_data_frame_to_sfile`` re-reads the
-        sfile and left-joins onto it, so the row stays in the file.
-        """
-        keys = [c for c in ('scan', 'Shotnumber') if c in sfile_data.columns]
-        if not keys:
-            return sfile_data
-        incomplete = sfile_data[keys].isna().any(axis=1)
-        if incomplete.any():
-            # +2: file line number (1-based, after the header line)
-            lines = ', '.join(str(int(i) + 2) for i in np.flatnonzero(incomplete))
-            print('Warning: dropping %d sfile row(s) with no scan / Shotnumber (file line %s)'
-                  % (incomplete.sum(), lines))
-            sfile_data = sfile_data[~incomplete].reset_index(drop=True)
-        return sfile_data
+        """Rows without scan / Shotnumber removed (see ``sfile_frame.drop_incomplete_rows``)."""
+        return drop_incomplete_rows(sfile_data)
 
     def get_data_columns(self):
         if self.data is not None:
@@ -266,76 +594,23 @@ class ScanDataAnalyzer:
 
         
     def add_search_replace_column_names(self, search_replace_filename, parse_from='labview'):
-        if parse_from == 'labview':
-            search_replace_pairs = ScanDataAnalyzer.parse_search_replace_from_lv_controls(search_replace_filename)
-        elif parse_from == 'python':
-            search_replace_pairs = parse_controls_from_python(search_replace_filename)
-        else:
-            print("parse_from options 'labview' or 'python'. No search and replace done")
-            return
-        
-        for col in self.data.columns:
-            new_col_name = col
-            for pair in search_replace_pairs:
-                new_col_name = new_col_name.replace(pair['Search'], pair['Replace'])
-            self.data.rename(columns={col: new_col_name}, inplace=True)
+        """Rename columns with a search / replace controls file (``sfile_frame.apply_search_replace``)."""
+        pairs = read_controls(search_replace_filename, 'search_replace', parse_from)
+        self.data = apply_search_replace(self.data, pairs)
 
     def add_search_replace_scan_parameter(self, search_replace_filename, parse_from='labview'):
-        if parse_from == 'labview':
-            search_replace_pairs = ScanDataAnalyzer.parse_search_replace_from_lv_controls(search_replace_filename)
-        elif parse_from == 'python':
-            search_replace_pairs = parse_controls_from_python(search_replace_filename)
-        else:
-            print("parse_from options 'labview' or 'python'. No search and replace done")
-            return
-        
-        new_param = self.scan_parameter
-        for pair in search_replace_pairs:
-            new_param = new_param.replace(pair['Search'], pair['Replace'])
-        self.scan_parameter = new_param
+        """Apply the same search / replace to the scan parameter's name."""
+        pairs = read_controls(search_replace_filename, 'search_replace', parse_from)
+        self.scan_parameter = search_replace_text(self.scan_parameter, pairs)
 
     def add_column_math(self, column_math_filename, parse_from='labview'):
-        if parse_from == 'labview':
-            math_clusters_list = ScanDataAnalyzer.parse_column_math_from_lv_controls(column_math_filename)
-        elif parse_from == 'python':
-            math_clusters_list = parse_controls_from_python(column_math_filename)
-        else:
-            print("parse_from options 'labview' or 'python'. No column math added")
-            return
-
-        for math_cluster in math_clusters_list:
-            column_name = math_cluster['column_name']
-            all_vars_present = all(
-                v['column_name'] in self.data.columns for v in math_cluster['variables']
-            )
-
-            if all_vars_present:
-                formula = math_cluster['formula'].replace('^', '**')
-                for func in ["sqrt", "exp", "sin", "cos", "abs", "min", "max"]:
-                    formula = formula.replace(func, f"np.{func}")
-
-                # Make variable assignments
-                local_vars = {}
-                for v in math_cluster['variables']:
-                    local_vars[v['vars']] = self.data[v['column_name']]
-                
-                # Evaluate and assign result
-                try:
-                    result = eval(formula, {"np": np}, local_vars)
-                    self.data[column_name] = result
-                except Exception as e:
-                    if self.print_data:
-                        print(f"Error evaluating formula for {column_name}: {e}")
-            else:
-                if self.print_data:
-                    print(f"Column {column_name} not added — missing input columns.")
+        """Add computed columns from a column-math controls file (``sfile_frame.apply_column_math``)."""
+        clusters = read_controls(column_math_filename, 'column_math', parse_from)
+        self.data = apply_column_math(self.data, clusters, verbose=self.print_data)
 
     def merge_column_math_to_sfile(self, column_math_filename, parse_from='labview'):
         if not self.aborted:
-            if parse_from == 'labview':
-                math_clusters_list = ScanDataAnalyzer.parse_column_math_from_lv_controls(column_math_filename)
-            elif parse_from == 'python':
-                math_clusters_list = parse_controls_from_python(column_math_filename)
+            math_clusters_list = read_controls(column_math_filename, 'column_math', parse_from)
             cols_to_add = ['scan', 'Shotnumber']
             for math_cluster in math_clusters_list:
                 cols_to_add.append( math_cluster['column_name'] )
@@ -366,14 +641,11 @@ class ScanDataAnalyzer:
         elif os.path.exists(analysis_diag_dir):
             analysis_diagnostic = True
         else:
-            print('No directory found')
+            print(f'No {diagnostic} directory found for Scan{self.scan:03d}')
             self.data['%s file_list' % diagnostic] = ''
             self.data['%s file_exists' % diagnostic] = 0
             if remove_missing_files:
-                missing_condition = self.data['%s file_exists' % diagnostic] == 0
-                self._mask = self._mask & ~missing_condition.to_numpy()
-                if self.print_data:
-                    print('Masked out %d lines from scan_data for missing files' % missing_condition.sum())
+                self._add_file_filter(diagnostic)
             return
 
         # Build all filenames at once using vectorised string formatting
@@ -415,100 +687,47 @@ class ScanDataAnalyzer:
             print('Files found: %d / %d' % (len(self.data) - n_missing, len(self.data)))
 
         if remove_missing_files:
-            missing_condition = self.data['%s file_exists' % diagnostic] == 0
-            n_missing = missing_condition.sum()
-            self._mask = self._mask & ~missing_condition.to_numpy()
-            if self.print_data:
-                print('Masked out %d lines from scan_data for missing files' % n_missing)
+            self._add_file_filter(diagnostic)
 
-
+    def _add_file_filter(self, diagnostic):
+        """Named rule dropping shots whose ``diagnostic`` file is missing."""
+        column = '%s file_exists' % diagnostic
+        self._filters[f'files: {diagnostic}'] = Filter(
+            f'files: {diagnostic}', 'range', column=column, low=1, file_rule=True)
+        if self.print_data:
+            n_missing = int((self.data[column] == 0).sum())
+            print('Masked out %d lines from scan_data for missing files' % n_missing)
 
     def filter_scan_data(self, filter_parameter, lower_bound, upper_bound,
                         filter_exclusive=False, print_data=False):
         """
-        Filter scan data based on a specified parameter and value range.
-
-        Updates the internal boolean mask so that subsequent filters are
-        combined with AND logic. The underlying `self.data` is never modified.
-
-        Parameters
-        ----------
-        filter_parameter : str
-            Column name in `self.data` to apply the filter on.
-        lower_bound : float
-            Lower bound of the filtering range.
-        upper_bound : float
-            Upper bound of the filtering range.
-        filter_exclusive : bool, optional
-            If True, keep rows outside the range (exclude rows inside).
-            If False, keep rows inside the range (exclude rows outside).
+        Legacy range filter: keeps ``lower_bound < column < upper_bound``
+        (bounds **excluded**), or the rows outside with ``filter_exclusive``.
+        Prefer ``filter`` (bounds included, one-sided cuts, named rules).
+        As before, repeated calls stack (AND), even on the same column.
         """
+        self._check_column(filter_parameter)
+        lo, hi, col = lower_bound, upper_bound, filter_parameter
 
-        if not hasattr(self, '_mask') or self._mask is None:
-            self._init_mask()
+        def strict_range(data):
+            values = data[col]
+            if filter_exclusive:
+                return ((values < lo) | (values > hi)).to_numpy()
+            return ((values > lo) & (values < hi)).to_numpy()
 
-        if filter_exclusive:
-            new_condition = (
-                (self.data[filter_parameter] < lower_bound) |
-                (self.data[filter_parameter] > upper_bound)
-            )
-        else:
-            new_condition = (
-                (self.data[filter_parameter] > lower_bound) &
-                (self.data[filter_parameter] < upper_bound)
-            )
+        strict_range.__name__ = (f'NOT {lo:g} < {col} < {hi:g}' if filter_exclusive
+                                 else f'{lo:g} < {col} < {hi:g}')
+        self._add_filter(Filter(self._unique_name(col), 'rows', func=strict_range),
+                         quiet=not print_data)
 
-        self._mask = self._mask & new_condition.to_numpy()
-
-        if print_data:
-            print(
-                '%d / %d shots included. Filtered based on: %s'
-                % (self._mask.sum(), len(self.data), get_parameter_alias(filter_parameter))
-            )
-
-
-    def filter_scan_data_by_array(self, filter_parameter, values,
-                                filter_exclusive=False):
-        """
-        Filter scan data based on whether a parameter value is in a given array.
-
-        Updates the internal boolean mask so that subsequent filters are
-        combined with AND logic. The underlying `self.data` is never modified.
-
-        Parameters
-        ----------
-        filter_parameter : str
-            Column name in `self.data` to filter on.
-        values : array-like
-            List, numpy array, or pandas Series of allowed (or excluded) values.
-        filter_exclusive : bool, optional
-            If True, keep rows whose values are NOT in `values`.
-            If False, keep rows whose values ARE in `values`.
-        """
-
-        if not hasattr(self, '_mask') or self._mask is None:
-            self._init_mask()
-
-        values = np.asarray(values)
-
-        if filter_exclusive:
-            new_condition = ~self.data[filter_parameter].isin(values)
-        else:
-            new_condition = self.data[filter_parameter].isin(values)
-
-        self._mask = self._mask & new_condition.to_numpy()
-
-        print(
-            '%d / %d shots included. Filtered based on: %s'
-            % (self._mask.sum(), len(self.data), get_parameter_alias(filter_parameter))
-        )
+    def filter_scan_data_by_array(self, filter_parameter, values, filter_exclusive=False):
+        """Legacy name for ``filter_values`` (repeated calls stack, as before)."""
+        self.filter_values(filter_parameter, values, exclusive=filter_exclusive,
+                           name=self._unique_name(f'{filter_parameter} values'))
 
     def reset_filters(self):
-        """
-        Reset the inclusion mask so that all rows in `self.data` are included.
-        """
-        self._init_mask()
-        print('Filters reset. %d shots included.' % self._mask.sum())
+        """Legacy name for ``clear_filters()`` (missing-file rules are kept)."""
+        self.clear_filters()
 
     def rebin(self, method='unique', scan_parameter=None, **kwargs):
         """
@@ -648,7 +867,7 @@ class ScanDataAnalyzer:
         file(s), resolve its background, and call ``analyzer.analyze_data``.
 
         This is the per-row body shared by ``_iter_shots`` (serial) and
-        ``ParallelScanDataAnalyzer._iter_shots_parallel`` (threaded) —
+        ``_iter_shots_parallel`` (threaded) —
         kept in exactly one place so the multi-vs-single-diagnostic
         branching and background resolution can't drift between the two
         paths.
@@ -685,6 +904,21 @@ class ScanDataAnalyzer:
 
         return context, data, results, aux
 
+    def _selected_rows(self, rows=None):
+        """
+        ``rows`` restricted to the selected shots (``active_data`` if None).
+        Rows the filters exclude are dropped with a warning, so a stale
+        subset can't bring back shots that have been filtered out.
+        """
+        if rows is None:
+            return self.active_data
+        keep = rows.index.isin(self.active_data.index)
+        if not keep.all():
+            warnings.warn(f"{int((~keep).sum())} of {len(rows)} requested rows are excluded by "
+                          f"the current filters and were skipped.", stacklevel=3)
+            rows = rows[keep]
+        return rows
+
     def _iter_shots(self, analyzer, bg=None, show_progress=True, rows=None):
         """
         Yield ``(context, data, results, aux)`` for each shot.
@@ -703,9 +937,9 @@ class ScanDataAnalyzer:
         show_progress : bool, optional
             Wrap iteration in a tqdm progress bar.
         rows : DataFrame, optional
-            Subset of rows to iterate, typically a slice/sample of
-            ``active_data``. Defaults to the full ``active_data``. Lets
-            callers process only selected shots without loading the rest.
+            Subset of rows to iterate, typically a slice / sample of
+            ``active_data`` or ``rows_in_bin(b)``. Defaults to the full
+            ``active_data``; rows outside the current selection are skipped.
 
         Yields
         ------
@@ -718,14 +952,61 @@ class ScanDataAnalyzer:
         aux : dict
             Auxiliary outputs (lineouts, etc.).
         """
-        if rows is None:
-            rows = self.active_data
+        rows = self._selected_rows(rows)
         it = rows.iterrows()
         if show_progress:
             it = tqdm(it, total=rows.shape[0])
 
         for _, row in it:
             yield self._process_row(analyzer, bg, row)
+
+    def _iter_shots_parallel(self, analyzer, bg=None, rows=None, max_workers=None,
+                             show_progress=True, process=None):
+        """
+        Thread-parallel counterpart of ``_iter_shots``.
+
+        Submits ``self._process_row(analyzer, bg, row)`` for every row up
+        front to a ``ThreadPoolExecutor``, then yields the results in the
+        same order ``_iter_shots`` would (i.e. ``rows``' original order —
+        the row order of ``active_data``/``rows``, *not* completion order),
+        so downstream output (``add_columns_df`` row order, per-shot
+        display/write side effects) is identical to the serial path.
+
+        Parameters, yields — same as ``_iter_shots``, plus:
+
+        max_workers : int, optional
+            Forwarded to ``ThreadPoolExecutor``.
+        process : callable, optional
+            ``process(row) -> (context, data, results, aux)`` run in the
+            worker thread instead of ``_process_row`` (e.g. to also write
+            the shot's analysed files there).
+        """
+        if process is None:
+            def process(row):
+                return self._process_row(analyzer, bg, row)
+        rows = self._selected_rows(rows)
+        # list(...) freezes row order up front; a DataFrame's row order can't
+        # change under us mid-analysis since nothing here mutates self.data.
+        row_list = [row for _, row in rows.iterrows()]
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(process, row) for row in row_list]
+
+            # Yield in submission order as each result becomes ready, so the
+            # caller's main-thread display/write work overlaps with the
+            # workers still analysing later shots. The bar tracks shots
+            # consumed by the caller (i.e. including its side effects).
+            # .result() re-raises any exception from that shot's thread.
+            progress = tqdm(total=len(futures)) if show_progress else None
+            try:
+                for future in futures:
+                    result = future.result()
+                    yield result
+                    if progress is not None:
+                        progress.update(1)
+            finally:
+                if progress is not None:
+                    progress.close()
 
     def analyze_scan(self, analyzer,
         bg=None,
@@ -738,6 +1019,9 @@ class ScanDataAnalyzer:
         write_lineouts=False,
         write_displayed=False,
         close_displayed=True,
+        keep_unanalysed=True,
+        parallel=True,
+        max_workers=None,
         ):
         """
         Run the per-shot pipeline over active shots and handle side effects.
@@ -770,6 +1054,20 @@ class ScanDataAnalyzer:
         extra_info_str : str, optional
             Extra tag inserted into the summary filename (and appended to the
             merged sfile column names, same as ``analysis_label``).
+        parallel : bool, optional
+            True (default): load and analyse shots in a thread pool (and
+            write their analysed files there); display / write_displayed and
+            the result merge still run one shot at a time on the main thread,
+            in row order, so the output is the same as serial. False: one
+            shot at a time. Analyzers with ``thread_safe = False`` (e.g.
+            ``WavefrontAnalyzer``) need ``parallel=False``.
+        max_workers : int, optional
+            Thread-pool size (default: Python's, ``min(32, cpu_count + 4)``).
+        keep_unanalysed : bool, optional
+            True (default): re-running an analysis on a subset of shots only
+            replaces those shots' values; the other shots keep theirs, in
+            memory and in the sfile. False: each result column is replaced
+            whole, so shots not analysed this time become NaN.
 
         Returns
         -------
@@ -785,19 +1083,51 @@ class ScanDataAnalyzer:
         analysis_dir = None
         self._warn_if_write_displayed_is_a_noop(display_data, write_displayed)
 
-        for context, data, results, aux in self._iter_shots(analyzer, bg=bg):
+        if parallel:
+            if not getattr(analyzer, 'thread_safe', True):
+                raise ValueError(
+                    f"{type(analyzer).__name__} is not thread-safe (thread_safe = False); "
+                    f"use analyze_scan(..., parallel=False).")
+            if display_data:
+                warnings.warn(
+                    "display_data figures are drawn one shot at a time on the main thread "
+                    "(pyplot is not thread-safe), so they dominate the runtime; "
+                    "parallel=False gives the same result.", stacklevel=2)
+
+            def process(row):
+                context, data, results, aux = self._process_row(analyzer, bg, row)
+                if write_analyzed and data is not None:
+                    # Each shot's own scan dir (an sfile can span several scans).
+                    scan, shot_num = int(context['scan']), int(context['Shotnumber'])
+                    shot_dir = self._shot_analysis_dir(scan)
+                    analyzer.write_analyzed_data(data, shot_dir, scan, shot_num, context=context,
+                                                 **_aux_kwarg(analyzer.write_analyzed_data, aux))
+                    if write_lineouts:
+                        analyzer.write_analyzed_lineouts(aux, shot_dir, scan, shot_num)
+                return context, data, results, aux
+
+            shots = self._iter_shots_parallel(analyzer, bg=bg, max_workers=max_workers,
+                                              process=process)
+        else:
+            shots = self._iter_shots(analyzer, bg=bg)
+
+        for context, data, results, aux in shots:
             rows.append({'scan': int(context['scan']), 'Shotnumber': int(context['Shotnumber']), **results})
+            if parallel and write_analyzed and analysis_dir is None and data is not None:
+                # written in the worker; still record the first shot's dir
+                # as the default for the scan-level files
+                analysis_dir = self._shot_analysis_dir(int(context['scan']))
             analysis_dir = self._apply_shot_side_effects(
                 analyzer, context, data, results, aux, analysis_dir,
-                display_data=display_data, write_analyzed=write_analyzed,
-                write_lineouts=write_lineouts, write_displayed=write_displayed,
+                display_data=display_data, write_analyzed=write_analyzed and not parallel,
+                write_lineouts=write_lineouts and not parallel, write_displayed=write_displayed,
                 close_displayed=close_displayed,
             )
 
         return self._finish_analyze_scan(
             rows, analyzer, analysis_dir, write_columns_to_sfile=write_columns_to_sfile,
             analysis_label=analysis_label, extra_info_str=extra_info_str,
-            overwrite_columns=overwrite_columns,
+            overwrite_columns=overwrite_columns, keep_unanalysed=keep_unanalysed,
         )
 
     @staticmethod
@@ -814,7 +1144,7 @@ class ScanDataAnalyzer:
         """
         Run one shot's display/write side effects, exactly as ``analyze_scan``
         did inline before this was extracted so it could also be called, in
-        the same order, from ``ParallelScanDataAnalyzer``.
+        the same order, from the parallel path of ``analyze_scan``.
 
         Returns the (possibly newly-resolved) ``analysis_dir``, so the caller
         can thread it through to the next shot and to ``_finish_analyze_scan``
@@ -857,14 +1187,15 @@ class ScanDataAnalyzer:
         return analysis_dir
 
     def _finish_analyze_scan(self, rows, analyzer, analysis_dir, write_columns_to_sfile,
-                             analysis_label, extra_info_str, overwrite_columns):
+                             analysis_label, extra_info_str, overwrite_columns,
+                             keep_unanalysed=True):
         """
         Post-loop tail of ``analyze_scan``: build ``add_columns_df``, merge
         the renamed columns into ``self.data``, and optionally write them
         back to the sfile plus the standalone controls/summary files.
 
         Shared by the serial ``analyze_scan`` and
-        ``ParallelScanDataAnalyzer.analyze_scan`` so this logic exists in
+        parallel ``analyze_scan`` paths so this logic exists in
         exactly one place. ``analysis_dir`` is whatever the shot loop already
         resolved (``None`` if neither ``write_analyzed`` nor
         ``write_displayed`` needed it); this method resolves it itself,
@@ -884,10 +1215,7 @@ class ScanDataAnalyzer:
             self.last_merged_columns = [
                 c for c in renamed_df.columns if c not in ('scan', 'Shotnumber')
             ]
-            self.data = self.data.drop(
-                columns=[c for c in renamed_df.columns
-                         if c in self.data.columns and c not in ('scan', 'Shotnumber')]
-            ).merge(renamed_df, on=['scan', 'Shotnumber'], how='left')
+            self.data = merge_results(self.data, renamed_df, keep_unanalysed=keep_unanalysed)
 
             if write_columns_to_sfile:
                 if analysis_dir is None:
@@ -902,6 +1230,7 @@ class ScanDataAnalyzer:
                     diag_str,
                     overwrite_columns=overwrite_columns,
                     analysis_label=analysis_label,
+                    keep_unanalysed=keep_unanalysed,
                 )
 
                 summary_path = os.path.join(
@@ -914,28 +1243,9 @@ class ScanDataAnalyzer:
 
     @staticmethod
     def _rename_add_columns(add_columns_df, diagnostic, analysis_label):
-        """
-        Prefix per-shot result columns with the diagnostic (and optional
-        label), the same renaming ``merge_data_frame_to_sfile`` applies —
-        shared so ``self.data`` and the sfile end up with identical names.
-        ``scan`` / ``Shotnumber`` are left untouched.
-        """
-        add_columns_df = add_columns_df.select_dtypes(include=[np.number, 'float64', 'int64', 'bool'])
-        if not diagnostic and not analysis_label:
-            return add_columns_df
+        """Numeric result columns named as in the sfile (see ``sfile_frame.rename_result_columns``)."""
+        return rename_result_columns(add_columns_df, diagnostic, analysis_label)
 
-        def rename_columns(col):
-            if col in ('scan', 'Shotnumber'):
-                return col
-            new_col = col
-            if diagnostic:
-                new_col = f"{diagnostic} {new_col}"
-            if analysis_label:
-                new_col = f"{new_col} {analysis_label}"
-            return new_col
-
-        return add_columns_df.rename(columns=rename_columns)
-    
     def _shot_analysis_dir(self, scan):
         """Analysis dir (created if needed) for one shot's own scan number."""
         return get_analysis_dir(self.top_dir, int(scan), make_dir=True)
@@ -974,63 +1284,49 @@ class ScanDataAnalyzer:
             displayer.export(self, suffix=suffix)
         return fig, ax
 
-    def merge_data_frame_to_sfile(self, 
-                                  add_columns_df, 
+    def merge_data_frame_to_sfile(self,
+                                  add_columns_df,
                                   diagnostic,
-                                  overwrite_columns=True, 
-                                  analysis_label=None, 
+                                  overwrite_columns=True,
+                                  analysis_label=None,
+                                  keep_unanalysed=True,
                                   ):
-        # Load the original data from the sfile
-        sfile_data = pd.read_csv(self.sfilename, sep='\t')
-        
-        # Filter out any non-numeric columns in add_columns_df
-        add_columns_df = add_columns_df.select_dtypes(include=[np.number, 'float64', 'int64', 'bool'])
+        """
+        Write per-shot result columns into the sfile on disk (and a summary
+        file next to it). The sfile is re-read first, so columns written by
+        others since loading are kept.
 
-        # Apply renaming to add_columns_df, excluding 'scan' and 'Shotnumber'
-        if diagnostic or analysis_label:
-            def rename_columns(col):
-                if col in ['scan', 'Shotnumber']:
-                    return col  # Do not rename 'scan' or 'Shotnumber'
-                new_col = col
-                if diagnostic:
-                    new_col = f"{diagnostic} {new_col}"
-                if analysis_label:
-                    new_col = f"{new_col} {analysis_label}"
-                return new_col
-
-            add_columns_df = add_columns_df.rename(columns=rename_columns)
+        overwrite_columns=True: an existing column of the same name is
+            updated (see ``keep_unanalysed``). False: the new columns are
+            added alongside with a numeric suffix.
+        keep_unanalysed=True: only the shots in ``add_columns_df`` are
+            updated; other shots keep their values. False: the whole column
+            is replaced, so shots absent from ``add_columns_df`` become NaN.
+        """
+        sfile_data = pd.read_csv(self.sfilename, sep='	')
+        add_columns_df = rename_result_columns(add_columns_df, diagnostic, analysis_label)
 
         if overwrite_columns:
-            # Drop the overlapping columns from sfile_data so they can be overwritten
-            sfile_data = sfile_data.drop(columns=[col for col in add_columns_df.columns 
-                                                  if col in sfile_data.columns and col not in ['scan', 'Shotnumber']])
-            # Merge to overwrite columns
-            merged_df = pd.merge(sfile_data, add_columns_df, on=['scan', 'Shotnumber'], how='left')
+            merged_df = merge_results(sfile_data, add_columns_df, keep_unanalysed=keep_unanalysed)
         else:
             # Use suffixes to avoid column conflicts
-            merged_df = pd.merge(sfile_data, add_columns_df, on=['scan', 'Shotnumber'], how='left', suffixes=('', '_2'))
-
-            # Rename columns with incremental suffixes if needed
+            merged_df = pd.merge(sfile_data, add_columns_df, on=['scan', 'Shotnumber'], how='left',
+                                 suffixes=('', '_2'))
             col_rename = {}
             for col in merged_df.columns:
                 if col.endswith('_2'):
                     base_name = col[:-2]
-                    # Ensure unique naming by counting existing occurrences
                     suffix_num = sum(base_name in c for c in merged_df.columns) - 1
-                    new_name = f"{base_name}_{suffix_num}"
-                    col_rename[col] = new_name
-
-            # Apply the renaming to avoid conflicts
+                    col_rename[col] = f"{base_name}_{suffix_num}"
             merged_df = merged_df.rename(columns=col_rename)
 
-        # Save the merged data back to the sfile
         analysis_dir = get_analysis_dir(self.top_dir, self.scan, make_dir=True)
-        add_columns_path = os.path.join(self.analysis_dir, f"Scan{int(self.scan):03d}_{diagnostic}_{analysis_label}_Summary.txt")
-        add_columns_df.to_csv( add_columns_path , index=False, sep='\t' )
-        merged_df.to_csv(self.sfilename, index=False, sep='\t')
+        add_columns_path = os.path.join(analysis_dir, f"Scan{int(self.scan):03d}_{diagnostic}_{analysis_label}_Summary.txt")
+        add_columns_df.to_csv(add_columns_path, index=False, sep='	')
+        merged_df.to_csv(self.sfilename, index=False, sep='	')
         print(f'Columns added to {self.sfilename}')
 
-    def mean_std_diagnostic(self, analyzer, bg=None, ddof=0, show_progress=False):
+    def mean_std_diagnostic(self, analyzer, bg=None, ddof=0, show_progress=False, rows=None):
         """
         Pixel-wise mean / std of analyzed data across all active shots.
 
@@ -1042,6 +1338,8 @@ class ScanDataAnalyzer:
             Delta degrees of freedom (0 = population std, 1 = sample std).
         show_progress : bool, optional
             Show a tqdm bar over shots.
+        rows : DataFrame, optional
+            Shots to use (e.g. ``scan.rows_in_bin(b)``); default all selected shots.
 
         Returns
         -------
@@ -1049,7 +1347,7 @@ class ScanDataAnalyzer:
         """
         arrs = [
             np.asarray(d) for _, d, _, _ in self._iter_shots(
-                analyzer, bg=bg, show_progress=show_progress
+                analyzer, bg=bg, show_progress=show_progress, rows=rows
             )
             if d is not None
         ]
@@ -1089,31 +1387,19 @@ class ScanDataAnalyzer:
             NaN-filled for bins that produced no data.
         std_per_bin : np.ndarray, shape (B, *data_shape) or None
 
-        Notes
-        -----
-        Restores the scan's filter mask after running, regardless of error.
         """
-        if bins is None:
-            bins = np.unique(self.active_data['temp Bin number'])
-        bins = np.asarray(list(bins))
+        bins = self.bins() if bins is None else np.asarray(list(bins))
 
         mean_per_bin = [None] * len(bins)
         std_per_bin = [None] * len(bins)
-        saved = self.save_mask()
         data_shape = None
-
-        try:
-            for i, b in enumerate(bins):
-                self.restore_mask(saved)
-                self.filter_scan_data('temp Bin number', b - 0.1, b + 0.1)
-                mean_data, std_data = self.mean_std_diagnostic(analyzer, bg=bg, ddof=ddof)
-                if mean_data is None:
-                    continue
-                data_shape = mean_data.shape
-                mean_per_bin[i] = mean_data
-                std_per_bin[i] = std_data
-        finally:
-            self.restore_mask(saved)
+        for i, (b, rows) in enumerate(self.iter_bins(bins)):
+            mean_data, std_data = self.mean_std_diagnostic(analyzer, bg=bg, ddof=ddof, rows=rows)
+            if mean_data is None:
+                continue
+            data_shape = mean_data.shape
+            mean_per_bin[i] = mean_data
+            std_per_bin[i] = std_data
 
         if data_shape is None:
             return bins, None, None
@@ -1233,62 +1519,9 @@ class ScanDataAnalyzer:
 
         return center_df, spread_df
 
-    @staticmethod
-    def parse_column_math_from_lv_controls(file_path):
-        clusters = []
-        current_cluster = {}
-        variables = []
-
-        with open(file_path, 'r') as file:
-            for line in file:
-                line = line.strip()
-                if line.startswith('Value') and '.Cluster.New (or old) column name' in line:
-                    if current_cluster:
-                        current_cluster['variables'] = variables
-                        clusters.append(current_cluster)
-                        variables = []
-                    current_cluster = {'column_name': line.split('=')[1].strip()}
-                elif line.startswith('Value') and '.Cluster.Formula' in line:
-                    current_cluster['formula'] = line.split('=')[1].strip()
-                elif '.Cluster.vars' in line and '.Cluster.Column name' in line:
-                    # This is not expected to happen as per the provided format,
-                    # it seems to be a misunderstanding of the format.
-                    pass
-                elif '.Cluster.vars' in line or '.Cluster.Column name' in line:
-                    var_name = line.split('=')[1].strip()
-                    var_key = 'vars' if '.Cluster.vars' in line else 'column_name'
-                    if variables and var_key in variables[-1]:
-                        # If the last variable already has this key, start a new variable
-                        variables.append({var_key: var_name})
-                    elif variables:
-                        variables[-1][var_key] = var_name
-                    else:
-                        variables.append({var_key: var_name})
-
-            # Add the last cluster if it exists
-            if current_cluster:
-                current_cluster['variables'] = variables
-                clusters.append(current_cluster)
-
-        return clusters
-
-    @staticmethod
-    def parse_search_replace_from_lv_controls(file_path):
-        search_replace_pairs = []
-        
-        with open(file_path, 'r') as file:
-            text_content = file.read()
-
-        lines = text_content.strip().split('\n')
-        for line in lines:
-            if 'Cluster.Search=' in line:
-                search_term = line.split('=')[1]
-                if "Bella" in search_term:
-                    continue
-                replace_term = next((l.split('=')[1] for l in lines if l.startswith(line.split('.Search')[0] + '.Replace=')), '')
-                search_replace_pairs.append({'Search': search_term, 'Replace': replace_term})
-
-        return search_replace_pairs
+    # LabVIEW controls parsers, kept as static methods for existing callers
+    parse_column_math_from_lv_controls = staticmethod(parse_column_math_from_lv_controls)
+    parse_search_replace_from_lv_controls = staticmethod(parse_search_replace_from_lv_controls)
 
     def open_scan_dir(self):
         scan_dir = os.path.join(self.top_dir, 'scans', 'Scan%03d' %self.scan)

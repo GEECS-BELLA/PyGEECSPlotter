@@ -28,7 +28,7 @@ Example data: BELLA HPD focal scan, 2024-01-31 scan 23, camera `CAM-HPD-CCD`.
 import os
 import matplotlib.pyplot as plt
 
-from PyGEECSPlotter.scan_data_analyzers import ParallelScanDataAnalyzer
+from PyGEECSPlotter.scan_data_analyzers import ScanDataAnalyzer
 from PyGEECSPlotter.analyzers import ImageAnalyzer
 from PyGEECSPlotter.displayers import (MeanImagePerBin, RepresentativeImagePerBin,
                                       SampledImages, ScalarVsParameter, FocalScanDisplayer)
@@ -89,7 +89,7 @@ analyzer = ImageAnalyzer(
 # `analysis/ScanNNN<diagnostic>_averaged.png`.
 
 # %%
-scan = ParallelScanDataAnalyzer(experiment_dir=DATA_ROOT, year=YEAR, month=MONTH, day=DAY, scan=SCAN)
+scan = ScanDataAnalyzer(experiment_dir=DATA_ROOT, year=YEAR, month=MONTH, day=DAY, scan=SCAN)
 scan.load_scan_data(analyzer=analyzer)
 bg_path = scan.get_bg_file_path(DIAGNOSTIC, which_scan=BG_SCAN)
 bg = analyzer.load_data(bg_path)
@@ -110,8 +110,8 @@ fig, ax = analyzer.display_data(data, title=f'shot {first["Shotnumber"]}')
 # %% [markdown]
 # ## The whole scan
 #
-# `ParallelScanDataAnalyzer` runs the shots in threads (`max_workers`); a plain
-# `ScanDataAnalyzer` runs them one by one. Each result becomes a column named
+# `analyze_scan` loads and analyses shots in parallel threads (`max_workers=`);
+# `parallel=False` runs them one by one. Each result becomes a column named
 # `'<diagnostic> <scalar>'`, e.g. `'CAM-HPD-CCD 2nd moment x'`.
 
 # %%
