@@ -124,6 +124,7 @@ class ScanDataAnalyzer:
         self.aborted = False
         self.print_data = False
         self._filters = {}
+        self._order = None           # (column, ascending, per_bin) set by order_by
         self.verbose = True          # print a line for each user filter call
         self.last_merged_columns = []
 
@@ -236,9 +237,13 @@ class ScanDataAnalyzer:
         The selected rows of ``self.data`` (every filter applied).
 
         The index is ``self.data``'s, so a row keeps its id across filters;
-        use ``.iloc`` for positions within the selection.
+        use ``.iloc`` for positions within the selection. Rows are in sfile
+        order unless ``order_by`` has set an order.
         """
-        return self.data[self._mask]
+        active = self.data[self._mask]
+        if self._order is not None:
+            active = self._sort(active, *self._order)
+        return active
 
     @property
     def n_active(self):
@@ -367,7 +372,154 @@ class ScanDataAnalyzer:
         """Yield ``(bin, rows)`` for each bin (default: every bin among the selected shots)."""
         for b in (self.bins() if bins is None else bins):
             yield b, self.rows_in_bin(b)
-    
+
+    # ordering -----------------------------------------------------------
+    @staticmethod
+    def _sort(rows, column, ascending=True, per_bin=False):
+        """``rows`` sorted by ``column`` (NaNs last), grouped by bin first if ``per_bin``."""
+        if column not in rows.columns:
+            raise KeyError(f"Column {column!r} not in the scan data.")
+        by = ['temp Bin number', column] if per_bin else [column]
+        asc = [True, ascending] if per_bin else [ascending]
+        return rows.sort_values(by, ascending=asc, na_position='last', kind='stable')
+
+    def sorted_rows(self, column, ascending=True, per_bin=False):
+        """
+        Selected shots sorted by ``column`` (NaNs last). ``per_bin=True``
+        sorts within each bin, bins in order. Doesn't change the scan.
+        """
+        return self._sort(self.data[self._mask], column, ascending, per_bin)
+
+    def top(self, column, n=1, ascending=False, per_bin=False):
+        """
+        The ``n`` selected shots with the largest ``column`` values
+        (``ascending=True``: the smallest), or the top ``n`` of each bin with
+        ``per_bin=True``. Shots where ``column`` is NaN are never picked.
+        Pass the result as ``rows=``, or index ``.iloc`` / ``['Shotnumber']``.
+        """
+        rows = self.sorted_rows(column, ascending=ascending, per_bin=per_bin)
+        rows = rows[rows[column].notna()]
+        if per_bin:
+            return rows.groupby('temp Bin number', sort=True).head(n)
+        return rows.head(n)
+
+    def order_by(self, column=None, ascending=True, per_bin=False):
+        """
+        Set the order of ``active_data`` (and so of every displayer that
+        walks the shots in order, e.g. waterfalls and ``SampledImages``)
+        until cleared with ``order_by(None)``. Most of the time ``top`` /
+        ``sorted_rows`` are what you want; this is for when every view
+        should follow one order.
+        """
+        if column is None:
+            self._order = None
+            if self.verbose:
+                print('Shots back in sfile order.')
+            return
+        self._check_column(column)
+        self._order = (column, ascending, per_bin)
+        if self.verbose:
+            print(f"Shots ordered by {column} ({'ascending' if ascending else 'descending'}"
+                  f"{', within each bin' if per_bin else ''}).")
+
+    # quick look-ups ----------------------------------------------------
+    def find_columns(self, *terms, regex=False, show=True):
+        """
+        Column names containing every one of ``terms`` (case-insensitive;
+        ``regex=True`` treats them as regular expressions). Prints them
+        with a count of non-NaN values among the selected shots, and
+        returns the list.
+        """
+        flags = re.IGNORECASE
+        cols = [c for c in self.data.columns
+                if all((re.search(t, c, flags) if regex else t.lower() in c.lower()) for t in terms)]
+        if show:
+            active = self.data[self._mask]
+            width = max((len(c) for c in cols), default=0)
+            for c in cols:
+                print(f'  {c:<{width}}  ({int(active[c].notna().sum())} / {len(active)} values)')
+            if not cols:
+                print(f'  no columns contain {" and ".join(map(repr, terms))}')
+        return cols
+
+    def describe_columns(self, columns):
+        """
+        Count, NaN count, mean, std, min, median and max of numeric
+        ``columns`` (a list, or a search term as for ``find_columns``) over
+        the selected shots, as a DataFrame.
+        """
+        if isinstance(columns, str):
+            columns = self.find_columns(columns, show=False)
+        active = self.data[self._mask]
+        numeric = [c for c in columns if pd.api.types.is_numeric_dtype(active[c])]
+        desc = active[numeric].agg(['count', 'mean', 'std', 'min', 'median', 'max']).T
+        desc.insert(1, 'nan', len(active) - desc['count'])
+        return desc
+
+    def shot(self, shotnumber):
+        """One shot's row (from all the data, filtered or not) as a dict."""
+        match = self.data[self.data['Shotnumber'] == int(shotnumber)]
+        if match.empty:
+            raise KeyError(f"No shot {shotnumber} in {self.scan_label}.")
+        return match.iloc[0].to_dict()
+
+    def shot_files(self, shotnumber):
+        """``{diagnostic: path}`` of one shot's registered diagnostic files."""
+        row = self.shot(shotnumber)
+        return {k[:-len(' file_list')]: v for k, v in row.items()
+                if k.endswith(' file_list') and isinstance(v, str) and v}
+
+    def summary(self, show=True):
+        """Date, scan, scan parameter, shots, bins, filters and diagnostics, as text."""
+        lines = [f'{self.scan_data_title()}  ({self.scan_label})']
+        if self.data is None:
+            lines.append('  no data loaded (load_scan_data)')
+        else:
+            active = self.data[self._mask]
+            lines.append(f'  shots      : {len(active)} selected of {len(self.data)}')
+            param = self.scan_parameter
+            if param in active.columns and len(active) and pd.api.types.is_numeric_dtype(active[param]):
+                lines.append(f'  parameter  : {param}  ({active[param].min():g} to {active[param].max():g})')
+            else:
+                lines.append(f'  parameter  : {param}')
+            if 'temp Bin number' in active.columns:
+                lines.append(f'  bins       : {len(self.bins())}')
+            diags = [c[:-len(' file_list')] for c in self.data.columns if c.endswith(' file_list')]
+            lines.append(f"  diagnostics: {', '.join(diags) if diags else 'none registered'}")
+            if self._order is not None:
+                col, asc, per_bin = self._order
+                lines.append(f"  ordered by : {col} ({'ascending' if asc else 'descending'}"
+                             f"{', per bin' if per_bin else ''})")
+            lines.append('  filters    :')
+            lines += ['    ' + line for line in summary(self._filters, self.data).splitlines()]
+        text = '\n'.join(lines)
+        if show:
+            print(text)
+            return None
+        return text
+
+    def filter_outliers(self, column, n_sigma=3.0, per_bin=True, name=None):
+        """
+        Drop shots whose ``column`` is more than ``n_sigma`` robust standard
+        deviations (1.4826 x median absolute deviation) from the median of
+        their bin (``per_bin=True``) or of the whole scan. A named rule
+        (default ``'outliers: <column>'``), computed over all shots, so it
+        doesn't depend on the other filters. NaN values are dropped.
+        """
+        self._check_column(column)
+
+        def within_n_sigma(data):
+            values = data[column]
+            groups = data['temp Bin number'] if per_bin else pd.Series(0, index=data.index)
+            median = values.groupby(groups).transform('median')
+            deviation = (values - median).abs()
+            mad = deviation.groupby(groups).transform('median') * 1.4826
+            return (deviation <= n_sigma * mad).to_numpy()
+
+        within_n_sigma.__name__ = (f'{column} within {n_sigma:g} sigma of its '
+                                   f"{'bin' if per_bin else 'scan'} median")
+        self._add_filter(Filter(name or f'outliers: {column}', 'rows', func=within_n_sigma))
+
     def scan_data_title(self, append_text=None):
         """``'2024-01-31 - s23.txt'`` plus `` - append_text`` if given."""
         parts = [str(self.date) if self.date else None,

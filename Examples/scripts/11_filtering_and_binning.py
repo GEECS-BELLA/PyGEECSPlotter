@@ -8,7 +8,9 @@ Example 01 introduces filters and bins; this one covers them fully:
   columns are added by an analysis or bins change.
 - **bins** are the `temp Bin number` column. It starts as the sfile's
   `Bin #` (one bin per scan step) and `rebin` redefines it from any column.
+- **ranking**: the top N shots by a column, overall or per bin.
 - **re-analysing a subset** only updates those shots' results.
+- quick look-ups: `summary()`, `find_columns`, `describe_columns`, `shot`.
 
 Example data: the BELLA HPD laser focal scan of 2024-01-31, scan 23
 (126 shots, 21 stage positions, camera `CAM-HPD-CCD`).
@@ -20,7 +22,7 @@ import matplotlib.pyplot as plt
 
 from PyGEECSPlotter.scan_data_analyzers import ScanDataAnalyzer
 from PyGEECSPlotter.analyzers import ImageAnalyzer
-from PyGEECSPlotter.displayers import ScalarVsParameter, MeanImagePerBin
+from PyGEECSPlotter.displayers import ScalarVsParameter, MeanImagePerBin, SampledImages
 from PyGEECSPlotter.utils.plotting import configure_plotting
 
 configure_plotting()
@@ -41,8 +43,20 @@ scan = ScanDataAnalyzer(experiment_dir=DATA_ROOT, year=YEAR, month=MONTH, day=DA
 scan.load_scan_data(analyzer=analyzer)
 bg = analyzer.load_data(scan.get_bg_file_path(DIAGNOSTIC, which_scan=3))
 STAGE = scan.scan_parameter
-print(scan.n_active, 'of', len(scan.data), 'shots selected')
-print(scan.filters)
+scan.summary()
+
+# %% [markdown]
+# ## Finding columns
+#
+# An sfile has hundreds of columns. `find_columns` lists the ones containing
+# every search term (case-insensitive; `regex=True` for patterns), with how
+# many selected shots have a value. `describe_columns` gives their statistics.
+# `shot(n)` is one shot's row and `shot_files(n)` its diagnostic file paths.
+
+# %%
+scan.find_columns('CAM-HPD-CCD', 'max')
+print(scan.describe_columns(['HPDmodeMaxCounts', STAGE]).round(1).to_string())
+print(scan.shot_files(37))
 
 # %% [markdown]
 # Loading with an analyzer already adds one rule: shots whose camera file is
@@ -96,6 +110,15 @@ scan.filter_rows(counts_above_bin_median, name='bright half of each bin')
 print(scan.filters)
 
 # %% [markdown]
+# `filter_outliers(column, n_sigma=3)` drops shots more than `n_sigma` robust
+# standard deviations (from the median absolute deviation) away from their
+# bin's median (`per_bin=False`: the whole scan's), e.g. misfires before a fit.
+
+# %%
+scan.filter_outliers(COUNTS, n_sigma=3)
+print(scan.filters)
+
+# %% [markdown]
 # ## Removing and restoring
 #
 # `remove_filter(name)` drops one rule, `clear_filters()` all of them.
@@ -105,6 +128,7 @@ print(scan.filters)
 
 # %%
 scan.remove_filter('bright half of each bin')
+scan.remove_filter(f'outliers: {COUNTS}')
 before = scan.n_active
 
 with scan.filtered():
@@ -136,6 +160,34 @@ for b, rows in scan.iter_bins(scan.bins()[::5]):
 
 centre, spread = scan.compute_bin_summary('mean')     # also 'median', 'std_err', 'max', 'min'
 print('per-bin mean', COUNTS, ':', centre[COUNTS].round(0).astype(int).tolist())
+
+# %% [markdown]
+# ## Ranking shots
+#
+# `top(column, n)` returns the `n` selected shots with the largest values
+# (`ascending=True`: smallest), or the top `n` of each bin with
+# `per_bin=True`; `sorted_rows(column)` returns them all in order. Neither
+# changes the scan. `SampledImages(order_by=..., top=True)` shows them.
+
+# %%
+brightest = scan.top(COUNTS, 5)
+print('5 brightest shots:', brightest['Shotnumber'].astype(int).tolist())
+dimmest_per_bin = scan.top(COUNTS, 1, ascending=True, per_bin=True)
+print('dimmest shot of each bin:', dimmest_per_bin['Shotnumber'].astype(int).tolist()[:8], '...')
+
+scan.display_scan(SampledImages(analyzer, bg=bg, n_samples=6, ncols=6,
+                                order_by=COUNTS, top=True))            # the 6 brightest
+
+# %% [markdown]
+# `order_by(column)` instead sets the order of `scan.active_data` itself, so
+# every view that walks shots in order follows it (waterfalls,
+# `SampledImages` without `top`) until `order_by(None)`. Use it when one
+# order should apply everywhere; otherwise prefer `top` / `sorted_rows`.
+
+# %%
+scan.order_by(COUNTS, ascending=False)
+print('first rows of active_data now:', scan.active_data['Shotnumber'].head(5).astype(int).tolist())
+scan.order_by(None)
 
 # %% [markdown]
 # ## Rebinning
