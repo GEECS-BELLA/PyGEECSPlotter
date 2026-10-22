@@ -66,6 +66,7 @@ class ParallelScanDataAnalyzer(ScanDataAnalyzer):
         write_displayed=False,
         close_displayed=True,
         max_workers=None,
+        keep_unanalysed=True,
         ):
         """
         Thread-parallel counterpart of ``ScanDataAnalyzer.analyze_scan``.
@@ -120,7 +121,7 @@ class ParallelScanDataAnalyzer(ScanDataAnalyzer):
         return self._finish_analyze_scan(
             rows, analyzer, analysis_dir, write_columns_to_sfile=write_columns_to_sfile,
             analysis_label=analysis_label, extra_info_str=extra_info_str,
-            overwrite_columns=overwrite_columns,
+            overwrite_columns=overwrite_columns, keep_unanalysed=keep_unanalysed,
         )
 
     def _iter_shots_parallel(self, analyzer, bg=None, rows=None, max_workers=None,

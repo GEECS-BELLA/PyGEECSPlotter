@@ -57,7 +57,8 @@ class DataDirAnalyzer(ScanDataAnalyzer):
                                   add_columns_df, 
                                   diagnostic,
                                   overwrite_columns=True, 
-                                  analysis_label=None, 
+                                  analysis_label=None,
+                                  keep_unanalysed=True,
                                   ):
         
         add_columns_df = add_columns_df.select_dtypes(include=[np.number, 'float64', 'int64', 'bool'])

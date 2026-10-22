@@ -25,6 +25,8 @@ from PyGEECSPlotter.utils.navigation_utils import (
 from PyGEECSPlotter.utils.io_utils import parse_controls_from_python, write_controls_from_python
 from PyGEECSPlotter.scan_data_analyzers.binning import compute_bin_numbers
 from PyGEECSPlotter.scan_data_analyzers.filters import Filter, combined_mask, summary
+from PyGEECSPlotter.scan_data_analyzers.sfile_frame import (
+    drop_incomplete_rows, merge_results, rename_result_columns)
 from PyGEECSPlotter.analyzers.multi_diagnostic_analyzer import MultiDiagnosticAnalyzer
 
 import PyGEECSPlotter.utils.plotting as gplt
@@ -368,24 +370,8 @@ class ScanDataAnalyzer:
 
     @staticmethod
     def _drop_incomplete_rows(sfile_data):
-        """
-        Drop sfile rows with no ``scan`` or ``Shotnumber`` (e.g. a partial
-        last row logged as the scan stopped). They can't be matched to any
-        diagnostic file, and building file names from them fails. Only the
-        loaded data is affected: ``merge_data_frame_to_sfile`` re-reads the
-        sfile and left-joins onto it, so the row stays in the file.
-        """
-        keys = [c for c in ('scan', 'Shotnumber') if c in sfile_data.columns]
-        if not keys:
-            return sfile_data
-        incomplete = sfile_data[keys].isna().any(axis=1)
-        if incomplete.any():
-            # +2: file line number (1-based, after the header line)
-            lines = ', '.join(str(int(i) + 2) for i in np.flatnonzero(incomplete))
-            print('Warning: dropping %d sfile row(s) with no scan / Shotnumber (file line %s)'
-                  % (incomplete.sum(), lines))
-            sfile_data = sfile_data[~incomplete].reset_index(drop=True)
-        return sfile_data
+        """Rows without scan / Shotnumber removed (see ``sfile_frame.drop_incomplete_rows``)."""
+        return drop_incomplete_rows(sfile_data)
 
     def get_data_columns(self):
         if self.data is not None:
@@ -839,6 +825,7 @@ class ScanDataAnalyzer:
         write_lineouts=False,
         write_displayed=False,
         close_displayed=True,
+        keep_unanalysed=True,
         ):
         """
         Run the per-shot pipeline over active shots and handle side effects.
@@ -871,6 +858,11 @@ class ScanDataAnalyzer:
         extra_info_str : str, optional
             Extra tag inserted into the summary filename (and appended to the
             merged sfile column names, same as ``analysis_label``).
+        keep_unanalysed : bool, optional
+            True (default): re-running an analysis on a subset of shots only
+            replaces those shots' values; the other shots keep theirs, in
+            memory and in the sfile. False: each result column is replaced
+            whole, so shots not analysed this time become NaN.
 
         Returns
         -------
@@ -898,7 +890,7 @@ class ScanDataAnalyzer:
         return self._finish_analyze_scan(
             rows, analyzer, analysis_dir, write_columns_to_sfile=write_columns_to_sfile,
             analysis_label=analysis_label, extra_info_str=extra_info_str,
-            overwrite_columns=overwrite_columns,
+            overwrite_columns=overwrite_columns, keep_unanalysed=keep_unanalysed,
         )
 
     @staticmethod
@@ -958,7 +950,8 @@ class ScanDataAnalyzer:
         return analysis_dir
 
     def _finish_analyze_scan(self, rows, analyzer, analysis_dir, write_columns_to_sfile,
-                             analysis_label, extra_info_str, overwrite_columns):
+                             analysis_label, extra_info_str, overwrite_columns,
+                             keep_unanalysed=True):
         """
         Post-loop tail of ``analyze_scan``: build ``add_columns_df``, merge
         the renamed columns into ``self.data``, and optionally write them
@@ -985,10 +978,7 @@ class ScanDataAnalyzer:
             self.last_merged_columns = [
                 c for c in renamed_df.columns if c not in ('scan', 'Shotnumber')
             ]
-            self.data = self.data.drop(
-                columns=[c for c in renamed_df.columns
-                         if c in self.data.columns and c not in ('scan', 'Shotnumber')]
-            ).merge(renamed_df, on=['scan', 'Shotnumber'], how='left')
+            self.data = merge_results(self.data, renamed_df, keep_unanalysed=keep_unanalysed)
 
             if write_columns_to_sfile:
                 if analysis_dir is None:
@@ -1003,6 +993,7 @@ class ScanDataAnalyzer:
                     diag_str,
                     overwrite_columns=overwrite_columns,
                     analysis_label=analysis_label,
+                    keep_unanalysed=keep_unanalysed,
                 )
 
                 summary_path = os.path.join(
@@ -1015,28 +1006,9 @@ class ScanDataAnalyzer:
 
     @staticmethod
     def _rename_add_columns(add_columns_df, diagnostic, analysis_label):
-        """
-        Prefix per-shot result columns with the diagnostic (and optional
-        label), the same renaming ``merge_data_frame_to_sfile`` applies —
-        shared so ``self.data`` and the sfile end up with identical names.
-        ``scan`` / ``Shotnumber`` are left untouched.
-        """
-        add_columns_df = add_columns_df.select_dtypes(include=[np.number, 'float64', 'int64', 'bool'])
-        if not diagnostic and not analysis_label:
-            return add_columns_df
+        """Numeric result columns named as in the sfile (see ``sfile_frame.rename_result_columns``)."""
+        return rename_result_columns(add_columns_df, diagnostic, analysis_label)
 
-        def rename_columns(col):
-            if col in ('scan', 'Shotnumber'):
-                return col
-            new_col = col
-            if diagnostic:
-                new_col = f"{diagnostic} {new_col}"
-            if analysis_label:
-                new_col = f"{new_col} {analysis_label}"
-            return new_col
-
-        return add_columns_df.rename(columns=rename_columns)
-    
     def _shot_analysis_dir(self, scan):
         """Analysis dir (created if needed) for one shot's own scan number."""
         return get_analysis_dir(self.top_dir, int(scan), make_dir=True)
@@ -1075,60 +1047,46 @@ class ScanDataAnalyzer:
             displayer.export(self, suffix=suffix)
         return fig, ax
 
-    def merge_data_frame_to_sfile(self, 
-                                  add_columns_df, 
+    def merge_data_frame_to_sfile(self,
+                                  add_columns_df,
                                   diagnostic,
-                                  overwrite_columns=True, 
-                                  analysis_label=None, 
+                                  overwrite_columns=True,
+                                  analysis_label=None,
+                                  keep_unanalysed=True,
                                   ):
-        # Load the original data from the sfile
-        sfile_data = pd.read_csv(self.sfilename, sep='\t')
-        
-        # Filter out any non-numeric columns in add_columns_df
-        add_columns_df = add_columns_df.select_dtypes(include=[np.number, 'float64', 'int64', 'bool'])
+        """
+        Write per-shot result columns into the sfile on disk (and a summary
+        file next to it). The sfile is re-read first, so columns written by
+        others since loading are kept.
 
-        # Apply renaming to add_columns_df, excluding 'scan' and 'Shotnumber'
-        if diagnostic or analysis_label:
-            def rename_columns(col):
-                if col in ['scan', 'Shotnumber']:
-                    return col  # Do not rename 'scan' or 'Shotnumber'
-                new_col = col
-                if diagnostic:
-                    new_col = f"{diagnostic} {new_col}"
-                if analysis_label:
-                    new_col = f"{new_col} {analysis_label}"
-                return new_col
-
-            add_columns_df = add_columns_df.rename(columns=rename_columns)
+        overwrite_columns=True: an existing column of the same name is
+            updated (see ``keep_unanalysed``). False: the new columns are
+            added alongside with a numeric suffix.
+        keep_unanalysed=True: only the shots in ``add_columns_df`` are
+            updated; other shots keep their values. False: the whole column
+            is replaced, so shots absent from ``add_columns_df`` become NaN.
+        """
+        sfile_data = pd.read_csv(self.sfilename, sep='	')
+        add_columns_df = rename_result_columns(add_columns_df, diagnostic, analysis_label)
 
         if overwrite_columns:
-            # Drop the overlapping columns from sfile_data so they can be overwritten
-            sfile_data = sfile_data.drop(columns=[col for col in add_columns_df.columns 
-                                                  if col in sfile_data.columns and col not in ['scan', 'Shotnumber']])
-            # Merge to overwrite columns
-            merged_df = pd.merge(sfile_data, add_columns_df, on=['scan', 'Shotnumber'], how='left')
+            merged_df = merge_results(sfile_data, add_columns_df, keep_unanalysed=keep_unanalysed)
         else:
             # Use suffixes to avoid column conflicts
-            merged_df = pd.merge(sfile_data, add_columns_df, on=['scan', 'Shotnumber'], how='left', suffixes=('', '_2'))
-
-            # Rename columns with incremental suffixes if needed
+            merged_df = pd.merge(sfile_data, add_columns_df, on=['scan', 'Shotnumber'], how='left',
+                                 suffixes=('', '_2'))
             col_rename = {}
             for col in merged_df.columns:
                 if col.endswith('_2'):
                     base_name = col[:-2]
-                    # Ensure unique naming by counting existing occurrences
                     suffix_num = sum(base_name in c for c in merged_df.columns) - 1
-                    new_name = f"{base_name}_{suffix_num}"
-                    col_rename[col] = new_name
-
-            # Apply the renaming to avoid conflicts
+                    col_rename[col] = f"{base_name}_{suffix_num}"
             merged_df = merged_df.rename(columns=col_rename)
 
-        # Save the merged data back to the sfile
         analysis_dir = get_analysis_dir(self.top_dir, self.scan, make_dir=True)
-        add_columns_path = os.path.join(self.analysis_dir, f"Scan{int(self.scan):03d}_{diagnostic}_{analysis_label}_Summary.txt")
-        add_columns_df.to_csv( add_columns_path , index=False, sep='\t' )
-        merged_df.to_csv(self.sfilename, index=False, sep='\t')
+        add_columns_path = os.path.join(analysis_dir, f"Scan{int(self.scan):03d}_{diagnostic}_{analysis_label}_Summary.txt")
+        add_columns_df.to_csv(add_columns_path, index=False, sep='	')
+        merged_df.to_csv(self.sfilename, index=False, sep='	')
         print(f'Columns added to {self.sfilename}')
 
     def mean_std_diagnostic(self, analyzer, bg=None, ddof=0, show_progress=False, rows=None):
