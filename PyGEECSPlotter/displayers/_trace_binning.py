@@ -9,28 +9,16 @@ import pandas as pd
 
 def mean_traces_per_bin(scan, analyzer, bg=None, bins=None):
     """Mean (and std) trace dict for each bin, in bin order."""
-    if bins is None:
-        bins = np.unique(scan.active_data['temp Bin number'])
-    else:
-        bins = np.asarray(list(bins))
-
-    per_bin = []
-    saved = scan.save_mask()
-    try:
-        for b in bins:
-            scan.restore_mask(saved)
-            scan.filter_scan_data('temp Bin number', b - 0.1, b + 0.1)
-            per_bin.append(_mean_over_active(scan, analyzer, bg))
-    finally:
-        scan.restore_mask(saved)
+    bins = scan.bins() if bins is None else np.asarray(list(bins))
+    per_bin = [_mean_over_active(scan, analyzer, bg, rows=rows) for _, rows in scan.iter_bins(bins)]
 
     return bins, per_bin
 
 
-def _mean_over_active(scan, analyzer, bg):
-    """Stack the currently-active shots and average them column-wise."""
+def _mean_over_active(scan, analyzer, bg, rows=None):
+    """Stack the selected shots (or ``rows``) and average them column-wise."""
     stacks = {}
-    for _, data, _, _ in scan._iter_shots(analyzer, bg=bg, show_progress=False):
+    for _, data, _, _ in scan._iter_shots(analyzer, bg=bg, show_progress=False, rows=rows):
         if data is None:
             continue
         for key, df in data.items():

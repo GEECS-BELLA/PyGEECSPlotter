@@ -63,32 +63,21 @@ def mean_lineouts_per_bin(scan, analyzer, bg=None, bins=None, axes=None, align='
     matching ``'{axis}_lo'`` entry. ``align`` is how shots on shifted
     axes are put on one axis; see ``on_grid``.
     """
-    if bins is None:
-        bins = np.unique(scan.active_data['temp Bin number'])
-    else:
-        bins = np.asarray(list(bins))
-
-    per_bin = []
-    saved = scan.save_mask()
-    try:
-        for b in bins:
-            scan.restore_mask(saved)
-            scan.filter_scan_data('temp Bin number', b - 0.1, b + 0.1)
-            per_bin.append(mean_lineouts_over_active(scan, analyzer, bg, axes, align))
-    finally:
-        scan.restore_mask(saved)
+    bins = scan.bins() if bins is None else np.asarray(list(bins))
+    per_bin = [mean_lineouts_over_active(scan, analyzer, bg, axes, align, rows=rows)
+               for _, rows in scan.iter_bins(bins)]
 
     return bins, per_bin
 
 
-def mean_lineouts_over_active(scan, analyzer, bg=None, axes=None, align='snap'):
+def mean_lineouts_over_active(scan, analyzer, bg=None, axes=None, align='snap', rows=None):
     """
-    ``{axis: (coord, mean, std)}`` over the currently-active shots (the
-    whole scan, unless the caller has filtered it), or None if no shot
-    gave a lineout. The first shot's axis is the reference; see ``on_grid``.
+    ``{axis: (coord, mean, std)}`` over the selected shots (or ``rows``,
+    e.g. one bin), or None if no shot gave a lineout. The first shot's axis
+    is the reference; see ``on_grid``.
     """
     stacks = {}
-    for _, _, _, aux in scan._iter_shots(analyzer, bg=bg, show_progress=False):
+    for _, _, _, aux in scan._iter_shots(analyzer, bg=bg, show_progress=False, rows=rows):
         if not aux:
             continue
         found_axes = axes if axes is not None else [

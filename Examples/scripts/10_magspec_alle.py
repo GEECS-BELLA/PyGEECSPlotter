@@ -67,7 +67,7 @@ alle = MagSpecAllEAnalyzer(CALIB_DIR, CALIB_DAY, bg_dir=os.path.join(new_scan().
                            output_diagnostic=SAVED_DIAG)
 scan = new_scan()
 scan.load_scan_data(analyzer=alle)
-scan.filter_scan_data_by_array('Shotnumber', scan.active_data['Shotnumber'].values[::100])
+scan.filter_values('Shotnumber', scan.active_data['Shotnumber'].values[::100], name='every 100th')
 df = scan.analyze_scan(alle, write_analyzed=WRITE_ANALYZED, write_columns_to_sfile=WRITE_SFILE,
                        analysis_label=LABEL if WRITE_SFILE else '')
 print(len(df), 'shots analysed; charge (pC):', df['charge_pC'].round(1).tolist())

@@ -90,7 +90,7 @@ for name in ['fwhm x', 'fwhm y', 'max_counts']:
 lineouts = dict(bg=bg, align='snap', output_subdir=OUTPUT_SUBDIR)
 scan.display_scan(LineoutWaterfall(analyzer, axis='x', display_dict=analyzer.display_dict, **lineouts))
 # this scan has ~140 stage positions: show every 10th bin in the panel grid
-some_bins = sorted(scan.active_data['temp Bin number'].unique())[::10]
+some_bins = scan.bins()[::10]
 scan.display_scan(LineoutMeanPerBin(analyzer, axes=['x', 'y'], bins=some_bins, ncols=5,
                                     label_column=scan.scan_parameter, **lineouts))
 scan.display_scan(LineoutMeanWaterfall(analyzer, axis='x', display_dict=analyzer.display_dict,

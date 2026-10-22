@@ -14,6 +14,7 @@ import datetime
 import inspect
 import warnings
 import pandas as pd
+from contextlib import contextmanager
 from pathlib import Path
 from tqdm import tqdm
 
@@ -23,6 +24,7 @@ from PyGEECSPlotter.utils.navigation_utils import (
 )
 from PyGEECSPlotter.utils.io_utils import parse_controls_from_python, write_controls_from_python
 from PyGEECSPlotter.scan_data_analyzers.binning import compute_bin_numbers
+from PyGEECSPlotter.scan_data_analyzers.filters import Filter, combined_mask, summary
 from PyGEECSPlotter.analyzers.multi_diagnostic_analyzer import MultiDiagnosticAnalyzer
 
 import PyGEECSPlotter.utils.plotting as gplt
@@ -44,6 +46,13 @@ def _aux_kwarg(method, aux):
     except (TypeError, ValueError):
         return {}
     return {'aux': aux} if 'aux' in params else {}
+
+
+class FilterSummary(str):
+    """``scan.filters``: a string that prints as a readable list in the REPL."""
+
+    def __repr__(self):
+        return str(self)
 
 
 class ScanDataAnalyzer:
@@ -89,7 +98,8 @@ class ScanDataAnalyzer:
         self.print_data = False
 
         self.scan_title = self.scan_data_title()
-        self._mask = None
+        self._filters = {}
+        self.verbose = True          # print a line for each user filter call
         self.last_merged_columns = []
 
     def _init_from_sfilename(self):
@@ -160,23 +170,156 @@ class ScanDataAnalyzer:
                 f"experiment_dir={self.experiment_dir})")
     
     
+    # -------------------------------------------------------------------
+    # Shot selection: named filter rules, re-evaluated against self.data
+    # (see scan_data_analyzers/filters.py). Nothing here modifies self.data.
+    # -------------------------------------------------------------------
     def _init_mask(self):
-        """Initialize the inclusion mask to include all rows."""
-        self._mask = np.ones(len(self.data), dtype=bool)
+        """Clear every filter rule, including the missing-file rules."""
+        self._filters = {}
 
-    def save_mask(self):
-        """Save the current mask state."""
-        return self._mask.copy()
-
-    def restore_mask(self, saved_mask):
-        """Restore a previously saved mask state."""
-        self._mask = saved_mask
-
+    @property
+    def _mask(self):
+        """Boolean ndarray over self.data: the rows every filter keeps."""
+        if self.data is None:
+            return None
+        return combined_mask(self._filters, self.data)
 
     @property
     def active_data(self):
-        """Return only the rows currently included by the mask."""
-        return self.data[self._mask].reset_index(drop=True)
+        """
+        The selected rows of ``self.data`` (every filter applied).
+
+        The index is ``self.data``'s, so a row keeps its id across filters;
+        use ``.iloc`` for positions within the selection.
+        """
+        return self.data[self._mask]
+
+    @property
+    def n_active(self):
+        """Number of selected shots."""
+        return int(self._mask.sum())
+
+    @property
+    def filters(self):
+        """Printable summary of the filters: each rule and how many shots remain."""
+        return FilterSummary(summary(self._filters, self.data))
+
+    def _add_filter(self, rule, quiet=False):
+        self._filters[rule.name] = rule
+        if self.verbose and not quiet:
+            print(f'{self.n_active} / {len(self.data)} shots after {rule.describe()}')
+
+    def filter(self, column, low=None, high=None, exclusive=False, name=None):
+        """
+        Keep shots with ``low <= column <= high`` (bounds inclusive; either
+        may be None for a one-sided cut). NaNs are dropped. ``exclusive=True``
+        keeps the shots outside the range instead.
+
+        Rules combine with AND. ``name`` (default: the column) identifies the
+        rule for ``remove_filter``; adding a rule with an existing name
+        replaces it.
+        """
+        self._check_column(column)
+        self._add_filter(Filter(name or column, 'range', column=column, low=low, high=high,
+                                exclusive=exclusive))
+
+    def filter_values(self, column, values, exclusive=False, name=None):
+        """Keep shots whose ``column`` value is in ``values`` (or not, with ``exclusive=True``)."""
+        self._check_column(column)
+        self._add_filter(Filter(name or f'{column} values', 'values', column=column,
+                                values=np.asarray(values), exclusive=exclusive))
+
+    def filter_rows(self, rule, name):
+        """
+        Keep shots where ``rule`` is True. ``rule`` is either a function
+        ``rule(data) -> bool Series / array`` (re-evaluated whenever the data
+        changes) or a fixed boolean array over ``self.data``.
+        """
+        if callable(rule):
+            func = rule
+        else:
+            fixed = pd.Series(np.asarray(rule, dtype=bool), index=self.data.index)
+            func = lambda data: fixed.reindex(data.index, fill_value=False).to_numpy()  # noqa: E731
+        self._add_filter(Filter(name, 'rows', func=func))
+
+    def remove_filter(self, name):
+        """Remove one filter rule by name."""
+        if name not in self._filters:
+            raise KeyError(f"No filter named {name!r}. Filters: {list(self._filters)}")
+        del self._filters[name]
+        if self.verbose:
+            print(f'{self.n_active} / {len(self.data)} shots after removing {name!r}')
+
+    def clear_filters(self, keep_file_filters=True):
+        """Remove every filter (by default keeping the missing-file rules)."""
+        self._filters = {k: f for k, f in self._filters.items() if keep_file_filters and f.file_rule}
+        if self.verbose:
+            print(f'Filters cleared. {self.n_active} / {len(self.data)} shots included.')
+
+    @contextmanager
+    def temporary_filter(self, column, low=None, high=None, exclusive=False):
+        """
+        ``with scan.temporary_filter(col, lo, hi): ...`` applies a range
+        filter inside the block and restores the previous filters on exit,
+        even on error.
+        """
+        saved = dict(self._filters)
+        try:
+            self._check_column(column)
+            self._add_filter(Filter(f'temporary {column}', 'range', column=column, low=low,
+                                    high=high, exclusive=exclusive), quiet=True)
+            yield self
+        finally:
+            self._filters = saved
+
+    @contextmanager
+    def filtered(self):
+        """
+        ``with scan.filtered(): scan.filter(...); ...`` restores the filters
+        as they were on entry when the block exits, whatever was added or
+        removed inside.
+        """
+        saved = dict(self._filters)
+        try:
+            yield self
+        finally:
+            self._filters = saved
+
+    def save_mask(self):
+        """Snapshot of the current filters, for ``restore_mask`` (prefer ``filtered()``)."""
+        return dict(self._filters)
+
+    def restore_mask(self, saved):
+        """Restore filters saved by ``save_mask``."""
+        self._filters = dict(saved)
+
+    def _unique_name(self, base):
+        """``base``, or ``base #2``, ``#3``... if a filter already has that name."""
+        name, i = base, 1
+        while name in self._filters:
+            i += 1
+            name = f'{base} #{i}'
+        return name
+
+    def _check_column(self, column):
+        if column not in self.data.columns:
+            raise KeyError(f"Column {column!r} not in the scan data.")
+
+    # bins ---------------------------------------------------------------
+    def bins(self):
+        """Sorted bin numbers (``temp Bin number``) present among the selected shots."""
+        return np.unique(self.active_data['temp Bin number'].to_numpy())
+
+    def rows_in_bin(self, b):
+        """Selected shots in bin ``b`` (pass as ``rows=`` to ``_iter_shots`` etc.)."""
+        active = self.active_data
+        return active[active['temp Bin number'] == b]
+
+    def iter_bins(self, bins=None):
+        """Yield ``(bin, rows)`` for each bin (default: every bin among the selected shots)."""
+        for b in (self.bins() if bins is None else bins):
+            yield b, self.rows_in_bin(b)
     
     def scan_data_title(self, append_text=None):
         if append_text is not None:
@@ -366,14 +509,11 @@ class ScanDataAnalyzer:
         elif os.path.exists(analysis_diag_dir):
             analysis_diagnostic = True
         else:
-            print('No directory found')
+            print(f'No {diagnostic} directory found for Scan{self.scan:03d}')
             self.data['%s file_list' % diagnostic] = ''
             self.data['%s file_exists' % diagnostic] = 0
             if remove_missing_files:
-                missing_condition = self.data['%s file_exists' % diagnostic] == 0
-                self._mask = self._mask & ~missing_condition.to_numpy()
-                if self.print_data:
-                    print('Masked out %d lines from scan_data for missing files' % missing_condition.sum())
+                self._add_file_filter(diagnostic)
             return
 
         # Build all filenames at once using vectorised string formatting
@@ -415,100 +555,47 @@ class ScanDataAnalyzer:
             print('Files found: %d / %d' % (len(self.data) - n_missing, len(self.data)))
 
         if remove_missing_files:
-            missing_condition = self.data['%s file_exists' % diagnostic] == 0
-            n_missing = missing_condition.sum()
-            self._mask = self._mask & ~missing_condition.to_numpy()
-            if self.print_data:
-                print('Masked out %d lines from scan_data for missing files' % n_missing)
+            self._add_file_filter(diagnostic)
 
-
+    def _add_file_filter(self, diagnostic):
+        """Named rule dropping shots whose ``diagnostic`` file is missing."""
+        column = '%s file_exists' % diagnostic
+        self._filters[f'files: {diagnostic}'] = Filter(
+            f'files: {diagnostic}', 'range', column=column, low=1, file_rule=True)
+        if self.print_data:
+            n_missing = int((self.data[column] == 0).sum())
+            print('Masked out %d lines from scan_data for missing files' % n_missing)
 
     def filter_scan_data(self, filter_parameter, lower_bound, upper_bound,
                         filter_exclusive=False, print_data=False):
         """
-        Filter scan data based on a specified parameter and value range.
-
-        Updates the internal boolean mask so that subsequent filters are
-        combined with AND logic. The underlying `self.data` is never modified.
-
-        Parameters
-        ----------
-        filter_parameter : str
-            Column name in `self.data` to apply the filter on.
-        lower_bound : float
-            Lower bound of the filtering range.
-        upper_bound : float
-            Upper bound of the filtering range.
-        filter_exclusive : bool, optional
-            If True, keep rows outside the range (exclude rows inside).
-            If False, keep rows inside the range (exclude rows outside).
+        Legacy range filter: keeps ``lower_bound < column < upper_bound``
+        (bounds **excluded**), or the rows outside with ``filter_exclusive``.
+        Prefer ``filter`` (bounds included, one-sided cuts, named rules).
+        As before, repeated calls stack (AND), even on the same column.
         """
+        self._check_column(filter_parameter)
+        lo, hi, col = lower_bound, upper_bound, filter_parameter
 
-        if not hasattr(self, '_mask') or self._mask is None:
-            self._init_mask()
+        def strict_range(data):
+            values = data[col]
+            if filter_exclusive:
+                return ((values < lo) | (values > hi)).to_numpy()
+            return ((values > lo) & (values < hi)).to_numpy()
 
-        if filter_exclusive:
-            new_condition = (
-                (self.data[filter_parameter] < lower_bound) |
-                (self.data[filter_parameter] > upper_bound)
-            )
-        else:
-            new_condition = (
-                (self.data[filter_parameter] > lower_bound) &
-                (self.data[filter_parameter] < upper_bound)
-            )
+        strict_range.__name__ = (f'NOT {lo:g} < {col} < {hi:g}' if filter_exclusive
+                                 else f'{lo:g} < {col} < {hi:g}')
+        self._add_filter(Filter(self._unique_name(col), 'rows', func=strict_range),
+                         quiet=not print_data)
 
-        self._mask = self._mask & new_condition.to_numpy()
-
-        if print_data:
-            print(
-                '%d / %d shots included. Filtered based on: %s'
-                % (self._mask.sum(), len(self.data), get_parameter_alias(filter_parameter))
-            )
-
-
-    def filter_scan_data_by_array(self, filter_parameter, values,
-                                filter_exclusive=False):
-        """
-        Filter scan data based on whether a parameter value is in a given array.
-
-        Updates the internal boolean mask so that subsequent filters are
-        combined with AND logic. The underlying `self.data` is never modified.
-
-        Parameters
-        ----------
-        filter_parameter : str
-            Column name in `self.data` to filter on.
-        values : array-like
-            List, numpy array, or pandas Series of allowed (or excluded) values.
-        filter_exclusive : bool, optional
-            If True, keep rows whose values are NOT in `values`.
-            If False, keep rows whose values ARE in `values`.
-        """
-
-        if not hasattr(self, '_mask') or self._mask is None:
-            self._init_mask()
-
-        values = np.asarray(values)
-
-        if filter_exclusive:
-            new_condition = ~self.data[filter_parameter].isin(values)
-        else:
-            new_condition = self.data[filter_parameter].isin(values)
-
-        self._mask = self._mask & new_condition.to_numpy()
-
-        print(
-            '%d / %d shots included. Filtered based on: %s'
-            % (self._mask.sum(), len(self.data), get_parameter_alias(filter_parameter))
-        )
+    def filter_scan_data_by_array(self, filter_parameter, values, filter_exclusive=False):
+        """Legacy name for ``filter_values`` (repeated calls stack, as before)."""
+        self.filter_values(filter_parameter, values, exclusive=filter_exclusive,
+                           name=self._unique_name(f'{filter_parameter} values'))
 
     def reset_filters(self):
-        """
-        Reset the inclusion mask so that all rows in `self.data` are included.
-        """
-        self._init_mask()
-        print('Filters reset. %d shots included.' % self._mask.sum())
+        """Legacy name for ``clear_filters()`` (missing-file rules are kept)."""
+        self.clear_filters()
 
     def rebin(self, method='unique', scan_parameter=None, **kwargs):
         """
@@ -685,6 +772,21 @@ class ScanDataAnalyzer:
 
         return context, data, results, aux
 
+    def _selected_rows(self, rows=None):
+        """
+        ``rows`` restricted to the selected shots (``active_data`` if None).
+        Rows the filters exclude are dropped with a warning, so a stale
+        subset can't bring back shots that have been filtered out.
+        """
+        if rows is None:
+            return self.active_data
+        keep = rows.index.isin(self.active_data.index)
+        if not keep.all():
+            warnings.warn(f"{int((~keep).sum())} of {len(rows)} requested rows are excluded by "
+                          f"the current filters and were skipped.", stacklevel=3)
+            rows = rows[keep]
+        return rows
+
     def _iter_shots(self, analyzer, bg=None, show_progress=True, rows=None):
         """
         Yield ``(context, data, results, aux)`` for each shot.
@@ -703,9 +805,9 @@ class ScanDataAnalyzer:
         show_progress : bool, optional
             Wrap iteration in a tqdm progress bar.
         rows : DataFrame, optional
-            Subset of rows to iterate, typically a slice/sample of
-            ``active_data``. Defaults to the full ``active_data``. Lets
-            callers process only selected shots without loading the rest.
+            Subset of rows to iterate, typically a slice / sample of
+            ``active_data`` or ``rows_in_bin(b)``. Defaults to the full
+            ``active_data``; rows outside the current selection are skipped.
 
         Yields
         ------
@@ -718,8 +820,7 @@ class ScanDataAnalyzer:
         aux : dict
             Auxiliary outputs (lineouts, etc.).
         """
-        if rows is None:
-            rows = self.active_data
+        rows = self._selected_rows(rows)
         it = rows.iterrows()
         if show_progress:
             it = tqdm(it, total=rows.shape[0])
@@ -1030,7 +1131,7 @@ class ScanDataAnalyzer:
         merged_df.to_csv(self.sfilename, index=False, sep='\t')
         print(f'Columns added to {self.sfilename}')
 
-    def mean_std_diagnostic(self, analyzer, bg=None, ddof=0, show_progress=False):
+    def mean_std_diagnostic(self, analyzer, bg=None, ddof=0, show_progress=False, rows=None):
         """
         Pixel-wise mean / std of analyzed data across all active shots.
 
@@ -1042,6 +1143,8 @@ class ScanDataAnalyzer:
             Delta degrees of freedom (0 = population std, 1 = sample std).
         show_progress : bool, optional
             Show a tqdm bar over shots.
+        rows : DataFrame, optional
+            Shots to use (e.g. ``scan.rows_in_bin(b)``); default all selected shots.
 
         Returns
         -------
@@ -1049,7 +1152,7 @@ class ScanDataAnalyzer:
         """
         arrs = [
             np.asarray(d) for _, d, _, _ in self._iter_shots(
-                analyzer, bg=bg, show_progress=show_progress
+                analyzer, bg=bg, show_progress=show_progress, rows=rows
             )
             if d is not None
         ]
@@ -1089,31 +1192,19 @@ class ScanDataAnalyzer:
             NaN-filled for bins that produced no data.
         std_per_bin : np.ndarray, shape (B, *data_shape) or None
 
-        Notes
-        -----
-        Restores the scan's filter mask after running, regardless of error.
         """
-        if bins is None:
-            bins = np.unique(self.active_data['temp Bin number'])
-        bins = np.asarray(list(bins))
+        bins = self.bins() if bins is None else np.asarray(list(bins))
 
         mean_per_bin = [None] * len(bins)
         std_per_bin = [None] * len(bins)
-        saved = self.save_mask()
         data_shape = None
-
-        try:
-            for i, b in enumerate(bins):
-                self.restore_mask(saved)
-                self.filter_scan_data('temp Bin number', b - 0.1, b + 0.1)
-                mean_data, std_data = self.mean_std_diagnostic(analyzer, bg=bg, ddof=ddof)
-                if mean_data is None:
-                    continue
-                data_shape = mean_data.shape
-                mean_per_bin[i] = mean_data
-                std_per_bin[i] = std_data
-        finally:
-            self.restore_mask(saved)
+        for i, (b, rows) in enumerate(self.iter_bins(bins)):
+            mean_data, std_data = self.mean_std_diagnostic(analyzer, bg=bg, ddof=ddof, rows=rows)
+            if mean_data is None:
+                continue
+            data_shape = mean_data.shape
+            mean_per_bin[i] = mean_data
+            std_per_bin[i] = std_data
 
         if data_shape is None:
             return bins, None, None

@@ -59,20 +59,30 @@ scan.reset_bins()
 # %% [markdown]
 # ## Filter shots
 #
-# `filter_scan_data(column, low, high)` keeps rows inside the range; filters
-# stack. `filter_scan_data_by_array` keeps rows whose value is in a list.
-# `reset_filters()` undoes them all, and `save_mask()` / `restore_mask()`
-# bracket a temporary selection.
+# Filters are named rules kept on the scan; `scan.active_data` is the rows
+# every rule keeps. They are re-checked against the current data, so they
+# stay correct when columns are added or bins change.
+#
+# - `filter(column, low, high)`: keep `low <= value <= high` (either bound
+#   may be `None`); `exclusive=True` keeps the outside instead
+# - `filter_values(column, values)`: keep rows whose value is in a list
+# - `remove_filter(name)` / `clear_filters()`; `scan.filters` lists them
+#   (shots with missing diagnostic files are a rule too, kept by `clear_filters`)
+# - `with scan.filtered(): ...` or `with scan.temporary_filter(...)` undoes
+#   whatever the block changed when it ends
 
 # %%
-scan.filter_scan_data(COUNTS, 200, 4096)
-print('after counts filter:', len(scan.active_data), 'of', len(scan.data))
+scan.filter(COUNTS, 200, 4096)
+scan.filter(scan.scan_parameter, 215, 235, name='near focus')
+print(scan.filters)
 
-saved = scan.save_mask()
-scan.filter_scan_data_by_array('Shotnumber', scan.active_data['Shotnumber'].values[::2])
-print('every other shot   :', len(scan.active_data))
-scan.restore_mask(saved)
-print('restored           :', len(scan.active_data))
+with scan.filtered():
+    scan.filter_values('Shotnumber', scan.active_data['Shotnumber'].values[::2], name='every other')
+    print('inside the block:', scan.n_active, 'shots')
+print('after the block :', scan.n_active, 'shots')
+
+scan.remove_filter('near focus')
+print('one filter left :', scan.n_active, 'of', len(scan.data))
 
 # %% [markdown]
 # ## Scalar vs scan parameter, with a fit
