@@ -9,7 +9,8 @@
     widgets            ipywidgets pickers
     analysis_2d_utils  image maths: ROI, threshold, centroids, moments, lineouts, masks
     analysis_1d_utils  lineout / trace / spectrum maths: widths, centroids, resampling
-    io_utils           controls JSON, lineout text files, scaled 16-bit PNGs
+    io_utils           controls JSON, lineout text files, scaled 16-bit PNGs, file_lock
+    tdms_utils         reading a scan's .tdms (one row per shot) while it is being written
     general            deprecated re-exports of the old ``PyGEECSPlotter.utils`` module
 
 ``from PyGEECSPlotter.utils import <name>`` still works for names from the old
