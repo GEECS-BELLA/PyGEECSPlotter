@@ -904,6 +904,23 @@ class ScanDataAnalyzer:
 
         return context, data, results, aux
 
+    def _process_row_and_write(self, analyzer, bg, row, write_analyzed=False, write_lineouts=False):
+        """
+        ``_process_row``, then (if ``write_analyzed``) the shot's analysed
+        files, in the calling thread. Used by the worker threads of
+        ``analyze_scan`` and of ``LiveShotWatcher``.
+        """
+        context, data, results, aux = self._process_row(analyzer, bg, row)
+        if write_analyzed and data is not None:
+            # Each shot's own scan dir (an sfile can span several scans).
+            scan, shot_num = int(context['scan']), int(context['Shotnumber'])
+            shot_dir = self._shot_analysis_dir(scan)
+            analyzer.write_analyzed_data(data, shot_dir, scan, shot_num, context=context,
+                                         **_aux_kwarg(analyzer.write_analyzed_data, aux))
+            if write_lineouts:
+                analyzer.write_analyzed_lineouts(aux, shot_dir, scan, shot_num)
+        return context, data, results, aux
+
     def _selected_rows(self, rows=None):
         """
         ``rows`` restricted to the selected shots (``active_data`` if None).
@@ -1100,16 +1117,8 @@ class ScanDataAnalyzer:
                     "parallel=False gives the same result.", stacklevel=2)
 
             def process(row):
-                context, data, results, aux = self._process_row(analyzer, bg, row)
-                if write_analyzed and data is not None:
-                    # Each shot's own scan dir (an sfile can span several scans).
-                    scan, shot_num = int(context['scan']), int(context['Shotnumber'])
-                    shot_dir = self._shot_analysis_dir(scan)
-                    analyzer.write_analyzed_data(data, shot_dir, scan, shot_num, context=context,
-                                                 **_aux_kwarg(analyzer.write_analyzed_data, aux))
-                    if write_lineouts:
-                        analyzer.write_analyzed_lineouts(aux, shot_dir, scan, shot_num)
-                return context, data, results, aux
+                return self._process_row_and_write(analyzer, bg, row, write_analyzed,
+                                                   write_lineouts)
 
             shots = self._iter_shots_parallel(analyzer, bg=bg, max_workers=max_workers,
                                               process=process)

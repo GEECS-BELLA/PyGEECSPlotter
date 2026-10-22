@@ -12,7 +12,7 @@ scan-level figures with **displayers**.
 
 ```
 pip install -e .              # from this directory
-pip install -e .[live]        # + watchdog / filelock for live sfile watching
+pip install -e .[live]        # + nptdms, for LiveShotWatcher (reads the scan's .tdms)
 ```
 
 or create a conda environment with `conda env create -f environment.yml`.
@@ -83,12 +83,47 @@ write_analyzed_data(data, analysis_dir, scan, shot_num, context=None)
 `{'x': coords, 'x_lo': values, ...}` → lineout displayers, a dict of
 DataFrames → trace displayers.
 
+## Online analysis during a run
+
+`ScanWatcher` runs a list of jobs on each scan as it finishes, i.e. when its
+sfile appears. Each job is analysis, then the results merged into the sfile,
+then the displayers. Figures go to `<day>/online_analysis/ScanNNN/<diagnostic>/`.
+
+```python
+from PyGEECSPlotter.scan_data_analyzers import ScanWatcher, LiveJob
+
+watcher = ScanWatcher(experiment_dir=r'N:\data', jobs=[
+    column_math_analyzer,                                   # a bare analyzer is fine
+    LiveJob(camera_analyzer, displayers=[ScalarVsParameter('CAM-X max_counts'),
+                                         SampledImages(camera_analyzer, n_samples=6)]),
+])
+watcher.start()          # Ctrl+C to stop; watcher.reanalyze([3, 4]) for past scans
+```
+
+`LiveShotWatcher` analyses one analyzer's shots *while the scan runs*:
+
+- **Shot data:** each shot is analysed once its diagnostic file(s) and its row in
+  `scans/ScanNNN/ScanNNN.tdms` are complete, and the results are appended to
+  `online_analysis/ScanNNN/<name>_live.txt`.
+- **End of scan:** any shot whose context never arrived in time is analysed with
+  the sfile. The results are then merged into the sfile and the displayers run.
+
+```python
+from PyGEECSPlotter.scan_data_analyzers import LiveShotWatcher
+
+LiveShotWatcher(experiment_dir=r'N:\data', job=LiveJob(analyzer, displayers=[...]),
+                required_columns=['CAM-X FW setting']).start()
+```
+
+See `Examples/scripts/12_online_analysis.py`.
+
 ## Package layout
 
 ```
 PyGEECSPlotter/
   scan_data_analyzers/   ScanDataAnalyzer (parallel analyze_scan), DataDirAnalyzer,
-                         live_analysis (watch for new sfiles), binning
+                         live_analysis (ScanWatcher), live_shot_analysis
+                         (LiveShotWatcher), binning
   analyzers/             per-shot analyzers and readers (below)
     magspec/             MagSpecAllEAnalyzer / Reader, EBeamProfileAnalyzer (need pw_py_magspec)
   displayers/            scan-level figures (below)
