@@ -189,7 +189,8 @@ class ShotCompare(ScanDisplayer):
         if prefix:
             a.set_title(prefix, fontsize='small')
 
-    def save(self, fig, scan, suffix: str = "", dpi: int = 200):
+    def save(self, fig, scan, suffix: str = "", dpi: int = 200, output_dir=None):
         """One PNG per shot figure from the last ``display``; returns the paths."""
-        return [super(ShotCompare, self).save(f, scan, suffix=f'{suffix}_shot{shot:03d}', dpi=dpi)
+        return [super(ShotCompare, self).save(f, scan, suffix=f'{suffix}_shot{shot:03d}', dpi=dpi,
+                                              output_dir=output_dir)
                 for shot, f in self.figures]

@@ -38,7 +38,8 @@ class MagSpecAllESpectrumPerBin(LineoutMeanPerBin):
         ``std_alpha``, ``log`` (default True), ``xlims``,
         ``ylims`` (default: shared, from 1e-3 of the largest mean up to it).
     output_subdir, timestamp_files :
-        As for ``ScanDisplayer``: save under ``analysis_dir/output_subdir``,
+        As for ``ScanDisplayer``: save under ``analysis_dir/output_subdir`` (or
+        an absolute ``output_subdir`` as it is),
         and add a run timestamp to the file name (default True).
     """
 
@@ -115,7 +116,8 @@ class MagSpecAllESpectrumMeanWaterfall(LineoutMeanWaterfall):
         ``LineoutMeanWaterfall`` keys, plus ``log`` (default True; ``vmin``
         defaults to ``vmax / 1e3``).
     output_subdir, timestamp_files :
-        As for ``ScanDisplayer``: save under ``analysis_dir/output_subdir``,
+        As for ``ScanDisplayer``: save under ``analysis_dir/output_subdir`` (or
+        an absolute ``output_subdir`` as it is),
         and add a run timestamp to the file name (default True).
     """
 

@@ -44,7 +44,9 @@ class ScanDisplayer:
 
     ``output_subdir``, if given, nests saved/exported files under that
     subfolder of the scan's analysis directory (``analysis_dir/output_subdir``)
-    instead of dropping them straight in ``analysis_dir``. ``timestamp_files``
+    instead of dropping them straight in ``analysis_dir``; an absolute path is
+    used as it is. ``save`` / ``export`` (and ``scan.display_scan``) also take
+    ``output_dir=`` to choose the folder for one call. ``timestamp_files``
     (default True) appends a run timestamp to the filename so re-running the
     same displayer doesn't silently overwrite a previous run's output.
     """
@@ -168,13 +170,20 @@ class ScanDisplayer:
             if a.get_aspect() == 'auto':
                 a.set_box_aspect(1 / aspect)
 
-    def _output_dir(self, scan):
-        """Scan's analysis directory, nested under ``output_subdir`` if set."""
-        analysis_dir = scan.get_scan_data_analysis_dir(make_dir=True)
-        if self.output_subdir:
-            analysis_dir = os.path.join(analysis_dir, self.output_subdir)
-            os.makedirs(analysis_dir, exist_ok=True)
-        return analysis_dir
+    def _output_dir(self, scan, output_dir=None):
+        """Where files go: ``output_dir`` if given; else ``output_subdir`` if
+        it is an absolute path; else the scan's analysis directory, nested
+        under ``output_subdir`` if set. Created if needed."""
+        if output_dir is not None:
+            out = os.fspath(output_dir)
+        elif self.output_subdir and os.path.isabs(self.output_subdir):
+            out = os.fspath(self.output_subdir)
+        else:
+            out = scan.get_scan_data_analysis_dir(make_dir=True)
+            if self.output_subdir:
+                out = os.path.join(out, self.output_subdir)
+        os.makedirs(out, exist_ok=True)
+        return out
 
     def _output_stem(self, scan, suffix: str = ""):
         """
@@ -194,15 +203,15 @@ class ScanDisplayer:
             stem += time.strftime("_%Y%m%d-%H%M%S")
         return stem
 
-    def save(self, fig, scan, suffix: str = "", dpi: int = 200):
-        """Save ``fig`` under the scan's analysis directory (or ``output_subdir`` within it)."""
-        output_dir = self._output_dir(scan)
+    def save(self, fig, scan, suffix: str = "", dpi: int = 200, output_dir=None):
+        """Save ``fig`` as a PNG in ``_output_dir`` (``output_dir`` if given)."""
+        output_dir = self._output_dir(scan, output_dir)
         path = os.path.join(output_dir, self._output_stem(scan, suffix) + ".png")
         fig.savefig(path, dpi=dpi)
         print(f'Fig saved to {path}')
         return path
 
-    def export(self, scan, suffix: str = ""):
+    def export(self, scan, suffix: str = "", output_dir=None):
         """
         Write ``self.last_export`` to an ``.npz`` alongside where ``save()``
         puts the PNG, so the plotted arrays can be reloaded without rerunning
@@ -215,7 +224,7 @@ class ScanDisplayer:
                 f"{type(self).__name__}.export() called before display() "
                 "populated last_export."
             )
-        output_dir = self._output_dir(scan)
+        output_dir = self._output_dir(scan, output_dir)
         path = os.path.join(output_dir, self._output_stem(scan, suffix) + ".npz")
         np.savez(path, **self.last_export)
         print(f'Data exported to {path}')
