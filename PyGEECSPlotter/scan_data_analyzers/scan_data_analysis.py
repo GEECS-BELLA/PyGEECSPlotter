@@ -35,6 +35,11 @@ colors = gplt.configure_plotting()
 
 
 
+def _as_path_str(path):
+    """``str`` for a str / Path / os.PathLike, None for None."""
+    return None if path is None else os.fspath(path)
+
+
 def _aux_kwarg(method, aux):
     """``{'aux': aux}`` if ``method`` accepts an ``aux`` argument, else ``{}``.
 
@@ -59,48 +64,63 @@ class FilterSummary(str):
 
 
 class ScanDataAnalyzer:
-    def __init__(self, 
-                sfilename=None, 
-                top_dir=None, 
-                experiment_dir=None,
-                year=None, 
-                month=None, 
-                day=None, 
-                scan=None
-                ):
-                
-        self.sfilename = sfilename
-        self.top_dir = top_dir
-        self.experiment_dir = experiment_dir
-        self._year = None
-        self._month = None
-        self._day = None
-        self._scan = None
+    """
+    One GEECS scan: its sfile as a DataFrame, shot selection (filters),
+    bins, per-shot analysis and scan-level displays.
+
+    Construct from one of:
+      1. ``sfilename``                                (``.../yy_mmdd/analysis/sN.txt``)
+      2. ``top_dir`` + ``scan``                       (``top_dir`` is the day folder)
+      3. ``experiment_dir`` + ``year``, ``month``, ``day``, ``scan``
+
+    ``year``, ``month``, ``day`` and ``scan`` are always stored as ``int``
+    (strings such as ``'05'`` are converted; invalid values raise). Paths
+    may be ``str`` or ``pathlib.Path`` and are stored as ``str``.
+    """
+
+    def __init__(self,
+                 sfilename=None,
+                 top_dir=None,
+                 experiment_dir=None,
+                 year=None,
+                 month=None,
+                 day=None,
+                 scan=None,
+                 ):
+        self._init_common()
+        self.sfilename = _as_path_str(sfilename)
+        self.top_dir = _as_path_str(top_dir)
+        self.experiment_dir = _as_path_str(experiment_dir)
         self.year = year
         self.month = month
         self.day = day
         self.scan = scan
-        self.scan_parameter = 'Shotnumber'
 
-        if sfilename:
+        if self.sfilename:
             self._init_from_sfilename()
-        elif top_dir and scan:
+        elif self.top_dir and self.scan is not None:
             self._init_from_top_dir_and_scan()
-        elif experiment_dir and all([year, month, day, scan]):
+        elif self.experiment_dir and None not in (self.year, self.month, self.day, self.scan):
             self._init_from_experiment_path()
         else:
             raise ValueError("Invalid initialization arguments. Use one of:\n"
-                            "1. sfilename\n"
-                            "2. top_dir and scan\n"
-                            "3. experiment_dir, year, month, day, scan")
-            
+                             "1. sfilename\n"
+                             "2. top_dir and scan\n"
+                             "3. experiment_dir, year, month, day, scan")
+        self.scan_title = self.scan_data_title()
+
+    def _init_common(self):
+        """State every scan object has, before any data is loaded (also used by subclasses)."""
+        self.sfilename = None
+        self.top_dir = None
+        self.experiment_dir = None
+        self._year = self._month = self._day = self._scan = None
+        self.scan_parameter = 'Shotnumber'
         self.analysis_dir = None
         self.data_columns = None
         self.data = None
         self.aborted = False
         self.print_data = False
-
-        self.scan_title = self.scan_data_title()
         self._filters = {}
         self.verbose = True          # print a line for each user filter call
         self.last_merged_columns = []
@@ -108,30 +128,42 @@ class ScanDataAnalyzer:
     def _init_from_sfilename(self):
         top_dir, year, month, day = get_top_dir_from_sfilename(self.sfilename)
         self.top_dir = top_dir
-        self.year = year
-        self.month = month
-        self.day = day
+        self.year, self.month, self.day = year, month, day
+        match = re.search(r's(\d+)\.txt$', os.path.basename(self.sfilename))
+        if self.scan is None and match:
+            self.scan = int(match.group(1))
 
     def _init_from_top_dir_and_scan(self):
         self.sfilename = get_sfilename_from_top_dir(self.top_dir, self.scan)
         top_dir, year, month, day = get_top_dir_from_sfilename(self.sfilename)
         self.top_dir = top_dir
-        self.year = year
-        self.month = month
-        self.day = day
+        self.year, self.month, self.day = year, month, day
 
     def _init_from_experiment_path(self):
         self.top_dir = get_top_dir(self.experiment_dir, self.year, self.month, self.day)
         self.sfilename = get_sfilename_from_top_dir(self.top_dir, self.scan)
 
-    @staticmethod
-    def _to_int(value, name):
+    # identity: always int (or None until known) -------------------------
+    _RANGES = {'year': (2000, 2999), 'month': (1, 12), 'day': (1, 31), 'scan': (0, None)}
+
+    @classmethod
+    def _to_int(cls, value, name):
         if value is None:
             return None
         try:
-            return int(value)
+            as_float = float(value)
+            if as_float != int(as_float):
+                raise ValueError
+            out = int(as_float)
         except (TypeError, ValueError):
-            raise TypeError(f"'{name}' must be an integer or integer-castable value, got {type(value).__name__!r}: {value!r}")
+            raise TypeError(f"'{name}' must be a whole number, got {type(value).__name__} {value!r}")
+        if name == 'year' and 0 <= out < 100:
+            out += 2000                            # '26' -> 2026
+        low, high = cls._RANGES.get(name, (None, None))
+        if (low is not None and out < low) or (high is not None and out > high):
+            raise ValueError(f"'{name}' = {out} is out of range "
+                             f"[{low}, {'...' if high is None else high}]")
+        return out
 
     @property
     def year(self):
@@ -165,14 +197,22 @@ class ScanDataAnalyzer:
     def scan(self, value):
         self._scan = self._to_int(value, 'scan')
 
+    @property
+    def date(self):
+        """The experiment date as ``datetime.date``, or None if not known."""
+        if None in (self.year, self.month, self.day):
+            return None
+        return datetime.date(self.year, self.month, self.day)
 
+    @property
+    def scan_label(self):
+        """``'Scan023'`` (or ``'Scan???'`` if the scan number isn't known)."""
+        return f'Scan{self.scan:03d}' if self.scan is not None else 'Scan???'
 
     def __repr__(self):
-        return (f"ExperimentFile(sfilename={self.sfilename}, scan={self.scan}, "
-                f"date={self.year}-{self.month:02d}-{self.day:02d}, "
-                f"experiment_dir={self.experiment_dir})")
-    
-    
+        return (f"{type(self).__name__}(sfilename={self.sfilename}, scan={self.scan}, "
+                f"date={self.date}, experiment_dir={self.experiment_dir})")
+
     # -------------------------------------------------------------------
     # Shot selection: named filter rules, re-evaluated against self.data
     # (see scan_data_analyzers/filters.py). Nothing here modifies self.data.
@@ -325,12 +365,11 @@ class ScanDataAnalyzer:
             yield b, self.rows_in_bin(b)
     
     def scan_data_title(self, append_text=None):
-        if append_text is not None:
-            title = f'{self.year}-{self.month:02d}-{self.day:02d} - {os.path.basename(self.sfilename)} - {append_text}'
-        else:
-            title = f'{self.year}-{self.month:02d}-{self.day:02d} - {os.path.basename(self.sfilename)}'
-        return title
-    
+        """``'2024-01-31 - s23.txt'`` plus `` - append_text`` if given."""
+        parts = [str(self.date) if self.date else None,
+                 os.path.basename(self.sfilename) if self.sfilename else self.scan_label,
+                 append_text]
+        return ' - '.join(p for p in parts if p)
 
     def load_scan_data(self, 
         search_replace_filename=None, 
@@ -349,6 +388,9 @@ class ScanDataAnalyzer:
 
         else:
             scan_parameter, scan = get_scan_parameter(self.top_dir, sfile_data)
+            if self.scan is not None and int(scan) not in (0, self.scan):
+                warnings.warn(f"{os.path.basename(self.sfilename)} records scan {int(scan)}, "
+                              f"not {self.scan}; using {int(scan)}.", stacklevel=2)
             self.scan = scan
             self.scan_parameter = scan_parameter
 

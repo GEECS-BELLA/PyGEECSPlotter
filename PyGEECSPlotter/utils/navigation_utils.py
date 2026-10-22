@@ -21,6 +21,9 @@ def _format_date(year, month, day):
     return '%02d-%s' % (month, month_name)
 
 def get_top_dir(experiment_dir, year, month, day, print_data=False):
+    year, month, day = int(year), int(month), int(day)
+    if year < 100:
+        year += 2000
     formatted_month = _format_date(year, month, day)
     top_dir = os.path.join(experiment_dir, 'Y%d' %year, '%s' %formatted_month ,'%d_%02d%02d' %(year-2000, month, day))
     
@@ -43,7 +46,7 @@ def get_top_dir_list(experiment_dir, date_list, print_data=False):
     return top_dirs
     
 def get_top_dir_from_sfilename(sfilename, print_data=False):
-    date_part = re.search(r'(\d{2}_\d{4})', sfilename)
+    date_part = re.search(r'(\d{2}_\d{4})', os.fspath(sfilename))
     
     if not date_part:
         raise ValueError("Date part not found in the filename.")
@@ -58,7 +61,7 @@ def get_top_dir_from_sfilename(sfilename, print_data=False):
     day = yy_mmdd.day
     
     # Get the top directory up to 'analysis'
-    path_parts = sfilename.split(os.sep)
+    path_parts = os.path.normpath(os.fspath(sfilename)).split(os.sep)
     try:
         analysis_index = path_parts.index('analysis')
     except ValueError:
@@ -72,7 +75,7 @@ def get_top_dir_from_sfilename(sfilename, print_data=False):
     return top_dir, year, month, day
     
 def get_sfilename_from_top_dir(top_dir, scan, print_data=False):
-    sfilename = os.path.join(top_dir, 'analysis', 's%d.txt' %scan)
+    sfilename = os.path.join(os.fspath(top_dir), 'analysis', 's%d.txt' % int(scan))
     if print_data:
         print('sfilename                  : %s' %sfilename)
         
