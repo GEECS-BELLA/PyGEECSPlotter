@@ -15,6 +15,10 @@ setup(
         "scikit-image",
         "scikit-learn",
         "opencv-python",
-        "pypng"
+        "pypng",
+        "watchdog",
+        "filelock",
+        "imageio",
+        "tqdm",
     ],
 )

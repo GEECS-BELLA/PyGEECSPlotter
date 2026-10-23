@@ -9,6 +9,7 @@ import traceback
 import re
 
 from PyGEECSPlotter.scan_data_analysis import ScanDataAnalyzer
+from PyGEECSPlotter.multi_diagnostic_analyzer import MultiDiagnosticAnalyzer
 import PyGEECSPlotter.navigation_utils as nav_utils
 
 class DirectoryWatcherSFile(FileSystemEventHandler):
@@ -129,6 +130,19 @@ class DirectoryWatcherSFile(FileSystemEventHandler):
             f"ScanDataScan{scan_num:03d}.txt"
         )
 
+    @staticmethod
+    def _column_prefix(analyzer):
+        """Prefix for the columns an analyzer adds to the sfile / scan data file."""
+        analyzer_dict = analyzer.analyzer_dict
+        if analyzer_dict.get("analysis_diagnostic", False):
+            return analyzer_dict.get("analysis_diagnostic")
+        # A MultiDiagnosticAnalyzer has no single diagnostic, it names its outputs
+        if isinstance(analyzer, MultiDiagnosticAnalyzer):
+            return analyzer.output_diagnostic
+        if analyzer_dict.get('analyze_raw_data', True):
+            return analyzer.diagnostic
+        return None
+
     def _analyze_and_plot(self, sfilename, analyzer):
         """Run analysis and plot images for a specific diagnostic."""
         print("-"*50)
@@ -141,12 +155,16 @@ class DirectoryWatcherSFile(FileSystemEventHandler):
         diagnostic = analyzer.diagnostic
         
         # Load data files names into ScanDataAnalyzer instance
-        self.current_scan_analyzer.add_file_list_to_scan_data(diagnostic, file_ext)
-        
-        if analyzer_dict.get("use_bg", False):
-            bg = self.current_scan_analyzer.get_bg_file_path(diagnostic, file_ext)
-        else:
+        # (every declared input for a MultiDiagnosticAnalyzer)
+        analyzer.register_with_scan(self.current_scan_analyzer)
+
+        if not analyzer_dict.get("use_bg", False):
             bg = None
+        elif isinstance(analyzer, MultiDiagnosticAnalyzer):
+            bg = {name: self.current_scan_analyzer.get_bg_file_path(name, ext)
+                  for name, ext in analyzer.inputs}
+        else:
+            bg = self.current_scan_analyzer.get_bg_file_path(diagnostic, file_ext)
         add_columns_df = self.current_scan_analyzer.analyze_scan(analyzer, 
             bg=bg, 
             display_data=display_dict.get("display_data", False),
@@ -163,16 +181,11 @@ class DirectoryWatcherSFile(FileSystemEventHandler):
         
         # We use a custom anti-race condition code to update the sfile because the standard ScanDataAnalyzer code
         # does not account for race conditions.
+        prefix = self._column_prefix(analyzer)
         if analyzer_dict.get('add_columns_to_masterlog', False):
             # file lock to avoid the race condition
             lock_file = sfilename + ".lock"
             lock = filelock.FileLock(lock_file)
-            if analyzer_dict.get("analysis_diagnostic", False):
-                prefix = analyzer_dict.get("analysis_diagnostic")
-            elif analyzer_dict.get('analyze_raw_data', True):
-                prefix = diagnostic
-            else:
-                prefix = None
             with lock:
                 merged_sfile = self.current_scan_analyzer.merge_data_frame_to_sfile(add_columns_df, prefix,
                                                                        overwrite_columns=True,
@@ -186,12 +199,6 @@ class DirectoryWatcherSFile(FileSystemEventHandler):
             scan_data_fname = self._sfilename_to_scan_data_fname(sfilename)
             lock_file = scan_data_fname + ".lock"
             lock = filelock.FileLock(lock_file)
-            if analyzer_dict.get("analysis_diagnostic", False):
-                prefix = analyzer_dict.get("analysis_diagnostic")
-            elif analyzer_dict.get('analyze_raw_data', True):
-                prefix = diagnostic
-            else:
-                prefix = None
             with lock:
                 # Workaround to set the file we are saving to a different location
                 # compared to where sfiles are usually saved
