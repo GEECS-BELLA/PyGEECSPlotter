@@ -25,7 +25,7 @@ from PyGEECSPlotter.scan_data_analyzers.scan_data_analysis import ScanDataAnalyz
 from PyGEECSPlotter.scan_data_analyzers.live_analysis import LiveJob, online_output_dir
 from PyGEECSPlotter.scan_data_analyzers.sfile_frame import merge_results, rename_result_columns
 from PyGEECSPlotter.utils.io_utils import file_lock
-from PyGEECSPlotter.utils.tdms_utils import read_scan_tdms, scan_tdms_path, latest_alias_map
+from PyGEECSPlotter.utils.tdms_utils import read_scan_tdms, scan_tdms_path, alias_map_for_scan
 import PyGEECSPlotter.utils.navigation_utils as nav_utils
 
 _SCAN_DIR_RE = re.compile(r'Scan(\d{3,})$')
@@ -51,16 +51,20 @@ class _ScanState:
         self.scan_dir = os.path.join(top_dir, 'scans', self.label)
         self.tdms = scan_tdms_path(top_dir, scan)
         self.sfile = nav_utils.get_sfilename_from_top_dir(top_dir, scan)
+        self.info = os.path.join(top_dir, 'analysis', f's{scan}info.txt')
         self.files = {}          # shot -> {diagnostic: path}
-        self.sizes = {}          # path -> size at the last poll
+        self.sizes = {}          # path -> (size, time first seen at that size)
         self.complete = {}       # shot -> {diagnostic: path}, files done writing
         self.first_ready = {}    # shot -> time its files were complete
         self.submitted = {}      # shot -> future
         self.done = set()        # shots with results (this run or a previous one)
         self.deferred = set()    # waited too long for their .tdms context
         self.failed = set()
+        self.pending = []        # result rows not yet written to the live file
         self.context = None      # last .tdms frame
-        self.sfile_size = None
+        self.required = []       # required_columns as named in the .tdms frame
+        self.sfile_size = None   # (size, time first seen at that size)
+        self.newer_since = None  # time a newer scan was first seen started
 
 
 class LiveShotWatcher:
@@ -89,9 +93,20 @@ class LiveShotWatcher:
         filter-wheel setting. Default: the analyzer's ``required_columns``
         attribute, if any. A shot waits until they are filled in.
     start_scan : int, optional
-        First scan to analyse. Default: the next scan to start.
+        First scan to analyse (on the first day watched). Default: the scan
+        running now, else the next to start.
     write : bool
         False: never write the sfile / ScanData files (dry run).
+    file_settle_s : float
+        A shot's file counts as written once its size has not changed for
+        this long.
+    settle_s : float
+        The scan has ended when its ``sNinfo.txt`` exists (GEECS writes it
+        after the sfile) and the sfile has stopped changing; if there is no
+        info file, when the sfile has not changed for ``settle_s`` seconds.
+    abandon_grace_s : float
+        A scan with no sfile is given up (aborted) once a newer scan has been
+        running this long: its live results are kept, nothing is merged.
 
     Per-shot results go to ``online_analysis/ScanNNN/<name>_live.txt`` as
     they come in (a restarted watcher skips the shots already there);
@@ -99,7 +114,8 @@ class LiveShotWatcher:
     """
 
     def __init__(self, experiment_dir=None, job=None, top_dir=None, poll_s=1.0, max_workers=None,
-                 context_timeout_s=30.0, required_columns=None, start_scan=None, write=True):
+                 context_timeout_s=30.0, required_columns=None, start_scan=None, write=True,
+                 file_settle_s=1.0, settle_s=30.0, abandon_grace_s=60.0):
         if experiment_dir is None and top_dir is None:
             raise ValueError("Give experiment_dir (watch today's folder) or top_dir.")
         if job is None:
@@ -116,6 +132,9 @@ class LiveShotWatcher:
                                      else getattr(self.analyzer, 'required_columns', None) or [])
         self.start_scan = start_scan
         self.write = write
+        self.file_settle_s = file_settle_s
+        self.settle_s = settle_s
+        self.abandon_grace_s = abandon_grace_s
         self.state = None            # _ScanState of the scan being watched
         self.aliases = {}            # .tdms raw name -> sfile alias (from an earlier sfile)
         self.last_scan = {}          # top_dir -> last scan handled
@@ -142,8 +161,10 @@ class LiveShotWatcher:
             return None
         running = sum(1 for f in st.submitted.values() if not f.done())
         return {'scan': st.scan, 'files': len(st.files), 'done': len(st.done),
+                'arriving': len(set(st.files) - set(st.complete) - st.done),
                 'in progress': running, 'deferred': len(st.deferred), 'failed': len(st.failed),
-                'waiting': len(set(st.complete) - set(st.submitted) - st.done - st.deferred)}
+                'waiting': len(set(st.complete) - set(st.submitted) - st.done - st.deferred
+                               - st.failed)}
 
     # ------------------------------------------------------------------
     # Discovery
@@ -160,14 +181,16 @@ class LiveShotWatcher:
         """The next scan to watch: started (its .tdms exists), not handled yet."""
         scans = self._scan_numbers(top_dir)
         if top_dir not in self.last_scan:
-            # first look at this day: start from start_scan, else after the
-            # newest scan whose sfile already exists (it has ended)
-            if self.start_scan is not None:
+            # first look at this day: start_scan (first day only), else the
+            # newest started scan if it is still running, else the next one
+            if self.start_scan is not None and not self.last_scan:
                 self.last_scan[top_dir] = self.start_scan - 1
             else:
-                ended = [n for n in scans
-                         if os.path.exists(nav_utils.get_sfilename_from_top_dir(top_dir, n))]
-                self.last_scan[top_dir] = max(ended, default=0)
+                started = [n for n in scans if os.path.exists(scan_tdms_path(top_dir, n))]
+                newest = max(started, default=0)
+                running = newest and not os.path.exists(
+                    nav_utils.get_sfilename_from_top_dir(top_dir, newest))
+                self.last_scan[top_dir] = newest - 1 if running else newest
         for n in scans:
             if n > self.last_scan[top_dir] and os.path.exists(scan_tdms_path(top_dir, n)):
                 return n
@@ -181,7 +204,11 @@ class LiveShotWatcher:
                 st.done = set(pd.read_csv(path, sep='\t')['Shotnumber'].astype(int))
             except Exception:
                 pass
-        self.aliases = latest_alias_map(top_dir, before_scan=scan)
+        self.aliases = alias_map_for_scan(top_dir, scan)
+        if not self.aliases:
+            self._log(f"{st.label}: no earlier sfile found for the column aliases; "
+                      f".tdms columns keep their device names")
+        st.required = [self.aliases.get(c, c) for c in self.required_columns]
         self.state = st
         self._log(f"{st.label}: started; analysing shots as they arrive"
                   + (f" ({len(st.done)} already done)" if st.done else ''))
@@ -201,7 +228,7 @@ class LiveShotWatcher:
                 continue
 
     def _update_complete(self, st, now):
-        """Shots whose every input file exists and kept its size since the last poll."""
+        """Shots whose every input file exists and kept its size for ``file_settle_s``."""
         for shot, paths in st.files.items():
             if shot in st.complete or shot in st.done:
                 continue
@@ -214,8 +241,9 @@ class LiveShotWatcher:
                 except OSError:
                     settled = False
                     continue
-                if st.sizes.get(path) != size or size == 0:
-                    st.sizes[path] = size
+                if st.sizes.get(path, (None,))[0] != size:
+                    st.sizes[path] = (size, now)
+                if size == 0 or now - st.sizes[path][1] < self.file_settle_s:
                     settled = False
             if settled:
                 st.complete[shot] = dict(paths)
@@ -230,7 +258,7 @@ class LiveShotWatcher:
         if rows.empty:
             return None
         row = rows.iloc[-1].to_dict()
-        for col in self.required_columns:
+        for col in st.required:
             value = row.get(col)
             if value is None or (isinstance(value, float) and value != value):
                 return None
@@ -249,8 +277,8 @@ class LiveShotWatcher:
 
     def _submit_ready(self, st, now):
         """Submit shots whose files are complete and whose context is in the .tdms."""
-        waiting = [s for s in sorted(st.complete)
-                   if s not in st.submitted and s not in st.done and s not in st.deferred]
+        waiting = [s for s in sorted(st.complete) if s not in st.submitted and s not in st.done
+                   and s not in st.deferred and s not in st.failed]
         if not waiting:
             return
         st.context = read_scan_tdms(st.tdms, aliases=self.aliases)
@@ -273,8 +301,10 @@ class LiveShotWatcher:
                 self.job.write_analyzed, self.job.write_lineouts)
 
     def _collect(self, st, wait=False):
-        """Results of finished shots, in shot order, appended to the live results file."""
-        rows = []
+        """Results of finished shots, in shot order, appended to the live results file.
+
+        A shot with results is ``done``; its row stays in ``st.pending`` until
+        the file write succeeds (retried on the next poll)."""
         for shot in sorted(st.submitted):
             future = st.submitted[shot]
             if not wait and not future.done():
@@ -282,13 +312,19 @@ class LiveShotWatcher:
             del st.submitted[shot]
             try:
                 _, _, results, _ = future.result()
-                rows.append({'scan': st.scan, 'Shotnumber': shot, **results})
+                st.pending.append({'scan': st.scan, 'Shotnumber': shot, **results})
                 st.done.add(shot)
             except Exception:
                 st.failed.add(shot)
-                self._log(f"{st.label}: shot {shot} failed:\n{traceback.format_exc()}")
-        if rows:
-            self._append_live(st, pd.DataFrame(rows))
+                self._log(f"{st.label}: shot {shot} failed (retried at the end of the scan):\n"
+                          f"{traceback.format_exc()}")
+        if st.pending:
+            try:
+                self._append_live(st, pd.DataFrame(st.pending))
+                st.pending = []
+            except Exception as err:
+                self._log(f"{st.label}: could not write the live results "
+                          f"({len(st.pending)} shots kept, retrying): {err!r}")
 
     def _append_live(self, st, df):
         path = self.live_results_path(st.top_dir, st.scan)
@@ -300,15 +336,28 @@ class LiveShotWatcher:
     # ------------------------------------------------------------------
     # End of scan
     # ------------------------------------------------------------------
-    def _scan_ended(self, st):
-        """The sfile exists and its size is unchanged since the last poll."""
+    def _scan_ended(self, st, now):
+        """The sfile has stopped changing and ``sNinfo.txt`` exists (GEECS writes it
+        after the sfile), or, with no info file, the sfile is unchanged for ``settle_s``."""
         try:
             size = os.path.getsize(st.sfile)
         except OSError:
             return False
-        ended = size > 0 and size == st.sfile_size
-        st.sfile_size = size
-        return ended
+        if st.sfile_size is None or st.sfile_size[0] != size:
+            st.sfile_size = (size, now)
+            return False
+        return size > 0 and (os.path.exists(st.info) or now - st.sfile_size[1] >= self.settle_s)
+
+    def _abandoned(self, st, now):
+        """No sfile, and a newer scan has been running for ``abandon_grace_s``."""
+        if st.sfile_size is not None:
+            return False
+        if st.newer_since is None:
+            if any(n > st.scan and os.path.exists(scan_tdms_path(st.top_dir, n))
+                   for n in self._scan_numbers(st.top_dir)):
+                st.newer_since = now
+            return False
+        return now - st.newer_since >= self.abandon_grace_s
 
     def _finish(self, st):
         """Analyse the shots left over, merge everything into the sfile, run the displayers."""
@@ -325,8 +374,12 @@ class LiveShotWatcher:
         with scan.filtered():
             self.analyzer.register_with_scan(scan)
             path = self.live_results_path(st.top_dir, st.scan)
-            if os.path.exists(path):
-                live = pd.read_csv(path, sep='\t').drop_duplicates(['scan', 'Shotnumber'], keep='last')
+            live = [pd.read_csv(path, sep='\t')] if os.path.exists(path) else []
+            if st.pending:              # results the live file could not take
+                live.append(pd.DataFrame(st.pending))
+            if live:
+                live = pd.concat(live, ignore_index=True).drop_duplicates(['scan', 'Shotnumber'],
+                                                                          keep='last')
                 live = live[live['Shotnumber'].isin(st.done)]
                 scan.data = merge_results(scan.data, rename_result_columns(live, job.column_prefix, label))
                 parts.append(live)
@@ -369,12 +422,19 @@ class LiveShotWatcher:
             self._begin(top_dir, scan)
             st = self.state
         now = time.monotonic()
-        ended = self._scan_ended(st)    # checked before the sweep, so no late file is missed
+        ended = self._scan_ended(st, now)   # checked before the sweep, so no late file is missed
         self._find_files(st)
         self._update_complete(st, now)
         self._submit_ready(st, now)
         self._collect(st)
         if not ended:
+            if self._abandoned(st, now):
+                self._collect(st, wait=True)
+                self._log(f"{st.label}: no sfile and a newer scan has started; giving up on it "
+                          f"({len(st.done)} shots in {self.live_results_path(st.top_dir, st.scan)}, "
+                          f"nothing merged)")
+                self.last_scan[st.top_dir] = st.scan
+                self.state = None
             return None
         try:
             self._finish(st)
@@ -389,10 +449,17 @@ class LiveShotWatcher:
         self._running = True
         self._log(f"Watching {os.path.join(self.top_dir, 'scans')} for scans to start "
                   f"({self.job.name}). Ctrl+C to stop.")
+        errors = 0
         try:
             while self._running:
-                self.poll()
-                time.sleep(self.poll_s)
+                try:
+                    self.poll()
+                    errors = 0
+                except Exception:
+                    # e.g. the network share dropped out: report, back off, carry on
+                    errors += 1
+                    self._log(f"poll failed ({errors} in a row):\n{traceback.format_exc()}")
+                time.sleep(min(self.poll_s * 2 ** min(errors, 5), 30.0))
         except KeyboardInterrupt:
             pass
         finally:

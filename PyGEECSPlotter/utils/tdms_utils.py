@@ -5,12 +5,14 @@ device, one channel per variable, named as the sfile columns are (e.g.
 ``'HEX-PL1-1 xpos'``, plus ``'Shotnumber'``, ``'Bin #'`` and ``'scan'``).
 """
 
+import datetime
 import os
+import re
 import time
 
 import pandas as pd
 
-from PyGEECSPlotter.utils.navigation_utils import alias_column_names
+from PyGEECSPlotter.utils.navigation_utils import alias_column_names, get_top_dir
 
 
 def scan_tdms_path(top_dir, scan):
@@ -50,6 +52,30 @@ def latest_alias_map(top_dir, before_scan=None):
             return alias_map(os.path.join(analysis, f's{n}.txt'))
         except Exception:
             continue
+    return {}
+
+
+def alias_map_for_scan(top_dir, scan, days_back=31):
+    """
+    ``latest_alias_map`` of the sfiles before ``scan`` in ``top_dir``; for the
+    first scan of a day, that of the newest earlier day folder (up to
+    ``days_back`` days back, same ``experiment_dir/Yyyyy/MM-Mon/yy_mmdd``
+    layout) with an sfile. ``{}`` if none is found.
+    """
+    found = latest_alias_map(top_dir, before_scan=scan)
+    if found:
+        return found
+    top_dir = os.path.normpath(os.fspath(top_dir))
+    m = re.fullmatch(r'(\d{2})_(\d{2})(\d{2})', os.path.basename(top_dir))
+    if not m:
+        return {}
+    experiment_dir = os.path.dirname(os.path.dirname(os.path.dirname(top_dir)))
+    day = datetime.date(2000 + int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    for back in range(1, days_back + 1):
+        d = day - datetime.timedelta(days=back)
+        found = latest_alias_map(get_top_dir(experiment_dir, d.year, d.month, d.day))
+        if found:
+            return found
     return {}
 
 
