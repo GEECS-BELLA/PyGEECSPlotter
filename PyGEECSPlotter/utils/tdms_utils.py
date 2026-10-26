@@ -10,7 +10,7 @@ import time
 
 import pandas as pd
 
-from PyGEECSPlotter.utils.navigation_utils import get_parameter_alias
+from PyGEECSPlotter.utils.navigation_utils import alias_column_names
 
 
 def scan_tdms_path(top_dir, scan):
@@ -27,7 +27,8 @@ def alias_map(table_path):
     the scan, so an earlier scan's sfile is used to name columns live.
     """
     header = pd.read_csv(os.fspath(table_path), sep='\t', nrows=0).columns
-    return {c.split(' Alias:')[0]: get_parameter_alias(c) for c in header if ' Alias:' in c}
+    return {c.split(' Alias:')[0]: name for c, name in alias_column_names(header).items()
+            if ' Alias:' in c}
 
 
 def latest_alias_map(top_dir, before_scan=None):

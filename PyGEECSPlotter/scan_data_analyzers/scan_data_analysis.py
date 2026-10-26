@@ -20,7 +20,8 @@ from pathlib import Path
 from tqdm import tqdm
 
 from PyGEECSPlotter.utils.navigation_utils import (
-    get_analysis_dir, get_parameter_alias, get_scan_parameter, get_sfilename_from_top_dir,
+    alias_column_names, get_analysis_dir, get_parameter_alias, get_scan_parameter,
+    get_sfilename_from_top_dir,
     get_top_dir, get_top_dir_from_sfilename, open_directory_in_explorer,
 )
 from PyGEECSPlotter.utils.io_utils import write_controls_from_python, file_lock
@@ -552,8 +553,14 @@ class ScanDataAnalyzer:
 
             self.data = sfile_data.copy()
             self._init_mask()
-            for col in self.data.columns:
-                self.data.rename(columns={col: get_parameter_alias(col)}, inplace=True)
+            names = alias_column_names(self.data.columns)
+            shared = sorted({get_parameter_alias(c) for c, n in names.items()
+                             if n != get_parameter_alias(c)})
+            if shared:
+                warnings.warn(f"{os.path.basename(self.sfilename)}: aliases used by more than "
+                              f"one column ({shared}); those columns keep their device names.",
+                              stacklevel=2)
+            self.data = self.data.rename(columns=names)
 
             self.data['temp Bin number'] = self.data['Bin #']
 

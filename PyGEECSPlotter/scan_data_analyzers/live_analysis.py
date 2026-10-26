@@ -106,15 +106,16 @@ class LiveJob:
     def run(self, scan, output_dir=None, write=True):
         """
         Analyse ``scan`` (a loaded ScanDataAnalyzer), write the results
-        (if ``write`` and the job asks for it) and run the displayers.
-        Returns the results frame (or None).
+        and per-shot files (if ``write`` and the job asks for them) and run
+        the displayers. ``write=False`` writes nothing into the data folders
+        (figures still go to ``output_dir``). Returns the results frame (or None).
         """
         a = self.analyzer
         a.register_with_scan(scan)
         results = scan.analyze_scan(
             a, bg=self.bg(scan), write_columns_to_sfile=False,
-            analysis_label=self.analysis_label or '', write_analyzed=self.write_analyzed,
-            write_lineouts=self.write_lineouts, parallel=self.parallel,
+            analysis_label=self.analysis_label or '', write_analyzed=write and self.write_analyzed,
+            write_lineouts=write and self.write_lineouts, parallel=self.parallel,
             column_prefix=self.column_prefix,
             extra_info_str=self.analysis_label or '')
         if write and results is not None:
@@ -177,15 +178,20 @@ class ScanWatcher:
     search_replace_filename, column_math_filename : optional
         Passed to ``load_scan_data``.
     write : bool
-        False: analyse and plot but never write to the sfile / ScanData files
-        (for testing on real data).
+        False: analyse and plot but write nothing into the day's folders: no
+        sfile / ScanData merge, no per-shot files (for testing on real data;
+        pair with ``output_dir`` to keep the figures out too).
+    output_dir : str or Path, optional
+        Root for the figures instead of ``<top_dir>/online_analysis``; they go
+        to ``<output_dir>/ScanNNN/<name>/``.
 
     Uses polling rather than file-system events, which are unreliable on
     network shares. ``reanalyze(scans)`` runs the jobs on scans already taken.
     """
 
     def __init__(self, experiment_dir=None, jobs=(), top_dir=None, poll_s=2.0, start_scan=None,
-                 search_replace_filename=None, column_math_filename=None, write=True):
+                 search_replace_filename=None, column_math_filename=None, write=True,
+                 output_dir=None):
         if experiment_dir is None and top_dir is None:
             raise ValueError("Give experiment_dir (watch today's folder) or top_dir.")
         self.experiment_dir = os.fspath(experiment_dir) if experiment_dir is not None else None
@@ -196,6 +202,7 @@ class ScanWatcher:
         self.search_replace_filename = search_replace_filename
         self.column_math_filename = column_math_filename
         self.write = write
+        self.output_dir = os.fspath(output_dir) if output_dir is not None else None
         self.status = ''
         self._seen_days = set()         # top dirs whose earlier scans were skipped
         self.done = set()               # (top_dir, scan) analysed or skipped
@@ -277,6 +284,12 @@ class ScanWatcher:
         self._running = False
 
     # ------------------------------------------------------------------
+    def figure_dir(self, top_dir, scan, job):
+        """Where ``job``'s figures for ``scan`` go (made only when a figure is saved)."""
+        if self.output_dir is None:
+            return online_output_dir(top_dir, scan, job.name, make_dir=False)
+        return os.path.join(self.output_dir, f'Scan{int(scan):03d}', job.name)
+
     def load_scan(self, scan, top_dir=None):
         """A loaded ScanDataAnalyzer for ``scan`` of ``top_dir`` (default: the watched day)."""
         top_dir = top_dir or self.top_dir
@@ -303,7 +316,7 @@ class ScanWatcher:
             t0 = time.monotonic()
             try:
                 with s.filtered():          # each job's missing-file rules apply to it alone
-                    results = job.run(s, output_dir=online_output_dir(top_dir, scan, job.name),
+                    results = job.run(s, output_dir=self.figure_dir(top_dir, scan, job),
                                       write=self.write)
                 n = 0 if results is None else len(results)
                 self._log(f"{label}: {job.name}: {n} shots ({time.monotonic() - t0:.1f} s)")

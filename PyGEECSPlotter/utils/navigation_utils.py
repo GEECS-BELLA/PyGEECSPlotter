@@ -196,6 +196,17 @@ def get_parameter_no_alias(parameter):
 def get_parameter_alias(parameter):
     return parameter.split(' Alias:')[-1]
 
+def alias_column_names(columns):
+    """
+    ``{column: name}`` naming each sfile column by its alias, except where two
+    columns would end up with the same name (e.g. two devices both aliased
+    'Position (1=IN, 2=OUT)'): those keep their name without the alias, so
+    every column name stays unique.
+    """
+    names = [get_parameter_alias(c) for c in columns]
+    counts = pd.Series(names).value_counts()
+    return {c: n if counts[n] == 1 else get_parameter_no_alias(c) for c, n in zip(columns, names)}
+
 def get_scan_parameter(top_dir, sfile_data):
     scan = sfile_data['scan'][0]
     if scan == 0:
