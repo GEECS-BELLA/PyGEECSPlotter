@@ -67,6 +67,7 @@ class _ScanState:
         self.context_size = None # .tdms size when it was read
         self.context_rows = {}   # shot -> row position in context (its last row)
         self.next_read = 0.0     # earliest time to re-read the .tdms
+        self.warned_no_shots = False
         self.required = []       # required_columns as named in the .tdms frame
         self.sfile_size = None   # (size, time first seen at that size)
         self.newer_since = None  # time a newer scan was first seen started
@@ -175,7 +176,8 @@ class LiveShotWatcher:
         if st is None:
             return None
         running = sum(1 for f in st.submitted.values() if not f.done())
-        return {'scan': st.scan, 'files': len(st.files), 'done': len(st.done),
+        return {'scan': st.scan, 'files': len(st.files), 'tdms shots': len(st.context_rows),
+                'done': len(st.done),
                 'arriving': len(set(st.files) - set(st.complete) - st.done),
                 'in progress': running, 'deferred': len(st.deferred), 'failed': len(st.failed),
                 'waiting': len(set(st.complete) - set(st.submitted) - st.done - st.deferred
@@ -299,6 +301,11 @@ class LiveShotWatcher:
         st.context, st.context_size = df, size
         shots = df['Shotnumber'] if 'Shotnumber' in df.columns else []
         st.context_rows = {int(n): i for i, n in enumerate(shots) if n == n}
+        if len(df) and not st.context_rows and not st.warned_no_shots:
+            st.warned_no_shots = True
+            self._log(f"{st.label}: the .tdms has {len(df)} rows but no shot numbers "
+                      f"(no 'Shotnumber' or '<device> shot #' channel); shots will wait "
+                      f"for the sfile")
 
     def _context_row(self, st, shot):
         """The shot's .tdms row as a dict, or None if it isn't there (complete) yet."""

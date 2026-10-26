@@ -89,7 +89,9 @@ def read_scan_tdms(path, aliases=None, retries=3, wait_s=0.2):
     The file may be mid-write: a read that fails (e.g. a partly written last
     segment) is retried ``retries`` times, ``wait_s`` apart, and channels of
     unequal length (a device's value not written yet for the newest shot) are
-    padded with NaN up to the longest. Returns None if the file doesn't
+    padded with NaN up to the longest. While GEECS is still writing the
+    file it has no ``Shotnumber`` channel yet; it is then taken from the
+    devices' ``'<device> shot #'`` channels. Returns None if the file doesn't
     exist or can't be read.
     """
     from nptdms import TdmsFile          # optional dependency (the 'live' extra)
@@ -122,4 +124,13 @@ def read_scan_tdms(path, aliases=None, retries=3, wait_s=0.2):
         if numeric[filled].notna().all():
             values = numeric             # every entry is a number (blanks -> NaN)
         data[name] = values.reindex(range(n))
-    return pd.DataFrame(data)
+    df = pd.DataFrame(data)
+    if 'Shotnumber' not in df.columns:
+        # GEECS adds the Shotnumber, Bin # and scan groups only when it closes
+        # the file; while the scan runs, each device's '<device> shot #'
+        # channel numbers the rows (a device behind by a row is NaN there)
+        shot_cols = [c for c in df.columns
+                     if str(c).endswith(' shot #') and pd.api.types.is_numeric_dtype(df[c])]
+        if shot_cols:
+            df['Shotnumber'] = df[shot_cols].max(axis=1)
+    return df
