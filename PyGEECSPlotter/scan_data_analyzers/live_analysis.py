@@ -160,7 +160,7 @@ def as_jobs(jobs):
 class ScanWatcher:
     """
     Watch a day's ``analysis`` folder and run ``jobs`` on every scan as it
-    finishes (when its ``sN.txt`` appears and has stopped changing).
+    finishes (its ``sN.txt`` and ``sNinfo.txt`` written; see ``settle_s``).
 
     Parameters
     ----------
@@ -184,6 +184,10 @@ class ScanWatcher:
     output_dir : str or Path, optional
         Root for the figures instead of ``<top_dir>/online_analysis``; they go
         to ``<output_dir>/ScanNNN/<name>/``.
+    settle_s : float
+        A scan counts as finished when its ``sNinfo.txt`` exists (GEECS writes
+        it after the sfile) and the sfile has stopped changing; if there is no
+        info file, when the sfile has not changed for ``settle_s`` seconds.
 
     Uses polling rather than file-system events, which are unreliable on
     network shares. ``reanalyze(scans)`` runs the jobs on scans already taken.
@@ -191,13 +195,14 @@ class ScanWatcher:
 
     def __init__(self, experiment_dir=None, jobs=(), top_dir=None, poll_s=2.0, start_scan=None,
                  search_replace_filename=None, column_math_filename=None, write=True,
-                 output_dir=None):
+                 output_dir=None, settle_s=30.0):
         if experiment_dir is None and top_dir is None:
             raise ValueError("Give experiment_dir (watch today's folder) or top_dir.")
         self.experiment_dir = os.fspath(experiment_dir) if experiment_dir is not None else None
         self.fixed_top_dir = os.fspath(top_dir) if top_dir is not None else None
         self.jobs = as_jobs(jobs)
         self.poll_s = poll_s
+        self.settle_s = settle_s
         self.start_scan = start_scan
         self.search_replace_filename = search_replace_filename
         self.column_math_filename = column_math_filename
@@ -206,7 +211,7 @@ class ScanWatcher:
         self.status = ''
         self._seen_days = set()         # top dirs whose earlier scans were skipped
         self.done = set()               # (top_dir, scan) analysed or skipped
-        self._sizes = {}                # sfile -> size at the last poll
+        self._sizes = {}                # sfile -> (size, time first seen at that size)
         self._running = False
 
     # ------------------------------------------------------------------
@@ -250,6 +255,7 @@ class ScanWatcher:
             self.done.update((top_dir, n) for n in sfiles
                              if self.start_scan is None or n < self.start_scan)
         ran = []
+        now = time.monotonic()
         for scan, path in sorted(sfiles.items()):
             if (top_dir, scan) in self.done:
                 continue
@@ -257,8 +263,13 @@ class ScanWatcher:
                 size = os.path.getsize(path)
             except OSError:
                 continue
-            if self._sizes.get(path) != size:      # new, or still being written
-                self._sizes[path] = size
+            if self._sizes.get(path, (None,))[0] != size:     # new, or still being written
+                self._sizes[path] = (size, now)
+                continue
+            # GEECS writes sNinfo.txt once sN.txt is complete; without it, wait
+            # until the sfile has not changed for settle_s.
+            info = os.path.join(top_dir, 'analysis', f's{scan}info.txt')
+            if not os.path.exists(info) and now - self._sizes[path][1] < self.settle_s:
                 continue
             self.done.add((top_dir, scan))
             self.run_scan(scan, top_dir=top_dir)
