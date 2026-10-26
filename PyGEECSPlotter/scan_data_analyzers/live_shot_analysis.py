@@ -474,4 +474,11 @@ class LiveShotWatcher:
         if self._pool is not None:
             self._pool.shutdown(wait=True, cancel_futures=True)
             self._pool = None
+            st = self.state
+            if st is not None:
+                # keep the shots that finished while shutting down, so a
+                # restarted watcher doesn't redo them; cancelled ones it will
+                for shot in [s for s, f in st.submitted.items() if f.cancelled()]:
+                    del st.submitted[shot]
+                self._collect(st, wait=True)
         self._log("Stopped.")
