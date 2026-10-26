@@ -5,7 +5,8 @@
 # results to online_analysis/ScanNNN/<name>_live.txt as it goes, and when the
 # scan ends (its sfile appears) analyses any shots it couldn't, merges the
 # results into the sfile and runs the displayers. Then it waits for the next
-# scan.
+# scan. Optionally, live windows (live_view.py) show the latest shot and scan
+# displayers redrawn as the scan runs.
 #
 # Threading: one controller loop (the thread that calls start()) owns all the
 # bookkeeping, so there are no shared-state races; a thread pool only runs
@@ -23,6 +24,7 @@ import matplotlib.pyplot as plt
 
 from PyGEECSPlotter.scan_data_analyzers.scan_data_analysis import ScanDataAnalyzer
 from PyGEECSPlotter.scan_data_analyzers.live_analysis import LiveJob, online_output_dir
+from PyGEECSPlotter.scan_data_analyzers.live_view import LiveView, read_scan_info
 from PyGEECSPlotter.scan_data_analyzers.sfile_frame import merge_results, rename_result_columns
 from PyGEECSPlotter.utils.io_utils import file_lock
 from PyGEECSPlotter.utils.tdms_utils import read_scan_tdms, scan_tdms_path, alias_map_for_scan
@@ -63,6 +65,10 @@ class _ScanState:
         self.deferred = set()    # waited too long for their .tdms context
         self.failed = set()
         self.pending = []        # result rows not yet written to the live file
+        self.results = []        # every result row of the scan (for the live views)
+        self.latest = None       # (shot, data, results, aux) of the newest shot collected
+        self.scan_info = read_scan_info(top_dir, scan)
+        self.live_scan = None    # ScanDataAnalyzer of the running scan, for the live views
         self.context = None      # last good .tdms frame
         self.context_size = None # .tdms size when it was read
         self.context_rows = {}   # shot -> row position in context (its last row)
@@ -81,9 +87,10 @@ class LiveShotWatcher:
     ----------
     experiment_dir : str or Path, optional
         Folder holding the year folders; the day is today's (re-checked).
-    job : LiveJob or analyzer
+    job : LiveJob or analyzer, optional
         The one analyzer (single- or multi-diagnostic) to run, with its
-        displayers and write options (see ``LiveJob``).
+        displayers and write options (see ``LiveJob``). None: no analysis,
+        only the live views (e.g. ``live_displayers`` of ``.tdms`` scalars).
     top_dir : str or Path, optional
         Watch this day folder instead (fixed).
     poll_s : float
@@ -120,6 +127,20 @@ class LiveShotWatcher:
         False (default): such shots are skipped, as by ``analyze_scan``.
     missing_input_timeout_s : float
         See ``analyze_partial``.
+    show_shots : bool
+        Show the latest analysed shot (the analyzer's ``display_data``) in a
+        window.
+    live_displayers : list of ScanDisplayer
+        Redrawn in their own windows as the scan runs, on every ``.tdms`` row
+        so far (device scalars) plus the live results (named as they will be
+        in the sfile). Mid-scan the bins come from the ScanInfo file's shots
+        per step. The ``.tdms`` columns carry their aliases if an earlier
+        sfile gave them, else device names (logged at scan start).
+    gui_interval_s : float
+        Redraw the live windows at most this often.
+
+    The live windows need an interactive matplotlib backend and ``start()``
+    called from the main thread (a script, not a notebook cell).
 
     Per-shot results go to ``online_analysis/ScanNNN/<name>_live.txt`` as
     they come in (a restarted watcher skips the shots already there);
@@ -129,18 +150,20 @@ class LiveShotWatcher:
     def __init__(self, experiment_dir=None, job=None, top_dir=None, poll_s=1.0, max_workers=None,
                  context_timeout_s=30.0, required_columns=None, start_scan=None, write=True,
                  file_settle_s=1.0, settle_s=30.0, abandon_grace_s=60.0, analyze_partial=False,
-                 missing_input_timeout_s=10.0):
+                 missing_input_timeout_s=10.0, show_shots=False, live_displayers=(),
+                 gui_interval_s=1.0):
         if experiment_dir is None and top_dir is None:
             raise ValueError("Give experiment_dir (watch today's folder) or top_dir.")
-        if job is None:
-            raise ValueError("Give the job (a LiveJob or an analyzer) to run.")
+        if job is None and not live_displayers:
+            raise ValueError("Give the job (a LiveJob or an analyzer) to run, or live_displayers.")
         self.experiment_dir = os.fspath(experiment_dir) if experiment_dir is not None else None
         self.fixed_top_dir = os.fspath(top_dir) if top_dir is not None else None
-        self.job = job if isinstance(job, LiveJob) else LiveJob(job)
-        self.analyzer = self.job.analyzer
-        self.inputs = _inputs(self.analyzer)
+        self.job = job if job is None or isinstance(job, LiveJob) else LiveJob(job)
+        self.analyzer = self.job.analyzer if self.job else None
+        self.inputs = _inputs(self.analyzer) if self.job else []
+        self.name = self.job.name if self.job else 'live plots'
         self.poll_s = poll_s
-        self.max_workers = max_workers if self.job.parallel else 1
+        self.max_workers = max_workers if self.job and self.job.parallel else 1
         self.context_timeout_s = context_timeout_s
         self.required_columns = list(required_columns if required_columns is not None
                                      else getattr(self.analyzer, 'required_columns', None) or [])
@@ -151,6 +174,8 @@ class LiveShotWatcher:
         self.abandon_grace_s = abandon_grace_s
         self.analyze_partial = analyze_partial
         self.missing_input_timeout_s = missing_input_timeout_s
+        self.view = LiveView(show_shots and self.job is not None, live_displayers, gui_interval_s,
+                             log=self._log)
         self.state = None            # _ScanState of the scan being watched
         self.aliases = {}            # .tdms raw name -> sfile alias (from an earlier sfile)
         self.last_scan = {}          # top_dir -> last scan handled
@@ -215,19 +240,23 @@ class LiveShotWatcher:
 
     def _begin(self, top_dir, scan):
         st = _ScanState(top_dir, scan)
-        path = self.live_results_path(top_dir, scan)
-        if os.path.exists(path):
+        path = self.live_results_path(top_dir, scan) if self.job else None
+        if path and os.path.exists(path):
             try:
-                st.done = set(pd.read_csv(path, sep='\t')['Shotnumber'].astype(int))
+                earlier = pd.read_csv(path, sep='\t')
+                st.done = set(earlier['Shotnumber'].astype(int))
+                st.results = earlier.to_dict('records')
             except Exception:
                 pass
+        self.view.new_scan(st.label)
         self.aliases = alias_map_for_scan(top_dir, scan)
         if not self.aliases:
             self._log(f"{st.label}: no earlier sfile found for the column aliases; "
                       f".tdms columns keep their device names")
         st.required = [self.aliases.get(c, c) for c in self.required_columns]
         self.state = st
-        self._log(f"{st.label}: started; analysing shots as they arrive"
+        self._log(f"{st.label}: started; "
+                  + ("analysing shots as they arrive" if self.job else "live plots only")
                   + (f" ({len(st.done)} already done)" if st.done else ''))
 
     def _find_files(self, st):
@@ -369,9 +398,12 @@ class LiveShotWatcher:
                 break                   # keep shot order: stop at the first unfinished
             del st.submitted[shot]
             try:
-                _, _, results, _ = future.result()
-                st.pending.append({'scan': st.scan, 'Shotnumber': shot, **results})
+                _, data, results, aux = future.result()
+                row = {'scan': st.scan, 'Shotnumber': shot, **results}
+                st.pending.append(row)
+                st.results.append(row)
                 st.done.add(shot)
+                st.latest = (shot, data, results, aux)
             except Exception:
                 st.failed.add(shot)
                 self._log(f"{st.label}: shot {shot} failed (retried at the end of the scan):\n"
@@ -383,6 +415,65 @@ class LiveShotWatcher:
             except Exception as err:
                 self._log(f"{st.label}: could not write the live results "
                           f"({len(st.pending)} shots kept, retrying): {err!r}")
+
+    # ------------------------------------------------------------------
+    # Live views
+    # ------------------------------------------------------------------
+    def _live_scan(self, st):
+        """The running scan as a ScanDataAnalyzer for the live displayers: every
+        .tdms row so far, with the live results merged in (named as they will be
+        in the sfile), bins from the ScanInfo file. None before the first row."""
+        df = st.context
+        if df is None or 'Shotnumber' not in df.columns:
+            return None
+        data = df[df['Shotnumber'].notna()].copy()
+        if data.empty:
+            return None
+        data['Shotnumber'] = data['Shotnumber'].astype(int)
+        data['scan'] = st.scan
+        data = data.drop_duplicates('Shotnumber', keep='last').reset_index(drop=True)
+        if st.results:
+            label = self.job.analysis_label or ''
+            results = pd.DataFrame(st.results).drop_duplicates(['scan', 'Shotnumber'], keep='last')
+            data = merge_results(data, rename_result_columns(results, self.job.column_prefix, label))
+        if 'Bin #' in data.columns and data['Bin #'].notna().all():
+            data['temp Bin number'] = data['Bin #']
+        else:
+            try:
+                per_step = int(float(st.scan_info.get('Shots per step', 0)))
+            except ValueError:
+                per_step = 0
+            data['temp Bin number'] = (data['Shotnumber'] - 1) // per_step + 1 if per_step > 0 else 1
+        if st.live_scan is None:
+            st.live_scan = ScanDataAnalyzer(top_dir=st.top_dir, scan=st.scan)
+            st.live_scan.sfilename = None     # not written yet: titles show the scan label
+        scan = st.live_scan
+        scan.data = data
+        raw = st.scan_info.get('Scan Parameter', '')
+        param = self.aliases.get(raw, raw)
+        scan.scan_parameter = param if param in data.columns else 'Shotnumber'
+        if self.inputs:
+            self.analyzer.register_with_scan(scan, remove_missing_files=False)
+        return scan
+
+    def _update_views(self, st, now, force=False):
+        """Redraw the live windows if something new came in (at most every
+        ``gui_interval_s``, unless ``force``)."""
+        view = self.view
+        if not view.active or (not force and now - view.last_draw < view.interval_s):
+            return
+        latest = st.latest[0] if st.latest else None
+        key = (latest, len(st.context_rows), len(st.done))
+        if key == view.drawn:
+            return
+        view.drawn, view.last_draw = key, now
+        if view.show_shots and st.latest and (force or latest != view.shot_drawn):
+            view.shot_drawn = latest
+            view.update_shot(self.analyzer, *st.latest)
+        if view.displayers:
+            scan = self._live_scan(st)
+            if scan is not None:
+                view.update_scan(scan, len(scan.data))
 
     def _append_live(self, st, df):
         path = self.live_results_path(st.top_dir, st.scan)
@@ -420,6 +511,10 @@ class LiveShotWatcher:
     def _finish(self, st):
         """Analyse the shots left over, merge everything into the sfile, run the displayers."""
         self._collect(st, wait=True)
+        self._update_views(st, time.monotonic(), force=True)
+        if self.job is None:
+            self._log(f"{st.label}: finished (live plots only)")
+            return
 
         scan = ScanDataAnalyzer(sfilename=st.sfile)
         scan.load_scan_data()
@@ -465,7 +560,7 @@ class LiveShotWatcher:
         if results is not None and self.write:
             job.write(scan, results.drop_duplicates(['scan', 'Shotnumber'], keep='last'))
         job.display(scan, online_output_dir(st.top_dir, st.scan, job.name))
-        plt.close('all')
+        self.view.close_others()
         n = 0 if results is None else results['Shotnumber'].nunique()
         self._log(f"{st.label}: finished, {n} shots ({len(st.deferred)} deferred, "
                   f"{len(st.failed)} failed live"
@@ -492,12 +587,16 @@ class LiveShotWatcher:
         self._update_complete(st, now)
         self._submit_ready(st, now)
         self._collect(st)
+        if self.view.displayers or (ended and self.view.active):
+            self._read_context(st, now)
+        self._update_views(st, now)
         if not ended:
             if self._abandoned(st, now):
                 self._collect(st, wait=True)
-                self._log(f"{st.label}: no sfile and a newer scan has started; giving up on it "
-                          f"({len(st.done)} shots in {self.live_results_path(st.top_dir, st.scan)}, "
-                          f"nothing merged)")
+                self._log(f"{st.label}: no sfile and a newer scan has started; giving up on it"
+                          + (f" ({len(st.done)} shots in "
+                             f"{self.live_results_path(st.top_dir, st.scan)}, nothing merged)"
+                             if self.job else ''))
                 self.last_scan[st.top_dir] = st.scan
                 self.state = None
             return None
@@ -513,7 +612,7 @@ class LiveShotWatcher:
         """Run until ``stop()`` or Ctrl+C."""
         self._running = True
         self._log(f"Watching {os.path.join(self.top_dir, 'scans')} for scans to start "
-                  f"({self.job.name}). Ctrl+C to stop.")
+                  f"({self.name}). Ctrl+C to stop.")
         errors = 0
         try:
             while self._running:
@@ -524,7 +623,7 @@ class LiveShotWatcher:
                     # e.g. the network share dropped out: report, back off, carry on
                     errors += 1
                     self._log(f"poll failed ({errors} in a row):\n{traceback.format_exc()}")
-                time.sleep(min(self.poll_s * 2 ** min(errors, 5), 30.0))
+                self.view.wait(min(self.poll_s * 2 ** min(errors, 5), 30.0))
         except KeyboardInterrupt:
             pass
         finally:

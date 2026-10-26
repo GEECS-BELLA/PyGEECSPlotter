@@ -42,7 +42,7 @@ from PyGEECSPlotter.analyzers.column_math_analysis import ColumnMathAnalyzer
 from PyGEECSPlotter.displayers import ScalarVsParameter, SampledImages, MeanImagePerBin
 
 DATA_ROOT = r'N:\data'
-MODE = 'scan'                # 'scan': ScanWatcher; 'shots': LiveShotWatcher
+MODE = 'scan'                # 'scan': ScanWatcher; 'shots': LiveShotWatcher; 'windows': with live windows
 WRITE = False                # True: write results into the sfiles
 
 # %% [markdown]
@@ -139,3 +139,29 @@ if MODE == 'shots':
     live = LiveShotWatcher(experiment_dir=DATA_ROOT, job=jobs[1], write=WRITE,
                            required_columns=[], context_timeout_s=30)
     live.start()                 # Ctrl+C to stop
+
+# %% [markdown]
+# ## Live windows
+#
+# `show_shots=True` opens a window with the latest analysed shot, drawn by
+# the analyzer's `display_data`. `live_displayers` are scan displayers
+# redrawn in their own windows as the scan runs, at most every
+# `gui_interval_s`. They see every `.tdms` row so far, which holds the
+# device scalars, plus the live results under the names they will have in
+# the sfile.
+#
+# Mid-scan, the bins come from the ScanInfo file's shots per step. `.tdms`
+# columns carry their alias only if an earlier sfile that day, or on an
+# earlier day, gave it; otherwise they keep their device names.
+#
+# Without a `job`, the watcher only draws the live plots: nothing is analysed
+# or written.
+#
+# The windows need an interactive backend, so remove `matplotlib.use('Agg')`
+# above. `start()` must also run in the main thread of a script.
+
+# %%
+if MODE == 'windows':
+    live = LiveShotWatcher(experiment_dir=DATA_ROOT, job=jobs[1], write=WRITE, show_shots=True,
+                           live_displayers=[ScalarVsParameter('CAM-HPD-CCD sum_counts')])
+    live.start()
