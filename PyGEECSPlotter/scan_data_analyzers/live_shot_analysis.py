@@ -56,6 +56,8 @@ class _ScanState:
         self.sizes = {}          # path -> (size, time first seen at that size)
         self.complete = {}       # shot -> {diagnostic: path}, files done writing
         self.first_ready = {}    # shot -> time its files were complete
+        self.partial_since = {}  # shot -> time its present files settled, inputs missing
+        self.partial = set()     # shots analysed with an input missing
         self.submitted = {}      # shot -> future
         self.done = set()        # shots with results (this run or a previous one)
         self.deferred = set()    # waited too long for their .tdms context
@@ -110,6 +112,13 @@ class LiveShotWatcher:
     abandon_grace_s : float
         A scan with no sfile is given up (aborted) once a newer scan has been
         running this long: its live results are kept, nothing is merged.
+    analyze_partial : bool
+        Multi-diagnostic jobs: analyse a shot that is missing one of the
+        inputs (its data is None; the analyzer must handle that) once a
+        later shot has all of them, or after ``missing_input_timeout_s``.
+        False (default): such shots are skipped, as by ``analyze_scan``.
+    missing_input_timeout_s : float
+        See ``analyze_partial``.
 
     Per-shot results go to ``online_analysis/ScanNNN/<name>_live.txt`` as
     they come in (a restarted watcher skips the shots already there);
@@ -118,7 +127,8 @@ class LiveShotWatcher:
 
     def __init__(self, experiment_dir=None, job=None, top_dir=None, poll_s=1.0, max_workers=None,
                  context_timeout_s=30.0, required_columns=None, start_scan=None, write=True,
-                 file_settle_s=1.0, settle_s=30.0, abandon_grace_s=60.0):
+                 file_settle_s=1.0, settle_s=30.0, abandon_grace_s=60.0, analyze_partial=False,
+                 missing_input_timeout_s=10.0):
         if experiment_dir is None and top_dir is None:
             raise ValueError("Give experiment_dir (watch today's folder) or top_dir.")
         if job is None:
@@ -138,6 +148,8 @@ class LiveShotWatcher:
         self.file_settle_s = file_settle_s
         self.settle_s = settle_s
         self.abandon_grace_s = abandon_grace_s
+        self.analyze_partial = analyze_partial
+        self.missing_input_timeout_s = missing_input_timeout_s
         self.state = None            # _ScanState of the scan being watched
         self.aliases = {}            # .tdms raw name -> sfile alias (from an earlier sfile)
         self.last_scan = {}          # top_dir -> last scan handled
@@ -230,27 +242,39 @@ class LiveShotWatcher:
             except FileNotFoundError:
                 continue
 
+    def _settled(self, st, path, now):
+        """The file exists and has kept its (non-zero) size for ``file_settle_s``."""
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            return False
+        if st.sizes.get(path, (None,))[0] != size:
+            st.sizes[path] = (size, now)
+        return size > 0 and now - st.sizes[path][1] >= self.file_settle_s
+
     def _update_complete(self, st, now):
-        """Shots whose every input file exists and kept its size for ``file_settle_s``."""
+        """Shots whose every input file exists and kept its size for ``file_settle_s``
+        (and, with ``analyze_partial``, shots given up waiting for a missing input)."""
+        n_inputs = len(self.inputs)
+        newest_full = max((s for s, p in st.files.items() if len(p) == n_inputs), default=0)
         for shot, paths in st.files.items():
             if shot in st.complete or shot in st.done:
                 continue
-            if self.inputs and len(paths) < len(self.inputs):
+            settled = all([self._settled(st, path, now) for path in paths.values()])
+            if not settled:
                 continue
-            settled = True
-            for path in paths.values():
-                try:
-                    size = os.path.getsize(path)
-                except OSError:
-                    settled = False
+            if len(paths) < n_inputs:
+                if not self.analyze_partial:
                     continue
-                if st.sizes.get(path, (None,))[0] != size:
-                    st.sizes[path] = (size, now)
-                if size == 0 or now - st.sizes[path][1] < self.file_settle_s:
-                    settled = False
-            if settled:
-                st.complete[shot] = dict(paths)
-                st.first_ready[shot] = now
+                since = st.partial_since.setdefault(shot, now)
+                if shot >= newest_full and now - since < self.missing_input_timeout_s:
+                    continue            # the missing file may still come
+                st.partial.add(shot)
+                self._log(f"{st.label}: shot {shot} has no "
+                          f"{', '.join(d for d, _ in self.inputs if d not in paths)}; "
+                          f"analysing it without")
+            st.complete[shot] = dict(paths)
+            st.first_ready[shot] = now
 
     def _read_context(self, st, now):
         """Re-read the .tdms if it has grown since the last good read. Reading
@@ -317,9 +341,12 @@ class LiveShotWatcher:
                 continue
             row.update({'scan': st.scan, 'Shotnumber': shot})
             row.setdefault('temp Bin number', row.get('Bin #'))
-            for diag, path in st.complete[shot].items():
-                row[f'{diag} file_list'] = path
-                row[f'{diag} file_exists'] = 1
+            for diag, ext in self.inputs:
+                path = st.complete[shot].get(diag)
+                # a missing input gets its expected path, as analyze_scan does
+                row[f'{diag} file_list'] = path or os.path.join(
+                    st.scan_dir, diag, f'{st.label}_{diag}_{shot:03d}{ext}')
+                row[f'{diag} file_exists'] = int(path is not None)
             st.submitted[shot] = self._pool.submit(
                 helper._process_row_and_write, self.analyzer, st.bg, pd.Series(row),
                 self.job.write_analyzed, self.job.write_lineouts)
@@ -396,7 +423,13 @@ class LiveShotWatcher:
         label = job.analysis_label or ''
         parts = []
         with scan.filtered():
-            self.analyzer.register_with_scan(scan)
+            if self.analyze_partial and len(self.inputs) > 1:
+                self.analyzer.register_with_scan(scan, remove_missing_files=False)
+                exists = [f'{d} file_exists' for d, _ in self.inputs]
+                scan.filter_rows(lambda d: (d[exists] > 0).any(axis=1).to_numpy(),
+                                 name='live: some input exists')
+            else:
+                self.analyzer.register_with_scan(scan)
             path = self.live_results_path(st.top_dir, st.scan)
             live = [pd.read_csv(path, sep='\t')] if os.path.exists(path) else []
             if st.pending:              # results the live file could not take
@@ -428,7 +461,8 @@ class LiveShotWatcher:
         plt.close('all')
         n = 0 if results is None else results['Shotnumber'].nunique()
         self._log(f"{st.label}: finished, {n} shots ({len(st.deferred)} deferred, "
-                  f"{len(st.failed)} failed live)")
+                  f"{len(st.failed)} failed live"
+                  + (f", {len(st.partial)} with an input missing" if st.partial else '') + ")")
 
     # ------------------------------------------------------------------
     # Loop

@@ -113,7 +113,26 @@ if MODE == 'scan':
 # and are analysed in order; `watcher.progress()` shows how far behind it is.
 #
 # **Restarts.** A restarted watcher reads `<name>_live.txt` and skips the
-# shots that are already in it.
+# shots that are already in it. Started mid-scan, it picks up the scan that
+# is running.
+#
+# **Timing.** A shot's file counts as written once its size has not changed
+# for `file_settle_s`. A scan has ended when its `sNinfo.txt` exists (GEECS
+# writes it after the sfile), or after `settle_s` with no info file. A scan
+# that never gets an sfile (aborted) is given up `abandon_grace_s` after the
+# next scan starts; its `_live.txt` is kept but nothing is merged.
+#
+# **Errors.** A shot whose analysis fails is tried again once at the end of
+# the scan. Other errors, such as a network drive dropping out, are printed
+# and the watcher carries on.
+#
+# **Several diagnostics.** A `MultiDiagnosticAnalyzer` job waits for every
+# input's file. Its result columns are prefixed with its
+# `output_diagnostic`, and with `use_bg` each input gets its own background.
+# By default, a shot missing one of the inputs is skipped, as `analyze_scan`
+# does. With `analyze_partial=True` it is analysed without that input (its
+# data is None, so the analyzer must handle it) once a later shot has every
+# input, or after `missing_input_timeout_s`.
 
 # %%
 if MODE == 'shots':

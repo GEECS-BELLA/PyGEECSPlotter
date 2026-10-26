@@ -58,14 +58,16 @@ class LiveJob:
     update_scan_data_file : bool [``update_scan_data_file``, default False]
         Also merge them into ``scans/ScanNNN/ScanDataScanNNN.txt``.
     use_bg : bool [``use_bg``, default False]
-        Use the day's ``*<diagnostic>_averaged<ext>`` background.
+        Use the day's ``*<diagnostic>_averaged<ext>`` background (for a
+        multi-diagnostic analyzer, one per input).
     write_analyzed, write_lineouts : bool [same keys, default False]
         Per-shot files, written to ``analysis/ScanNNN`` as by ``analyze_scan``.
     analysis_label : str [``analysis_label``]
         Appended to the result column names.
     column_prefix : str
         Prefix of the result column names. Default: the analyzer's
-        ``diagnostic`` (none for column maths), as the old watcher wrote.
+        ``diagnostic`` (none for column maths), as the old watcher wrote; for
+        a multi-diagnostic analyzer, its ``output_diagnostic``.
     parallel : bool
         Default: the analyzer's ``thread_safe``.
     name : str
@@ -85,7 +87,9 @@ class LiveJob:
         self.write_analyzed = _flag(write_analyzed, a, 'write_analyzed', False)
         self.write_lineouts = _flag(write_lineouts, a, 'write_lineouts', False)
         self.analysis_label = _flag(analysis_label, a, 'analysis_label', None)
-        self.column_prefix = column_prefix if column_prefix is not None else getattr(a, 'diagnostic', None)
+        self.column_prefix = column_prefix if column_prefix is not None else (
+            getattr(a, 'diagnostic', None) or getattr(a, 'output_diagnostic', None)
+            if getattr(a, 'inputs', None) else getattr(a, 'diagnostic', None))
         self.parallel = getattr(a, 'thread_safe', True) if parallel is None else parallel
         self.name = name or next(
             (n for n in (getattr(a, 'output_diagnostic', None), getattr(a, 'diagnostic', None),
@@ -97,9 +101,15 @@ class LiveJob:
                 f"{len(self.displayers)} displayers)")
 
     def bg(self, scan):
-        """Background path for this scan, or None."""
+        """Background path for this scan, or None; for a multi-diagnostic
+        analyzer, ``{input: path}`` (inputs with a background file)."""
         a = self.analyzer
-        if not self.use_bg or getattr(a, 'diagnostic', None) is None:
+        if not self.use_bg:
+            return None
+        if getattr(a, 'diagnostic', None) is None and getattr(a, 'inputs', None):
+            paths = {name: scan.get_bg_file_path(name, ext) for name, ext in a.inputs}
+            return {name: p for name, p in paths.items() if p} or None
+        if getattr(a, 'diagnostic', None) is None:
             return None
         return scan.get_bg_file_path(a.diagnostic, a.file_ext or '.png')
 
