@@ -61,7 +61,10 @@ class _ScanState:
         self.deferred = set()    # waited too long for their .tdms context
         self.failed = set()
         self.pending = []        # result rows not yet written to the live file
-        self.context = None      # last .tdms frame
+        self.context = None      # last good .tdms frame
+        self.context_size = None # .tdms size when it was read
+        self.context_rows = {}   # shot -> row position in context (its last row)
+        self.next_read = 0.0     # earliest time to re-read the .tdms
         self.required = []       # required_columns as named in the .tdms frame
         self.sfile_size = None   # (size, time first seen at that size)
         self.newer_since = None  # time a newer scan was first seen started
@@ -249,15 +252,36 @@ class LiveShotWatcher:
                 st.complete[shot] = dict(paths)
                 st.first_ready[shot] = now
 
+    def _read_context(self, st, now):
+        """Re-read the .tdms if it has grown since the last good read. Reading
+        it costs a few ms per shot, so the next read waits at least twice as
+        long as the last one took (long scans: the loop isn't kept busy
+        reading). A failed read (locked, mid-segment) keeps the last good
+        frame; the next poll tries again."""
+        if now < st.next_read:
+            return
+        try:
+            size = os.path.getsize(st.tdms)
+        except OSError:
+            return
+        if st.context is not None and size == st.context_size:
+            return
+        t0 = time.monotonic()
+        df = read_scan_tdms(st.tdms, aliases=self.aliases)
+        t1 = time.monotonic()
+        st.next_read = t1 + 2 * (t1 - t0)
+        if df is None:
+            return
+        st.context, st.context_size = df, size
+        shots = df['Shotnumber'] if 'Shotnumber' in df.columns else []
+        st.context_rows = {int(n): i for i, n in enumerate(shots) if n == n}
+
     def _context_row(self, st, shot):
         """The shot's .tdms row as a dict, or None if it isn't there (complete) yet."""
-        df = st.context
-        if df is None or 'Shotnumber' not in df.columns:
+        i = st.context_rows.get(shot)
+        if i is None:
             return None
-        rows = df[df['Shotnumber'] == shot]
-        if rows.empty:
-            return None
-        row = rows.iloc[-1].to_dict()
+        row = st.context.iloc[i].to_dict()
         for col in st.required:
             value = row.get(col)
             if value is None or (isinstance(value, float) and value != value):
@@ -281,7 +305,7 @@ class LiveShotWatcher:
                    and s not in st.deferred and s not in st.failed]
         if not waiting:
             return
-        st.context = read_scan_tdms(st.tdms, aliases=self.aliases)
+        self._read_context(st, now)
         helper = self._helper_scan(st)
         for shot in waiting:
             row = self._context_row(st, shot)
