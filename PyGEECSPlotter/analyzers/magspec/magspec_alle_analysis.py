@@ -30,7 +30,7 @@ from pw_py_magspec.pipeline import run_alle
 from pw_py_magspec.stage1 import ebeam_y_angle
 from PyGEECSPlotter.analyzers.multi_diagnostic_analyzer import MultiDiagnosticAnalyzer
 from PyGEECSPlotter.utils.navigation_utils import get_analysed_shot_save_path
-from PyGEECSPlotter.analyzers.magspec.magspec_alle_reader import load_ebeam_profile
+from PyGEECSPlotter.analyzers.magspec.magspec_alle_reader import load_ebeam_profile, table_diagnostic
 
 FIELD_COLUMN = 'HALLPROBE-TEA-MAGSPEC Field'
 ICT_COLUMN = 'TurboICT charge [pc]'
@@ -81,6 +81,10 @@ class MagSpecAllEAnalyzer(MultiDiagnosticAnalyzer):
         py_test_v1'``. Default None: the MATLAB ``'EBeamPrf ...'`` names.
         ``momentum_grid`` : fixed momentum axis [GeV/c] for ``aux['p']``
         (default 1024 points across ``roi``).
+        ``use_cache`` : reuse the camera rotation operators and the
+        per-input-angle axes across shots (default True). They depend only
+        on the calibration and the exact input angle, so caching does not
+        change results; False rebuilds them every shot (for checks).
     calibration_kwargs : dict, optional
         Extra arguments for :class:`MagSpecCalibration` (``crrnt``,
         ``mgs_chg``, ``lanex_file``).
@@ -104,7 +108,12 @@ class MagSpecAllEAnalyzer(MultiDiagnosticAnalyzer):
     allE charge density and spectrum, front-screen x-ray, info text).
     ``display_dict={'info': False}``, or passing ``fig``/``ax`` (as the
     image-grid displayers do), gives the simple allE + spectrum view.
-    ``write_displayed_data`` saves it as ``ScanNNN_<diag>infoE_SSS.png``.
+    ``write_displayed_data`` saves it as ``<diag>-infoE/ScanNNN_<diag>-infoE_SSS.png``.
+
+    Outputs follow the GEECS stitcher (``ANALY-TEA-MagSpecSticher``)
+    layout, one diagnostic folder per output under ``analysis/ScanNNN/``:
+    ``<diag>`` (allE PNG), ``<diag>-interpSpec`` / ``<diag>-interpDiv``
+    (tables), ``<diag>-xray`` (infoE inputs) and ``<diag>-infoE`` (figure).
 
     ``analyze_data`` returns ``(allE, results, aux)``:
 
@@ -237,7 +246,9 @@ class MagSpecAllEAnalyzer(MultiDiagnosticAnalyzer):
 
         s1, s2 = run_alle(raw, bgs, self.calibration, field_T, ey,
                           roi=tuple(ad.get('roi', (0.01, 5.0))),
-                          emulate_quantization=ad.get('emulate_quantization', True))
+                          emulate_quantization=ad.get('emulate_quantization', True),
+                          # only passed when set: older pw_py_magspec has no caches
+                          **({'use_cache': ad['use_cache']} if 'use_cache' in ad else {}))
 
         results = dict(s2.scalars)
         results['eYAngle_mrad'] = ey
@@ -344,19 +355,25 @@ class MagSpecAllEAnalyzer(MultiDiagnosticAnalyzer):
         return np.linspace(roi[0], roi[1], n)
 
     def write_analyzed_data(self, data, analysis_dir, scan, shot_num, context=None, aux=None):
-        """allE png (integer aC, 'N aC/count' comment) + allESpec/allEDiv
-        tables, in the MATLAB formats. The tables need the shot's ``aux``
-        (``analyze_scan`` passes it); without it only the PNG is written."""
+        """allE png (integer aC, 'N aC/count' comment) and the allESpec /
+        allEDiv tables (MATLAB columns and format), laid out like the GEECS
+        stitcher (``ANALY-TEA-MagSpecSticher``), one diagnostic folder each::
+
+            <diag>/ScanNNN_<diag>_SSS.png
+            <diag>-interpSpec/ScanNNN_<diag>-interpSpec_SSS.txt
+            <diag>-interpDiv/ScanNNN_<diag>-interpDiv_SSS.txt
+
+        The tables need the shot's ``aux`` (``analyze_scan`` passes it);
+        without it only the PNG is written."""
         if data is None:
             return
         diag = self.output_diagnostic
         write_int_ac_png(get_analysed_shot_save_path(analysis_dir, diag, scan, shot_num, '.png'), data)
         if aux:
-            spec, div = aux['allESpec'], aux['allEDiv']
-            write_table(get_analysed_shot_save_path(analysis_dir, diag, scan, shot_num, '.txt', 'Spec'),
-                        list(spec.columns), [spec[c] for c in spec.columns])
-            write_table(get_analysed_shot_save_path(analysis_dir, diag, scan, shot_num, '.txt', 'Div'),
-                        list(div.columns), [div[c] for c in div.columns])
+            for kind, table in (('Spec', aux['allESpec']), ('Div', aux['allEDiv'])):
+                sub = table_diagnostic(diag, kind)
+                write_table(get_analysed_shot_save_path(analysis_dir, sub, scan, shot_num, '.txt'),
+                            list(table.columns), [table[c] for c in table.columns])
             if self.xray_diagnostic:
                 self._write_xray(aux['infoE'], analysis_dir, scan, shot_num)
 
@@ -375,10 +392,10 @@ class MagSpecAllEAnalyzer(MultiDiagnosticAnalyzer):
                     list(cols), padded)
 
     def write_displayed_data(self, fig, analysis_dir, scan, shot_num):
-        """Save the displayed figure (infoE by default) as
-        ``<output_diagnostic>/ScanNNN_<diag>infoE_SSS.png``."""
+        """Save the displayed figure (infoE by default) as its own
+        diagnostic, ``<diag>-infoE/ScanNNN_<diag>-infoE_SSS.png``."""
         if fig is None:
             return
-        path = get_analysed_shot_save_path(analysis_dir, self.output_diagnostic, scan, shot_num,
-                                           '.png', 'infoE')
+        path = get_analysed_shot_save_path(analysis_dir, f'{self.output_diagnostic}-infoE', scan,
+                                           shot_num, '.png')
         fig.savefig(path, dpi=self.display_dict.get('dpi', 120))

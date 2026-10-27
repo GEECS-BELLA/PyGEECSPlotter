@@ -41,6 +41,13 @@ _INFOE_SCALARS = ('charge_pC', 'peakMomentum_GeV/c', 'fwhmMomentum_GeV/c', 'mmtR
 ICT_COLUMN = 'TurboICT charge [pc]'
 
 
+def table_diagnostic(diag, kind):
+    """Folder (and file diagnostic) of the ``kind`` = ``'Spec'`` / ``'Div'``
+    table of allE output ``diag``, named like the GEECS stitcher's
+    (``ANALY-TEA-MagSpecSticher-interpSpec``): ``'<diag>-interp<kind>'``."""
+    return f'{diag}-interp{kind}'
+
+
 def load_ebeam_profile(top, scan, shot, diag):
     """Saved EBeam-profile image [pC] and angle axes of one shot, or None.
 
@@ -62,11 +69,15 @@ class MagSpecAllEReader(DataReader):
     Load saved ``MagSpecAllEAnalyzer`` outputs instead of recomputing them.
 
     ``MagSpecAllEAnalyzer`` with ``write_analyzed=True`` writes, per shot,
-    under ``analysis/ScanNNN/<output_diagnostic>/``::
+    under ``analysis/ScanNNN/`` (the GEECS stitcher's layout)::
 
-        ScanNNN_<diag>_SSS.png       allE image (integer aC, 'N aC/count')
-        ScanNNN_<diag>Spec_SSS.txt   allESpec table
-        ScanNNN_<diag>Div_SSS.txt    allEDiv table
+        <diag>/ScanNNN_<diag>_SSS.png                          allE image (integer aC)
+        <diag>-interpSpec/ScanNNN_<diag>-interpSpec_SSS.txt    allESpec table
+        <diag>-interpDiv/ScanNNN_<diag>-interpDiv_SSS.txt      allEDiv table
+
+    The older layout, with the tables beside the PNG as
+    ``<diag>/ScanNNN_<diag>Spec_SSS.txt`` (MATLAB ``allE`` outputs, earlier
+    runs), is read too (``table_path``).
 
     Set ``load`` to read only what the view needs:
 
@@ -99,7 +110,7 @@ class MagSpecAllEReader(DataReader):
     on those existing columns and read only the chosen shots' files.
 
     Every mode lists the PNGs to find each shot's files, so shots without
-    saved outputs are masked; the tables are read from beside the PNG.
+    saved outputs are masked; each shot's tables are found from its PNG.
 
     Parameters
     ----------
@@ -107,7 +118,7 @@ class MagSpecAllEReader(DataReader):
         ``'image'``, ``'spec'``, ``'div'`` or ``'all'``.
     diagnostic : str
         The analyzer's ``output_diagnostic`` (default ``'MagSpecAllE'``).
-        ``'allE'`` reads the MATLAB outputs, which use the same naming.
+        ``'allE'`` reads the MATLAB outputs (older same-folder layout).
     analyzer_dict : dict, optional
         ``roi`` / ``momentum_grid`` as for ``MagSpecAllEAnalyzer`` -- defines
         the fixed grid for ``aux['p']``. Keep them the same as the analysis
@@ -143,7 +154,7 @@ class MagSpecAllEReader(DataReader):
             # infoE figures go to their own folder, not into the allE one
             output_diagnostic = f'{diagnostic}-infoE' if load == 'infoE' else diagnostic
         # file_list always points at the PNG: listing its folder is cheap and
-        # masks shots with no outputs; the tables sit beside it
+        # masks shots with no outputs; table_path finds the tables from it
         super().__init__(diagnostic=diagnostic, file_ext='.png',
                          analyzer_dict=analyzer_dict, display_dict=display_dict,
                          output_diagnostic=output_diagnostic)
@@ -187,9 +198,19 @@ class MagSpecAllEReader(DataReader):
 
     @staticmethod
     def table_path(png_path, kind):
-        """``.../ScanNNN_<diag>_SSS.png`` -> ``.../ScanNNN_<diag><kind>_SSS.txt``."""
+        """The ``kind`` (``'Spec'`` / ``'Div'``) table of the shot whose allE
+        PNG is ``.../ScanNNN/<diag>/ScanNNN_<diag>_SSS.png``: the GEECS-style
+        ``.../ScanNNN/<diag>-interp<kind>/ScanNNN_<diag>-interp<kind>_SSS.txt``
+        if it exists, else the older same-folder
+        ``.../ScanNNN/<diag>/ScanNNN_<diag><kind>_SSS.txt`` (MATLAB ``allE``
+        outputs and earlier ``MagSpecAllEAnalyzer`` runs)."""
         folder, name = os.path.split(png_path)
         stem, shot = os.path.splitext(name)[0].rsplit('_', 1)
+        scan_name, diag = stem.split('_', 1)
+        sub = table_diagnostic(diag, kind)
+        path = os.path.join(os.path.dirname(folder), sub, f'{scan_name}_{sub}_{shot}.txt')
+        if os.path.exists(path):
+            return path
         return os.path.join(folder, f'{stem}{kind}_{shot}.txt')
 
     def load_data(self, filename):
@@ -289,11 +310,15 @@ class MagSpecAllEReader(DataReader):
 
     def write_displayed_data(self, fig, analysis_dir, scan, shot_num):
         """Save the displayed figure as
-        ``<output_diagnostic>/ScanNNN_<output_diagnostic>infoE_SSS.png``."""
+        ``<output_diagnostic>/ScanNNN_<output_diagnostic>_SSS.png`` (by
+        default ``<diagnostic>-infoE/ScanNNN_<diagnostic>-infoE_SSS.png``, as
+        ``MagSpecAllEAnalyzer`` writes it). If ``output_diagnostic`` is the
+        allE folder itself, an ``infoE`` suffix keeps the allE PNG intact."""
         if fig is None:
             return
+        suffix = 'infoE' if self.output_diagnostic == self.diagnostic else None
         path = get_analysed_shot_save_path(analysis_dir, self.output_diagnostic, scan, shot_num,
-                                           '.png', 'infoE')
+                                           '.png', suffix)
         fig.savefig(path, dpi=self.display_dict.get('dpi', 120))
 
     def display_data(self, data, return_dict=None, title=None, fig=None, ax=None, aux=None):
