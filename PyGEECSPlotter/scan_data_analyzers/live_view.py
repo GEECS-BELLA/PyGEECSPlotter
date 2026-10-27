@@ -64,6 +64,7 @@ class LiveView:
         self.last_draw = float('-inf')
         self.drawn = None           # what was drawn last (to skip unchanged redraws)
         self.shot_drawn = None      # shot number in the shot window
+        self.scan_drawn_at = {}     # displayer index -> time it was last redrawn
         self.show = _interactive_backend() and threading.current_thread() is threading.main_thread()
         if self.active and not self.show:
             self.log("Live views: no interactive matplotlib backend, or not on the main "
@@ -81,10 +82,12 @@ class LiveView:
         self.closed.clear()
         self.drawn = None
         self.shot_drawn = None
+        self.scan_drawn_at.clear()
 
     # ------------------------------------------------------------------
-    def _figure(self, key, title, figsize=(6, 5)):
-        """The live figure for ``key``, cleared (None if the user closed it)."""
+    def _figure(self, key, title, figsize=(6, 5), clear=True):
+        """The live figure for ``key``, cleared unless ``clear`` is False (None if
+        the user closed it)."""
         if key in self.closed:
             return None
         fig = self.figs.get(key)
@@ -96,7 +99,8 @@ class LiveView:
             self.figs[key] = fig
             if self.show:
                 fig.show()
-        fig.clf()
+        if clear:
+            fig.clf()
         self._title(fig, title)
         return fig
 
@@ -134,10 +138,13 @@ class LiveView:
     def update_shot(self, analyzer, shot, data, results, aux):
         """The analyzer's ``display_data`` of one shot."""
         title = f'{self.label} shot {shot}'
-        fig = self._figure('shot', f'Live: {title}')
+        # an analyzer with ``live_update = True`` updates its own figure in
+        # place (much faster than drawing it afresh for every shot)
+        in_place = getattr(analyzer, 'live_update', False)
+        fig = self._figure('shot', f'Live: {title}', clear=not in_place)
         if fig is None:
             return
-        ax = fig.add_subplot()
+        ax = None if in_place else fig.add_subplot()
         try:
             if data is None:
                 raise ValueError('the analyzer returned no data to display')
@@ -150,15 +157,29 @@ class LiveView:
             self._failed(fig, 'shot', f'display_data of {type(analyzer).__name__}')
         self._refresh(fig)
 
-    def update_scan(self, scan, n_shots):
-        """Each displayer on ``scan`` (the running scan, as far as it has got)."""
+    def _due(self, i, displayer, now, force):
+        """A displayer with ``live_interval_s`` is redrawn at most that often."""
+        return force or now - self.scan_drawn_at.get(i, float('-inf')) >= getattr(
+            displayer, 'live_interval_s', 0.0)
+
+    def any_due(self, now, force=False):
+        return any(self._due(i, d, now, force) for i, d in enumerate(self.displayers))
+
+    def update_scan(self, scan, n_shots, now=0.0, force=False):
+        """Each displayer on ``scan`` (the running scan, as far as it has got)
+        that is due (see ``live_interval_s``)."""
         for i, displayer in enumerate(self.displayers):
+            if not self._due(i, displayer, now, force):
+                continue
+            self.scan_drawn_at[i] = now
             title = f'Live: {self.label} {type(displayer).__name__} ({n_shots} shots)'
+            # a displayer with ``live_update = True`` updates its figure in place
+            in_place = getattr(displayer, 'live_update', False)
             fig = self._figure(i, title, displayer.display_dict.get('figsize', (6, 5))
-                               if hasattr(displayer, 'display_dict') else (6, 5))
+                               if hasattr(displayer, 'display_dict') else (6, 5), clear=not in_place)
             if fig is None:
                 continue
-            ax = fig.add_subplot()
+            ax = None if in_place else fig.add_subplot()
             try:
                 new_fig, _ = scan.display_scan(displayer, fig=fig, ax=ax)
                 self._adopt(i, fig, new_fig, title)

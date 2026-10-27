@@ -147,9 +147,14 @@ class LiveJob:
                                                target_filename=target)
 
     def display(self, scan, output_dir=None):
-        """Run each displayer on ``scan``, saving to ``output_dir``; errors are reported, not raised."""
+        """Run each displayer on ``scan``, saving to ``output_dir``; errors are reported, not raised.
+        A displayer with its own analyzer (e.g. a reader of the files the job
+        wrote) has it registered with the scan first."""
         for displayer in self.displayers:
             try:
+                other = getattr(displayer, 'analyzer', None)
+                if other is not None and other is not self.analyzer and hasattr(other, 'register_with_scan'):
+                    other.register_with_scan(scan)
                 fig, _ = scan.display_scan(displayer, save=True, output_dir=output_dir)
                 plt.close(fig)
             except Exception:

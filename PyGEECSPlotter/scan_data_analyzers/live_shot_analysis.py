@@ -243,7 +243,7 @@ class LiveShotWatcher:
         path = self.live_results_path(top_dir, scan) if self.job else None
         if path and os.path.exists(path):
             try:
-                earlier = pd.read_csv(path, sep='\t')
+                earlier = pd.read_csv(path, sep='\t', float_precision='round_trip')
                 st.done = set(earlier['Shotnumber'].astype(int))
                 st.results = earlier.to_dict('records')
             except Exception:
@@ -454,6 +454,13 @@ class LiveShotWatcher:
         scan.scan_parameter = param if param in data.columns else 'Shotnumber'
         if self.inputs:
             self.analyzer.register_with_scan(scan, remove_missing_files=False)
+        # a displayer with its own analyzer (e.g. a reader of the per-shot files
+        # the job writes) finds its files the same way; shots without them yet
+        # are left out
+        for displayer in self.view.displayers:
+            other = getattr(displayer, 'analyzer', None)
+            if other is not None and other is not self.analyzer and hasattr(other, 'register_with_scan'):
+                other.register_with_scan(scan)
         return scan
 
     def _update_views(self, st, now, force=False):
@@ -470,16 +477,16 @@ class LiveShotWatcher:
         if view.show_shots and st.latest and (force or latest != view.shot_drawn):
             view.shot_drawn = latest
             view.update_shot(self.analyzer, *st.latest)
-        if view.displayers:
+        if view.displayers and view.any_due(now, force):
             scan = self._live_scan(st)
             if scan is not None:
-                view.update_scan(scan, len(scan.data))
+                view.update_scan(scan, len(scan.data), now, force)
 
     def _append_live(self, st, df):
         path = self.live_results_path(st.top_dir, st.scan)
         with file_lock(path):
             if os.path.exists(path):
-                df = pd.concat([pd.read_csv(path, sep='\t'), df], ignore_index=True)
+                df = pd.concat([pd.read_csv(path, sep='\t', float_precision='round_trip'), df], ignore_index=True)
             df.to_csv(path, sep='\t', index=False)
 
     # ------------------------------------------------------------------
@@ -533,7 +540,7 @@ class LiveShotWatcher:
             else:
                 self.analyzer.register_with_scan(scan)
             path = self.live_results_path(st.top_dir, st.scan)
-            live = [pd.read_csv(path, sep='\t')] if os.path.exists(path) else []
+            live = [pd.read_csv(path, sep='\t', float_precision='round_trip')] if os.path.exists(path) else []
             if st.pending:              # results the live file could not take
                 live.append(pd.DataFrame(st.pending))
             if live:
