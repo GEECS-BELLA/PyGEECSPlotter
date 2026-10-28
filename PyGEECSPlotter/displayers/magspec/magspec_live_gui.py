@@ -26,7 +26,20 @@ import threading
 import time
 
 TRENDS = ['charge_pC', 'peakMomentum_GeV/c', 'maxMomentum_GeV/c', 'eYAngle_mrad']
-CMAPS = ['jet', 'viridis', 'inferno', 'turbo', 'gray']
+# geecs_cmaps factories first, then matplotlib names
+GEECS_CMAPS = ['white_blue_yellow', 'white_blue_yellow_black', 'enhance_low', 'bwr_enhance_low',
+               'blue_yellow_red', 'inferno_pic', 'wby_grey']
+CMAPS = GEECS_CMAPS + ['jet', 'viridis', 'inferno', 'turbo', 'gray', 'RdBu']
+
+
+def colormap(name, _cache={}):
+    """A matplotlib colormap: one of PyGEECSPlotter.utils.geecs_cmaps, else a matplotlib name."""
+    if name in GEECS_CMAPS:
+        if name not in _cache:
+            import PyGEECSPlotter.utils.geecs_cmaps as gcm
+            _cache[name] = getattr(gcm, name)()
+        return _cache[name]
+    return name
 
 
 class LiveGui:
@@ -175,8 +188,10 @@ def _window_class():
         def _build_plots(self):
             self.fig_shot, self.can_shot = self._canvas((8, 6))
             self.ax_img, self.ax_sp = self.fig_shot.subplots(
-                2, 1, sharex=True, gridspec_kw={'height_ratios': [2, 1]})
+                2, 1, sharex=True, gridspec_kw={'height_ratios': [1, 1]})
             self.ax_img.set_ylabel('mrad')
+            self.ax_img.set_title('waiting for the first shot', fontsize=10)
+            self.ax_sp.set_title(' ', fontsize=9)
             self.ax_sp.set_xlabel('GeV/c')
             self.ax_sp.set_ylabel('pC/GeV')
             self.im = self.ax_img.imshow(np.zeros((2, 2)), aspect='auto', origin='lower',
@@ -191,13 +206,14 @@ def _window_class():
             self.fig_wf.colorbar(self.im_wf, ax=self.ax_wf, label='pC/GeV')
             self.ax_wf.set_xlabel('Momentum [GeV/c]')
             self.ax_wf.set_ylabel('shot')
+            self.ax_wf.set_title(' ', fontsize=9)
             right = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
             right.addWidget(self.can_tr)
             right.addWidget(self.can_wf)
             split = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
             split.addWidget(self.can_shot)
             split.addWidget(right)
-            split.setSizes([900, 600])
+            split.setSizes([1000, 600])
             self.setCentralWidget(split)
 
         def _spin(self, lo, hi, value, step, decimals=3):
@@ -206,6 +222,7 @@ def _window_class():
             w.setDecimals(decimals)
             w.setSingleStep(step)
             w.setValue(value)
+            w.setMinimumWidth(110)
             w.valueChanged.connect(self._controls_changed)
             return w
 
@@ -222,11 +239,11 @@ def _window_class():
             self.c = {
                 'pmin': self._spin(0, 20, f('pmin', 0.0), 0.1),
                 'pmax': self._spin(0, 20, f('pmax', 2.5), 0.1),
-                'img_auto': self._check('auto', b('img_auto', True)),
+                'img_auto': self._check('auto (per shot)', b('img_auto', True)),
                 'vmin': self._spin(0, 1e6, f('vmin', 0.0), 1.0),
                 'vmax': self._spin(0, 1e6, f('vmax', 100.0), 1.0),
                 'log': self._check('log', b('log', True)),
-                'y_auto': self._check('auto', b('y_auto', True)),
+                'y_auto': self._check('auto y', b('y_auto', True)),
                 'ymin': self._spin(1e-6, 1e6, f('ymin', 1e-2), 0.1, 4),
                 'ymax': self._spin(1e-6, 1e6, f('ymax', 100.0), 1.0, 4),
                 'wf_auto': self._check('auto', b('wf_auto', True)),
@@ -235,7 +252,7 @@ def _window_class():
             }
             self.cmap = QtWidgets.QComboBox()
             self.cmap.addItems(CMAPS)
-            self.cmap.setCurrentText(str(s.value('cmap', 'jet')))
+            self.cmap.setCurrentText(str(s.value('cmap', 'white_blue_yellow')))
             self.cmap.currentTextChanged.connect(self._controls_changed)
             self.last_n = QtWidgets.QSpinBox()
             self.last_n.setRange(0, 100000)
@@ -251,10 +268,12 @@ def _window_class():
             form = QtWidgets.QFormLayout()
             row = lambda *ws: self._row(*ws)
             form.addRow('Momentum min / max [GeV/c]', row(self.c['pmin'], self.c['pmax']))
-            form.addRow('Image colour', row(self.c['img_auto'], self.c['vmin'], self.c['vmax']))
+            form.addRow('Image color', self.c['img_auto'])
+            form.addRow('    min / max', row(self.c['vmin'], self.c['vmax']))
             form.addRow('Colormap', self.cmap)
-            form.addRow('Spectrum', row(self.c['log'], self.c['y_auto'], self.c['ymin'], self.c['ymax']))
-            form.addRow('Waterfall colour max', row(self.c['wf_auto'], self.c['wf_vmax']))
+            form.addRow('Spectrum', row(self.c['log'], self.c['y_auto']))
+            form.addRow('    y min / max', row(self.c['ymin'], self.c['ymax']))
+            form.addRow('Waterfall color max', row(self.c['wf_auto'], self.c['wf_vmax']))
             form.addRow('Waterfall shots (last N)', self.last_n)
             form.addRow('Trends', self.trends)
             form.addRow('', self.c['pause'])
@@ -262,7 +281,7 @@ def _window_class():
             panel.setLayout(form)
             dock = QtWidgets.QDockWidget('Controls', self)
             dock.setWidget(panel)
-            dock.setMaximumWidth(340)
+            dock.setMaximumWidth(420)
             self.trends.setMaximumHeight(260)
             self.addDockWidget(QtCore.Qt.DockWidgetArea.LeftDockWidgetArea, dock)
 
@@ -348,8 +367,8 @@ def _window_class():
                 else:
                     self.im.set_clim(c['vmin'].value(), c['vmax'].value())
                 if self.applied.get('cmap') != self.cmap.currentText():
-                    self.im.set_cmap(self.cmap.currentText())
-                    self.im_wf.set_cmap(self.cmap.currentText())
+                    self.im.set_cmap(colormap(self.cmap.currentText()))
+                    self.im_wf.set_cmap(colormap(self.cmap.currentText()))
                     self.applied['cmap'] = self.cmap.currentText()
                 spec = np.where(msg['spectrum'] > 0, msg['spectrum'], np.nan) if c['log'].isChecked() \
                     else msg['spectrum']
@@ -382,8 +401,8 @@ def _window_class():
         def _freeze_layouts(self):
             # also apply the colormap / scale now, so the first shot doesn't pay for it
             cmap, scale = self.cmap.currentText(), 'log' if self.c['log'].isChecked() else 'linear'
-            self.im.set_cmap(cmap)
-            self.im_wf.set_cmap(cmap)
+            self.im.set_cmap(colormap(cmap))
+            self.im_wf.set_cmap(colormap(cmap))
             self.ax_sp.set_yscale(scale)
             self.applied.update(cmap=cmap, scale=scale)
             for fig, canvas in ((self.fig_shot, self.can_shot), (self.fig_wf, self.can_wf)):
@@ -405,7 +424,9 @@ def _window_class():
                 self.ax_tr = list(np.atleast_1d(self.fig_tr.subplots(max(len(cols), 1), 1, sharex=True)))
                 self.lines_tr = [a.plot([], [], '.-', ms=4, lw=0.6)[0] for a in self.ax_tr]
                 for a, col in zip(self.ax_tr, cols):
-                    a.set_ylabel(col, fontsize=8)
+                    a.text(0.01, 0.95, col, transform=a.transAxes, fontsize=8, va='top',
+                           bbox={'facecolor': 'white', 'alpha': 0.7, 'lw': 0, 'pad': 1})
+                    a.tick_params(labelsize=8)
                 self.ax_tr[-1].set_xlabel('shot')
                 self.fig_tr.set_layout_engine('constrained')
                 self.tr_frozen = False
