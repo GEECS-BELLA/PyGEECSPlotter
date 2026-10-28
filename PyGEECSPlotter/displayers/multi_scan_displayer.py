@@ -61,7 +61,9 @@ class MultiScanDisplayer(ScanDisplayer):
 
     Files are named ``Scans023-024_{name}[_{timestamp}]`` and go to
     ``output_dir`` if given, else the first scan's analysis directory; either
-    way nested under ``output_subdir`` if set.
+    way nested under ``output_subdir`` if set (an absolute ``output_subdir``
+    is used as it is). ``save`` / ``export`` / ``display_scans`` also take
+    ``output_dir=`` for one call.
 
     Parameters
     ----------
@@ -126,10 +128,15 @@ class MultiScanDisplayer(ScanDisplayer):
     # ------------------------------------------------------------------
     # Output: overrides of ScanDisplayer's, taking the list of scans
     # ------------------------------------------------------------------
-    def _output_dir(self, scans):
-        out = self.output_dir or scans[0].get_scan_data_analysis_dir(make_dir=True)
-        if self.output_subdir:
-            out = os.path.join(out, self.output_subdir)
+    def _output_dir(self, scans, output_dir=None):
+        if output_dir is not None:
+            out = os.fspath(output_dir)
+        elif self.output_subdir and os.path.isabs(self.output_subdir):
+            out = os.fspath(self.output_subdir)
+        else:
+            out = self.output_dir or scans[0].get_scan_data_analysis_dir(make_dir=True)
+            if self.output_subdir:
+                out = os.path.join(out, self.output_subdir)
         os.makedirs(out, exist_ok=True)
         return out
 
@@ -141,26 +148,28 @@ class MultiScanDisplayer(ScanDisplayer):
             stem += time.strftime("_%Y%m%d-%H%M%S")
         return stem
 
-    def save(self, fig, scans, suffix: str = "", dpi: int = 200):
-        path = os.path.join(self._output_dir(scans), self._output_stem(scans, suffix) + ".png")
+    def save(self, fig, scans, suffix: str = "", dpi: int = 200, output_dir=None):
+        path = os.path.join(self._output_dir(scans, output_dir),
+                            self._output_stem(scans, suffix) + ".png")
         fig.savefig(path, dpi=dpi)
         print(f'Fig saved to {path}')
         return path
 
-    def export(self, scans, suffix: str = ""):
+    def export(self, scans, suffix: str = "", output_dir=None):
         if self.last_export is None:
             raise RuntimeError(
                 f"{type(self).__name__}.export() called before display() "
                 "populated last_export."
             )
-        path = os.path.join(self._output_dir(scans), self._output_stem(scans, suffix) + ".npz")
+        path = os.path.join(self._output_dir(scans, output_dir),
+                            self._output_stem(scans, suffix) + ".npz")
         np.savez(path, **self.last_export)
         print(f'Data exported to {path}')
         return path
 
 
 def display_scans(displayer, scans: Sequence, save=False, export=False, suffix='',
-                  fig=None, ax=None, **kwargs):
+                  fig=None, ax=None, output_dir=None, **kwargs):
     """
     ``ScanDataAnalyzer.display_scan`` for a ``MultiScanDisplayer``: render
     ``scans`` on one figure, optionally save it and export its arrays.
@@ -169,7 +178,7 @@ def display_scans(displayer, scans: Sequence, save=False, export=False, suffix='
     scans = list(scans)
     fig, ax = displayer.display(scans, fig=fig, ax=ax, **kwargs)
     if save:
-        displayer.save(fig, scans, suffix=suffix)
+        displayer.save(fig, scans, suffix=suffix, output_dir=output_dir)
     if export:
-        displayer.export(scans, suffix=suffix)
+        displayer.export(scans, suffix=suffix, output_dir=output_dir)
     return fig, ax

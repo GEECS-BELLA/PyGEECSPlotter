@@ -76,6 +76,10 @@ def merge_results(base, results, keep_unanalysed=True):
     check_unique_keys(base, 'The scan data')
     cols = [c for c in results.columns if c not in KEYS]
     replaced = [c for c in cols if c in base.columns]
+    repeated = [c for c in replaced if (base.columns == c).sum() > 1]
+    if repeated:
+        raise ValueError(f"The scan data has more than one column named {repeated}; "
+                         f"cannot replace them with the results.")
 
     merged = base.drop(columns=replaced).merge(results, on=KEYS, how='left')
     merged.index = base.index
@@ -83,7 +87,20 @@ def merge_results(base, results, keep_unanalysed=True):
         analysed = base.set_index(KEYS).index.isin(results.set_index(KEYS).index)
         for c in replaced:
             merged[c] = merged[c].where(analysed, base[c])
-    return merged[list(base.columns) + [c for c in cols if c not in base.columns]]
+    # Back to base's column order, by position: merged is base's other columns
+    # (in order) followed by the result columns. (Selecting by label would
+    # multiply any column name that base repeats.)
+    kept = len(base.columns) - len(replaced)
+    new_pos = {c: kept + i for i, c in enumerate(cols)}
+    order, k = [], 0
+    for c in base.columns:
+        if c in new_pos and c in replaced:
+            order.append(new_pos[c])
+        else:
+            order.append(k)
+            k += 1
+    order += [new_pos[c] for c in cols if c not in replaced]
+    return merged.iloc[:, order]
 
 
 

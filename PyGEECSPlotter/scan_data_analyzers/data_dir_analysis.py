@@ -12,6 +12,7 @@ import pandas as pd
 
 from PyGEECSPlotter.scan_data_analyzers.scan_data_analysis import ScanDataAnalyzer
 from PyGEECSPlotter.scan_data_analyzers.sfile_frame import merge_results, rename_result_columns
+from PyGEECSPlotter.utils.io_utils import file_lock
 
 
 class DataDirAnalyzer(ScanDataAnalyzer):
@@ -104,17 +105,20 @@ class DataDirAnalyzer(ScanDataAnalyzer):
                                   overwrite_columns=True,
                                   analysis_label=None,
                                   keep_unanalysed=True,
+                                  target_filename=None,
                                   ):
         """
         Write the results to ``scalar_analysis.txt`` (there is no sfile),
         merged with any results already there, as ``merge_data_frame_to_sfile``
-        does for an sfile.
+        does for an sfile (``target_filename`` writes elsewhere instead).
         """
+        target = os.fspath(target_filename) if target_filename is not None else self.data_out_filename
         new = rename_result_columns(add_columns_df, diagnostic, analysis_label)
-        if os.path.exists(self.data_out_filename):
-            base = pd.read_csv(self.data_out_filename, sep='\t')
-        else:
-            base = self.data[['scan', 'Shotnumber']].reset_index(drop=True)
-        merged = merge_results(base, new, keep_unanalysed=keep_unanalysed)
-        merged.to_csv(self.data_out_filename, index=False, sep='\t')
-        print(f'Columns added to {self.data_out_filename}')
+        with file_lock(target):
+            if os.path.exists(target):
+                base = pd.read_csv(target, sep='\t')
+            else:
+                base = self.data[['scan', 'Shotnumber']].reset_index(drop=True)
+            merged = merge_results(base, new, keep_unanalysed=keep_unanalysed)
+            merged.to_csv(target, index=False, sep='\t')
+        print(f'Columns added to {target}')

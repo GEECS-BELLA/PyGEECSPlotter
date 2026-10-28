@@ -17,6 +17,7 @@ data; nothing else is machine-specific.
 | 09 | [Column math](scripts/09_column_math.py) | renaming columns and computed columns at load |
 | 10 | [Magspec allE](scripts/10_magspec_alle.py) | magnetic spectrometer analysis and views (needs the private `pw_py_magspec`) |
 | 11 | [Filtering and binning](scripts/11_filtering_and_binning.py) | every kind of filter rule, removing / temporary filters, bins and `rebin` methods, re-analysing a subset |
+| 12 | [Online analysis](scripts/12_online_analysis.py) | `ScanWatcher`: jobs + displayers on each scan as it ends; `LiveShotWatcher`: shots analysed while the scan runs |
 
 Start with 01 and 02; the rest each add one idea. 11 goes deeper into filters and bins.
 

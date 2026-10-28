@@ -23,8 +23,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# DirectoryWatcherSFile (live_analysis): watch for new sfiles while running
-live = ["watchdog", "filelock"]
+# LiveShotWatcher (live_shot_analysis) reads a scan's .tdms while it is written.
+# ScanWatcher (live_analysis) needs nothing extra.
+live = ["nptdms"]
 # The magnetic spectrometer and e-beam profile analyzers additionally need the
 # private pw_py_magspec package (BellaCenter/PW-py-magspec), installed
 # separately. WavefrontAnalyzer needs the Imagine Optic WaveKit SDK

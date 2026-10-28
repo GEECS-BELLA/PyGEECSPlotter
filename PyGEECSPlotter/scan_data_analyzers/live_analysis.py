@@ -1,275 +1,401 @@
+# Online analysis: run analyzers (and displayers) on each scan as it finishes.
+#
+# ScanWatcher polls a day's analysis folder for new sfiles. When a scan's
+# sfile appears and stops changing, every LiveJob runs on it: analyze_scan
+# (in threads unless the analyzer is not thread-safe), the results merged
+# into the sfile (and optionally scans/ScanNNN/ScanDataScanNNN.txt) under a
+# file lock, then the job's displayers, saved to
+# <top_dir>/online_analysis/ScanNNN/<diagnostic>/.
+#
+# LiveShotWatcher (live_shot_analysis.py) analyses shots while a scan is still
+# running instead.
+
 import os
-import time
-from threading import Event
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
-import filelock
-import matplotlib.pyplot as plt
-import traceback
 import re
+import time
+import traceback
+
+import matplotlib.pyplot as plt
 
 from PyGEECSPlotter.scan_data_analyzers.scan_data_analysis import ScanDataAnalyzer
 import PyGEECSPlotter.utils.navigation_utils as nav_utils
 
-class DirectoryWatcherSFile(FileSystemEventHandler):
-    def __init__(self, experiment_dir, 
-                 analyzers, 
-                 search_replace_filename=None,
-                 column_math_filename=None):
-        """
-        A class that watches over a specified directory and looks for scan info files being created
-        On creation of a scan info file, the class runs all of the analyzers associated with the class.
-        It looks for scan info files in the current day's analysis folder
+ONLINE_DIR = 'online_analysis'
+_SFILE_RE = re.compile(r's(\d+)\.txt$')
 
-        Parameters:
-        ---------
-            experiment_dir (str | Path): directory containing the year folders (e.g. Y2025) for a given experiment
-            analyzers (list[Analyzer]): ordered iterable of analyzers to use. The analysis order is given by 
-                the list order
-            search_replace_filename (str | Path): filename for search and replace columns
-            column_math_filename (str | Path): filename for column math
+
+def online_output_dir(top_dir, scan, name=None, make_dir=True):
+    """``<top_dir>/online_analysis/ScanNNN[/name]``, created if ``make_dir``."""
+    out = os.path.join(os.fspath(top_dir), ONLINE_DIR, f'Scan{int(scan):03d}')
+    if name:
+        out = os.path.join(out, name)
+    if make_dir:
+        os.makedirs(out, exist_ok=True)
+    return out
+
+
+def _flag(value, analyzer, key, default):
+    """``value`` if set, else ``analyzer.analyzer_dict[key]``, else ``default``."""
+    if value is not None:
+        return value
+    return getattr(analyzer, 'analyzer_dict', {}).get(key, default)
+
+
+class LiveJob:
+    """
+    One analyzer to run on each scan, plus what to do with its results.
+
+    Every option left as None falls back to the analyzer's ``analyzer_dict``
+    flag of the old watcher (in brackets), so existing analyzers behave as
+    before:
+
+    analyzer : DiagnosticAnalyzer, ColumnMathAnalyzer or MultiDiagnosticAnalyzer
+    displayers : list of ScanDisplayer
+        Run after the analysis, on the scan with the new columns; each figure
+        is saved to ``online_analysis/ScanNNN/<name>/`` and closed.
+    write_sfile : bool [``add_columns_to_masterlog``, default True]
+        Merge the results into ``analysis/sN.txt``.
+    update_scan_data_file : bool [``update_scan_data_file``, default False]
+        Also merge them into ``scans/ScanNNN/ScanDataScanNNN.txt``.
+    use_bg : bool [``use_bg``, default False]
+        Use the day's ``*<diagnostic>_averaged<ext>`` background (for a
+        multi-diagnostic analyzer, one per input).
+    write_analyzed, write_lineouts : bool [same keys, default False]
+        Per-shot files, written to ``analysis/ScanNNN`` as by ``analyze_scan``.
+    analysis_label : str [``analysis_label``]
+        Appended to the result column names.
+    column_prefix : str
+        Prefix of the result column names. Default: the analyzer's
+        ``diagnostic`` (none for column maths), as the old watcher wrote; for
+        a multi-diagnostic analyzer, its ``output_diagnostic``.
+    parallel : bool
+        Default: the analyzer's ``thread_safe``.
+    name : str
+        Output folder name. Default: ``output_diagnostic``, ``diagnostic``,
+        ``friendly_name`` or the class name, whichever is set first.
+    """
+
+    def __init__(self, analyzer, displayers=(), write_sfile=None, update_scan_data_file=None,
+                 use_bg=None, write_analyzed=None, write_lineouts=None, analysis_label=None,
+                 column_prefix=None, parallel=None, name=None):
+        a = analyzer
+        self.analyzer = a
+        self.displayers = list(displayers)
+        self.write_sfile = _flag(write_sfile, a, 'add_columns_to_masterlog', True)
+        self.update_scan_data_file = _flag(update_scan_data_file, a, 'update_scan_data_file', False)
+        self.use_bg = _flag(use_bg, a, 'use_bg', False)
+        self.write_analyzed = _flag(write_analyzed, a, 'write_analyzed', False)
+        self.write_lineouts = _flag(write_lineouts, a, 'write_lineouts', False)
+        self.analysis_label = _flag(analysis_label, a, 'analysis_label', None)
+        self.column_prefix = column_prefix if column_prefix is not None else (
+            getattr(a, 'diagnostic', None) or getattr(a, 'output_diagnostic', None)
+            if getattr(a, 'inputs', None) else getattr(a, 'diagnostic', None))
+        self.parallel = getattr(a, 'thread_safe', True) if parallel is None else parallel
+        self.name = name or next(
+            (n for n in (getattr(a, 'output_diagnostic', None), getattr(a, 'diagnostic', None),
+                         getattr(a, 'friendly_name', None)) if n),
+            type(a).__name__)
+
+    def __repr__(self):
+        return (f"LiveJob({self.name}: {type(self.analyzer).__name__}, "
+                f"{len(self.displayers)} displayers)")
+
+    def bg(self, scan):
+        """Background path for this scan, or None; for a multi-diagnostic
+        analyzer, ``{input: path}`` (inputs with a background file)."""
+        a = self.analyzer
+        if not self.use_bg:
+            return None
+        if getattr(a, 'diagnostic', None) is None and getattr(a, 'inputs', None):
+            paths = {name: scan.get_bg_file_path(name, ext) for name, ext in a.inputs}
+            return {name: p for name, p in paths.items() if p} or None
+        if getattr(a, 'diagnostic', None) is None:
+            return None
+        return scan.get_bg_file_path(a.diagnostic, a.file_ext or '.png')
+
+    def run(self, scan, output_dir=None, write=True):
         """
-        self.experiment_dir = experiment_dir
-        self.top_dir = nav_utils.get_todays_top_dir(experiment_dir)
-        self.analysis_dir = os.path.join(self.top_dir, 'analysis')
-        self.observer = Observer()
-        self.stop_event = Event()
-        self.active = False
-        
-        # Analysis 
+        Analyse ``scan`` (a loaded ScanDataAnalyzer), write the results
+        and per-shot files (if ``write`` and the job asks for them) and run
+        the displayers. ``write=False`` writes nothing into the data folders
+        (figures still go to ``output_dir``). Returns the results frame (or None).
+        """
+        a = self.analyzer
+        a.register_with_scan(scan)
+        results = scan.analyze_scan(
+            a, bg=self.bg(scan), write_columns_to_sfile=False,
+            analysis_label=self.analysis_label or '', write_analyzed=write and self.write_analyzed,
+            write_lineouts=write and self.write_lineouts, parallel=self.parallel,
+            column_prefix=self.column_prefix,
+            extra_info_str=self.analysis_label or '')
+        if write and results is not None:
+            self.write(scan, results)
+        self.display(scan, output_dir)
+        return results
+
+    def write(self, scan, results):
+        """Merge ``results`` into the sfile and / or ScanData file, as configured."""
+        if self.write_sfile:
+            scan.merge_data_frame_to_sfile(results, self.column_prefix, overwrite_columns=True,
+                                           analysis_label=self.analysis_label)
+        if self.update_scan_data_file:
+            target = os.path.join(scan.top_dir, 'scans', f'Scan{int(scan.scan):03d}',
+                                  f'ScanDataScan{int(scan.scan):03d}.txt')
+            if os.path.exists(target):
+                scan.merge_data_frame_to_sfile(results, self.column_prefix, overwrite_columns=True,
+                                               analysis_label=self.analysis_label,
+                                               target_filename=target)
+
+    def display(self, scan, output_dir=None):
+        """Run each displayer on ``scan``, saving to ``output_dir``; errors are reported, not raised.
+        A displayer with its own analyzer (e.g. a reader of the files the job
+        wrote) has it registered with the scan first."""
+        for displayer in self.displayers:
+            try:
+                other = getattr(displayer, 'analyzer', None)
+                if other is not None and other is not self.analyzer and hasattr(other, 'register_with_scan'):
+                    other.register_with_scan(scan)
+                fig, _ = scan.display_scan(displayer, save=True, output_dir=output_dir)
+                plt.close(fig)
+            except Exception:
+                print(f"Displayer {type(displayer).__name__} failed on {scan.scan_label}:")
+                print(traceback.format_exc())
+            finally:
+                for extra in getattr(displayer, 'figures', []) or []:
+                    plt.close(extra[-1] if isinstance(extra, tuple) else extra)
+
+
+def as_jobs(jobs):
+    """A list of LiveJob, wrapping bare analyzers in a default LiveJob."""
+    if isinstance(jobs, LiveJob) or hasattr(jobs, 'analyze_data'):
+        jobs = [jobs]
+    return [j if isinstance(j, LiveJob) else LiveJob(j) for j in jobs]
+
+
+class ScanWatcher:
+    """
+    Watch a day's ``analysis`` folder and run ``jobs`` on every scan as it
+    finishes (its ``sN.txt`` and ``sNinfo.txt`` written; see ``settle_s``).
+
+    Parameters
+    ----------
+    experiment_dir : str or Path, optional
+        Folder holding the ``Y2026`` year folders. The day watched is today's,
+        re-checked every poll, so a run past midnight moves to the new day.
+    jobs : list of LiveJob (or analyzers)
+        Run in order on each scan; put cheap ones first.
+    top_dir : str or Path, optional
+        Watch this day folder instead (fixed).
+    poll_s : float
+        Seconds between polls of the analysis folder.
+    start_scan : int, optional
+        First scan to analyse. Default: only scans finishing after ``start()``.
+    search_replace_filename, column_math_filename : optional
+        Passed to ``load_scan_data``.
+    write : bool
+        False: analyse and plot but write nothing into the day's folders: no
+        sfile / ScanData merge, no per-shot files (for testing on real data;
+        pair with ``output_dir`` to keep the figures out too).
+    output_dir : str or Path, optional
+        Root for the figures instead of ``<top_dir>/online_analysis``; they go
+        to ``<output_dir>/ScanNNN/<name>/``.
+    settle_s : float
+        A scan counts as finished when its ``sNinfo.txt`` exists (GEECS writes
+        it after the sfile) and the sfile has stopped changing; if there is no
+        info file, when the sfile has not changed for ``settle_s`` seconds.
+
+    Uses polling rather than file-system events, which are unreliable on
+    network shares. ``reanalyze(scans)`` runs the jobs on scans already taken.
+    """
+
+    def __init__(self, experiment_dir=None, jobs=(), top_dir=None, poll_s=2.0, start_scan=None,
+                 search_replace_filename=None, column_math_filename=None, write=True,
+                 output_dir=None, settle_s=30.0):
+        if experiment_dir is None and top_dir is None:
+            raise ValueError("Give experiment_dir (watch today's folder) or top_dir.")
+        self.experiment_dir = os.fspath(experiment_dir) if experiment_dir is not None else None
+        self.fixed_top_dir = os.fspath(top_dir) if top_dir is not None else None
+        self.jobs = as_jobs(jobs)
+        self.poll_s = poll_s
+        self.settle_s = settle_s
+        self.start_scan = start_scan
         self.search_replace_filename = search_replace_filename
         self.column_math_filename = column_math_filename
-        
-        # Diagnostics information, containing analyzers, file_ext, analyzer_dict, and display_dict for each diagnostic
-        self.analyzers = analyzers
+        self.write = write
+        self.output_dir = os.fspath(output_dir) if output_dir is not None else None
+        self.status = ''
+        self._seen_days = set()         # top dirs whose earlier scans were skipped
+        self.done = set()               # (top_dir, scan) analysed or skipped
+        self._sizes = {}                # sfile -> (size, time first seen at that size)
+        self._running = False
 
-        # Initialize current status and filename tracking
-        self.current_status = ""
-        self.current_sfile_info_name = None  # Full path to the detected file
-        self.current_sfilename = None        # Full path to the transformed filename
-        self.current_scan_analyzer = None    # The ScanDataAnalyzer instance for the current file
+    # ------------------------------------------------------------------
+    @property
+    def top_dir(self):
+        return self.fixed_top_dir or nav_utils.get_todays_top_dir(self.experiment_dir)
 
-    def _update_status(self, message):
-        """Update the current status and print the message."""
-        self.current_status = message
-        print(message)
+    @property
+    def analysis_dir(self):
+        return os.path.join(self.top_dir, 'analysis')
+
+    def _log(self, message):
+        self.status = message
+        print(time.strftime('[%H:%M:%S] ') + message)
+
+    @staticmethod
+    def _sfiles(top_dir):
+        """``{scan: path}`` for the sfiles in ``top_dir/analysis``."""
+        out = {}
+        try:
+            with os.scandir(os.path.join(top_dir, 'analysis')) as it:
+                for entry in it:
+                    m = _SFILE_RE.fullmatch(entry.name)
+                    if m and entry.is_file():
+                        out[int(m.group(1))] = entry.path
+        except FileNotFoundError:
+            pass
+        return out
+
+    def poll(self):
+        """
+        One look at the analysis folder: run the jobs on each new sfile that
+        has stopped changing since the last poll. Returns the scans analysed.
+        """
+        top_dir = self.top_dir
+        sfiles = self._sfiles(top_dir)
+        if top_dir not in self._seen_days:
+            # Scans already finished when watching starts (or before
+            # start_scan) are skipped.
+            self._seen_days.add(top_dir)
+            self.done.update((top_dir, n) for n in sfiles
+                             if self.start_scan is None or n < self.start_scan)
+        ran = []
+        now = time.monotonic()
+        for scan, path in sorted(sfiles.items()):
+            if (top_dir, scan) in self.done:
+                continue
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                continue
+            if self._sizes.get(path, (None,))[0] != size:     # new, or still being written
+                self._sizes[path] = (size, now)
+                continue
+            # GEECS writes sNinfo.txt once sN.txt is complete; without it, wait
+            # until the sfile has not changed for settle_s.
+            info = os.path.join(top_dir, 'analysis', f's{scan}info.txt')
+            if not os.path.exists(info) and now - self._sizes[path][1] < self.settle_s:
+                continue
+            self.done.add((top_dir, scan))
+            self.run_scan(scan, top_dir=top_dir)
+            ran.append(scan)
+        return ran
 
     def start(self):
-        """Start the observer."""
-        if not os.path.exists(self.analysis_dir):
-            self._update_status(f"Directory not found: {self.analysis_dir}")
-            self.active = False
-            return
-
-        if not self.active:
-            self.stop_event.clear()
-            self.active = True
-            self.observer = Observer()
-            self._update_status("Starting directory watcher for analysis files...")
-            self.observer.schedule(self, self.analysis_dir, recursive=False)
-
-            try:
-                self.observer.start()
-            except Exception as e:
-                self._update_status(f"Failed to start observer: {e}")
-                self.active = False
-                return
-
-            try:
-                while not self.stop_event.is_set():
-                    time.sleep(1)
-            except KeyboardInterrupt:
-                self.stop()
+        """Poll until ``stop()`` or Ctrl+C."""
+        self._running = True
+        self._log(f"Watching {self.analysis_dir} for new scans "
+                  f"({len(self.jobs)} jobs). Ctrl+C to stop.")
+        try:
+            while self._running:
+                self.poll()
+                time.sleep(self.poll_s)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            self._running = False
+            self._log("Stopped watching.")
 
     def stop(self):
-        """Stop the observer."""
-        if self.active:
-            self._update_status("Stopping directory watcher...")
-            self.stop_event.set()
-            if self.observer.is_alive():
-                self.observer.stop()
-                self.observer.join()
-            self.active = False
+        self._running = False
 
-    def on_created(self, event):
-        """Handle new file creation events."""
-        if not event.is_directory and event.src_path.endswith('info.txt'):
-            self.current_sfile_info_name = event.src_path
-            self.current_sfilename = self.transform_to_sfilename(self.current_sfile_info_name)
-            self.current_scan_analyzer = ScanDataAnalyzer(sfilename=self.current_sfilename)
-            self.current_scan_analyzer.load_scan_data()
-            self._update_status(f"New file detected: {self.current_sfile_info_name}")
-            
-            # Run analysis and plotting for each diagnostic in diagnostics_info
-            for analyzer in self.analyzers:
-                try:
-                    self._analyze_and_plot(self.current_sfilename, analyzer)
-                except Exception as e:
-                    print(f"Exception occured when using analyzer {analyzer.friendly_name}")
-                    print("Traceback:")
-                    print(traceback.format_exc())
-                    continue
+    # ------------------------------------------------------------------
+    def figure_dir(self, top_dir, scan, job):
+        """Where ``job``'s figures for ``scan`` go (made only when a figure is saved)."""
+        if self.output_dir is None:
+            return online_output_dir(top_dir, scan, job.name, make_dir=False)
+        return os.path.join(self.output_dir, f'Scan{int(scan):03d}', job.name)
 
-    def transform_to_sfilename(self, sfile_info_name):
-        """Transform from info filename to sfilename by removing 'info'."""
-        if sfile_info_name.endswith('info.txt'):
-            return sfile_info_name.replace('info', '')
-        return sfile_info_name
-    
-    def _sfilename_to_scan_data_fname(self, sfilename):
-        """Transform '.../s{N}.txt' to '.../scans/Scan{N:03d}/ScanDataScan{N:03d}.txt'."""
-        basename = os.path.basename(sfilename)
-        match = re.fullmatch(r's(\d+)\.txt', basename)
-        if not match:
+    def load_scan(self, scan, top_dir=None):
+        """A loaded ScanDataAnalyzer for ``scan`` of ``top_dir`` (default: the watched day)."""
+        top_dir = top_dir or self.top_dir
+        s = ScanDataAnalyzer(sfilename=nav_utils.get_sfilename_from_top_dir(top_dir, scan))
+        s.load_scan_data(search_replace_filename=self.search_replace_filename,
+                         column_math_filename=self.column_math_filename)
+        return s
+
+    def run_scan(self, scan, top_dir=None):
+        """Run every job on one scan. A failing job is reported and the next one runs."""
+        top_dir = top_dir or self.top_dir
+        label = f"Scan{int(scan):03d}"
+        self._log(f"{label}: analysing ({len(self.jobs)} jobs)")
+        try:
+            s = self.load_scan(scan, top_dir)
+        except Exception:
+            self._log(f"{label}: could not load the sfile")
+            print(traceback.format_exc())
             return None
-        scan_num = int(match.group(1))
-        return os.path.join(
-            self.top_dir, "scans",
-            f"Scan{scan_num:03d}",
-            f"ScanDataScan{scan_num:03d}.txt"
-        )
+        if s.aborted:
+            self._log(f"{label}: no shots, skipped")
+            return s
+        for job in self.jobs:
+            t0 = time.monotonic()
+            try:
+                with s.filtered():          # each job's missing-file rules apply to it alone
+                    results = job.run(s, output_dir=self.figure_dir(top_dir, scan, job),
+                                      write=self.write)
+                n = 0 if results is None else len(results)
+                self._log(f"{label}: {job.name}: {n} shots ({time.monotonic() - t0:.1f} s)")
+            except Exception:
+                self._log(f"{label}: {job.name} failed")
+                print(traceback.format_exc())
+        plt.close('all')
+        return s
 
-    def _analyze_and_plot(self, sfilename, analyzer):
-        """Run analysis and plot images for a specific diagnostic."""
-        print("-"*50)
-        self._update_status(f"Running analysis on {sfilename} for analyzer {analyzer.friendly_name}")
-        
-        # Unpack diagnostic-specific settings
-        file_ext = analyzer.file_ext
-        analyzer_dict = analyzer.analyzer_dict
-        display_dict = analyzer.display_dict
-        diagnostic = analyzer.diagnostic
-        
-        # Load data files names into ScanDataAnalyzer instance
-        self.current_scan_analyzer.add_file_list_to_scan_data(diagnostic, file_ext)
-        
-        if analyzer_dict.get("use_bg", False):
-            bg = self.current_scan_analyzer.get_bg_file_path(diagnostic, file_ext)
-        else:
-            bg = None
-        add_columns_df = self.current_scan_analyzer.analyze_scan(analyzer, 
-            bg=bg, 
-            display_data=display_dict.get("display_data", False),
-            write_columns_to_sfile=False, 
-            overwrite_columns=False, 
-            analysis_label=analyzer_dict.get("analysis_label", None),
-            write_analyzed=analyzer_dict.get("write_analyzed", False),
-            write_lineouts=analyzer_dict.get("write_lineouts", False),
-            close_displayed=True,
-        )
+    def reanalyze(self, scans=None, top_dir=None):
+        """Run the jobs on ``scans`` (default: every sfile of the day), in order."""
+        top_dir = top_dir or self.top_dir
+        available = self._sfiles(top_dir)
+        scans = sorted(available) if scans is None else [int(n) for n in scans]
+        for scan in scans:
+            if scan not in available:
+                print(f"No sfile for Scan{scan:03d}; skipped.")
+                continue
+            self.run_scan(scan, top_dir=top_dir)
 
-        if add_columns_df is not None:
-            print(f"Files analyzed for {analyzer.friendly_name}: {len(add_columns_df)}")
-        
-        # We use a custom anti-race condition code to update the sfile because the standard ScanDataAnalyzer code
-        # does not account for race conditions.
-        if analyzer_dict.get('add_columns_to_masterlog', False):
-            # file lock to avoid the race condition
-            lock_file = sfilename + ".lock"
-            lock = filelock.FileLock(lock_file)
-            if analyzer_dict.get("analysis_diagnostic", False):
-                prefix = analyzer_dict.get("analysis_diagnostic")
-            elif analyzer_dict.get('analyze_raw_data', True):
-                prefix = diagnostic
-            else:
-                prefix = None
-            with lock:
-                merged_sfile = self.current_scan_analyzer.merge_data_frame_to_sfile(add_columns_df, analyzer.diagnostic,
-                                                                       overwrite_columns=True,
-                                                                       analysis_label=analyzer_dict.get("analysis_label", None))
-            print("Added columns to masterlog")
 
-        # This code updates the scan_data file inside the scans/ScanXXX folder, 
-        # NOT the sfile in the analysis folder
-        if analyzer_dict.get('update_scan_data_file', False):
-            # file lock to avoid the race condition
-            scan_data_fname = self._sfilename_to_scan_data_fname(sfilename)
-            lock_file = scan_data_fname + ".lock"
-            lock = filelock.FileLock(lock_file)
-            if analyzer_dict.get("analysis_diagnostic", False):
-                prefix = analyzer_dict.get("analysis_diagnostic")
-            elif analyzer_dict.get('analyze_raw_data', True):
-                prefix = diagnostic
-            else:
-                prefix = None
-            with lock:
-                # Workaround to set the file we are saving to a different location
-                # compared to where sfiles are usually saved
-                old_sfilename = self.current_scan_analyzer.sfilename
-                self.current_scan_analyzer.sfilename = scan_data_fname
-                merged_sfile = self.current_scan_analyzer.merge_data_frame_to_sfile(add_columns_df, analyzer.diagnostic,
-                                                                       overwrite_columns=True,
-                                                                       analysis_label=analyzer_dict.get("analysis_label", None))
-                # Change the sfilename back to the original one in case we need to save more files
-                self.current_scan_analyzer.sfilename = old_sfilename
-            print("Added columns to scan data file")
-        print("-"*50, "\n")
-            
-class DirectoryWatcherSFileTester(DirectoryWatcherSFile):
-    """
-    Testing class, only overrides the top dir
-    """
-    def __init__(self, top_dir,
-                 analyzers,  # Dictionary containing analyzers and parameters for each diagnostic
-                 search_replace_filename=None,
+# ----------------------------------------------------------------------
+# Old names (the pre-0.1 watcher), kept so existing scripts still run.
+# ----------------------------------------------------------------------
+class DirectoryWatcherSFile(ScanWatcher):
+    """Old name: ``DirectoryWatcherSFile(experiment_dir, analyzers)``; use ``ScanWatcher``."""
+
+    def __init__(self, experiment_dir, analyzers, search_replace_filename=None,
                  column_math_filename=None):
-        super().__init__(top_dir, analyzers, search_replace_filename, column_math_filename)
-        self.top_dir = top_dir
-        self.analysis_dir = os.path.join(self.top_dir, "analysis")
+        super().__init__(experiment_dir=experiment_dir, jobs=analyzers,
+                         search_replace_filename=search_replace_filename,
+                         column_math_filename=column_math_filename)
 
-class SFileReanalyzer(DirectoryWatcherSFile):
-    """
-    Re-analyzes sfiles in a certain directory. This class is subclassed from
-    DirectoryWatcherSFile to use the methods
-    """
+
+class DirectoryWatcherSFileTester(ScanWatcher):
+    """Old name: watch a fixed ``top_dir``; use ``ScanWatcher(top_dir=...)``."""
+
     def __init__(self, top_dir, analyzers, search_replace_filename=None,
                  column_math_filename=None):
-        """
-        Parameters:
-        ---------
-            top_dir (str | Path): top_dir to analyzes files from
-            analyzers (Iterable[Analyzer]): ordered iterable of analyzers to use. 
-                The analysis order is given by the iterable order
-            search_replace_filename (str | Path): filename for search and replace columns
-            column_math_filename (str | Path): filename for column math
-        """
-        super().__init__(top_dir, analyzers, search_replace_filename, column_math_filename)
-        # Replace top_dir and analysis dir
-        self.top_dir = top_dir
-        self.analysis_dir = os.path.join(self.top_dir, 'analysis')
-        # Make sure people don't use this watcher as a directory observer
-        self.observer = None
-        self.stop_event = None
+        super().__init__(top_dir=top_dir, jobs=analyzers,
+                         search_replace_filename=search_replace_filename,
+                         column_math_filename=column_math_filename)
 
-    def start(self):
-        raise NotImplementedError("SFileReanalyzer class is not a watcher! "
-                                  "Use DirectoryWatcherSFile instead")
-    
-    def on_created(self, event):
-        raise NotImplementedError("SFileReanalyzer class is not a watcher! "
-                                  "Use DirectoryWatcherSFile instead")
-    
-    def stop(self):
-        raise NotImplementedError("SFileReanalyzer class is not a watcher! "
-                                  "Use DirectoryWatcherSFile instead")
-    
+
+class SFileReanalyzer(ScanWatcher):
+    """Old name: re-analyse a day's scans; use ``ScanWatcher(top_dir=...).reanalyze()``."""
+
+    def __init__(self, top_dir, analyzers, search_replace_filename=None,
+                 column_math_filename=None):
+        super().__init__(top_dir=top_dir, jobs=analyzers,
+                         search_replace_filename=search_replace_filename,
+                         column_math_filename=column_math_filename)
+
     def analyze_all_scans(self, start_scan=0, end_scan=1000):
-        """
-        Analyzes all scans inside the current analysis folder
-        """
-        sfile_list = nav_utils.generate_sfilename_list_from_scans_dir(self.top_dir, start_scan=start_scan, end_scan=end_scan)
-        print(sfile_list)
-        for sfile in sfile_list:
-            self.current_scan_analyzer = ScanDataAnalyzer(sfilename=sfile)
-            self.current_scan_analyzer.load_scan_data()
-            print("-"*50)
-            print(f"Analyzing file {sfile}")
-            print("-"*50)
-            for analyzer in self.analyzers:
-                try:
-                    self._analyze_and_plot(sfile, analyzer)
-                except Exception as e:
-                    print(f"Exception occured when using analyzer {analyzer.friendly_name}")
-                    print("Traceback:")
-                    print(traceback.format_exc())
-                    continue
+        scans = [n for n in self._sfiles(self.top_dir) if start_scan <= n <= end_scan]
+        self.reanalyze(scans)

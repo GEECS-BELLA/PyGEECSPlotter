@@ -1,11 +1,52 @@
-"""File helpers: controls JSON, lineout text files, scaled 16-bit PNGs."""
+"""File helpers: controls JSON, lineout text files, scaled 16-bit PNGs, file locks."""
 
+import contextlib
 import json
+import os
+import time
 import numpy as np
 import pandas as pd
 import imageio as imio
 
 from PyGEECSPlotter.utils import ni_imread
+
+
+@contextlib.contextmanager
+def file_lock(path, timeout=60.0, stale_after=300.0, poll=0.1):
+    """
+    Hold ``<path>.lock`` while the block runs, so two processes (e.g. a live
+    watcher and someone re-analysing by hand) don't rewrite ``path`` at once.
+
+    The lock file is created atomically (``O_CREAT | O_EXCL``), which works on
+    local disks and SMB shares. A lock older than ``stale_after`` seconds is
+    taken to be left over from a crashed process and is removed. Raises
+    ``TimeoutError`` if the lock can't be had within ``timeout`` seconds.
+    """
+    lock = os.fspath(path) + '.lock'
+    t0 = time.monotonic()
+    while True:
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            break
+        except FileExistsError:
+            try:
+                if time.time() - os.path.getmtime(lock) > stale_after:
+                    os.remove(lock)
+                    continue
+            except OSError:
+                pass        # released (or removed) between the two calls
+            if time.monotonic() - t0 > timeout:
+                raise TimeoutError(f"Could not lock {path} within {timeout:g} s ({lock} exists).")
+            time.sleep(poll)
+    try:
+        os.write(fd, str(os.getpid()).encode())
+        os.close(fd)
+        yield
+    finally:
+        try:
+            os.remove(lock)
+        except OSError:
+            pass
 
 
 def _convert_to_serializable(obj):

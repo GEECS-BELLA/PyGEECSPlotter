@@ -38,7 +38,8 @@ class MagSpecAllEWaterfall(LineoutWaterfall):
         ``LineoutWaterfall`` keys, plus ``log`` (bool, default True): log
         colour scale, with ``vmin`` defaulting to ``vmax / 1e3``.
     output_subdir, timestamp_files :
-        As for ``ScanDisplayer``: save under ``analysis_dir/output_subdir``,
+        As for ``ScanDisplayer``: save under ``analysis_dir/output_subdir`` (or
+        an absolute ``output_subdir`` as it is),
         and add a run timestamp to the file name (default True).
     """
 

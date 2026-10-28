@@ -123,7 +123,8 @@ class MagSpecAllESampledShots(_AllEPanels, SampledImages):
     display_dict : dict, optional
         As for ``_AllEPanels``.
     output_subdir, timestamp_files :
-        As for ``ScanDisplayer``: save under ``analysis_dir/output_subdir``,
+        As for ``ScanDisplayer``: save under ``analysis_dir/output_subdir`` (or
+        an absolute ``output_subdir`` as it is),
         and add a run timestamp to the file name (default True).
     """
 
@@ -174,7 +175,8 @@ class MagSpecAllERepresentativePerBin(_AllEPanels, RepresentativeImagePerBin):
     display_dict : dict, optional
         As for ``_AllEPanels``.
     output_subdir, timestamp_files :
-        As for ``ScanDisplayer``: save under ``analysis_dir/output_subdir``,
+        As for ``ScanDisplayer``: save under ``analysis_dir/output_subdir`` (or
+        an absolute ``output_subdir`` as it is),
         and add a run timestamp to the file name (default True).
     """
 

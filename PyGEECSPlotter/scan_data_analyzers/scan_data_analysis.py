@@ -20,10 +20,11 @@ from pathlib import Path
 from tqdm import tqdm
 
 from PyGEECSPlotter.utils.navigation_utils import (
-    get_analysis_dir, get_parameter_alias, get_scan_parameter, get_sfilename_from_top_dir,
+    alias_column_names, get_analysis_dir, get_parameter_alias, get_scan_parameter,
+    get_sfilename_from_top_dir,
     get_top_dir, get_top_dir_from_sfilename, open_directory_in_explorer,
 )
-from PyGEECSPlotter.utils.io_utils import write_controls_from_python
+from PyGEECSPlotter.utils.io_utils import write_controls_from_python, file_lock
 from PyGEECSPlotter.scan_data_analyzers.binning import compute_bin_numbers
 from PyGEECSPlotter.scan_data_analyzers.filters import Filter, combined_mask, summary
 from PyGEECSPlotter.scan_data_analyzers.sfile_frame import (
@@ -552,8 +553,14 @@ class ScanDataAnalyzer:
 
             self.data = sfile_data.copy()
             self._init_mask()
-            for col in self.data.columns:
-                self.data.rename(columns={col: get_parameter_alias(col)}, inplace=True)
+            names = alias_column_names(self.data.columns)
+            shared = sorted({get_parameter_alias(c) for c, n in names.items()
+                             if n != get_parameter_alias(c)})
+            if shared:
+                warnings.warn(f"{os.path.basename(self.sfilename)}: aliases used by more than "
+                              f"one column ({shared}); those columns keep their device names.",
+                              stacklevel=2)
+            self.data = self.data.rename(columns=names)
 
             self.data['temp Bin number'] = self.data['Bin #']
 
@@ -904,6 +911,28 @@ class ScanDataAnalyzer:
 
         return context, data, results, aux
 
+    def _process_row_and_write(self, analyzer, bg, row, write_analyzed=False, write_lineouts=False):
+        """
+        ``_process_row``, then (if ``write_analyzed``) the shot's analysed
+        files, in the calling thread. Used by the worker threads of
+        ``analyze_scan`` and of ``LiveShotWatcher``.
+        """
+        context, data, results, aux = self._process_row(analyzer, bg, row)
+        self._write_row(analyzer, context, data, aux, write_analyzed, write_lineouts)
+        return context, data, results, aux
+
+    def _write_row(self, analyzer, context, data, aux, write_analyzed=False, write_lineouts=False):
+        """The shot's analysed files (if ``write_analyzed``), from ``_process_row``'s
+        output. Separate so a live watcher can show a shot before writing it."""
+        if write_analyzed and data is not None:
+            # Each shot's own scan dir (an sfile can span several scans).
+            scan, shot_num = int(context['scan']), int(context['Shotnumber'])
+            shot_dir = self._shot_analysis_dir(scan)
+            analyzer.write_analyzed_data(data, shot_dir, scan, shot_num, context=context,
+                                         **_aux_kwarg(analyzer.write_analyzed_data, aux))
+            if write_lineouts:
+                analyzer.write_analyzed_lineouts(aux, shot_dir, scan, shot_num)
+
     def _selected_rows(self, rows=None):
         """
         ``rows`` restricted to the selected shots (``active_data`` if None).
@@ -1022,6 +1051,7 @@ class ScanDataAnalyzer:
         keep_unanalysed=True,
         parallel=True,
         max_workers=None,
+        column_prefix=None,
         ):
         """
         Run the per-shot pipeline over active shots and handle side effects.
@@ -1068,6 +1098,10 @@ class ScanDataAnalyzer:
             replaces those shots' values; the other shots keep theirs, in
             memory and in the sfile. False: each result column is replaced
             whole, so shots not analysed this time become NaN.
+        column_prefix : str, optional
+            Prefix for the result column names (``'<prefix> <result>'``),
+            in memory and in the sfile. Default: the analyzer's
+            ``output_diagnostic``, else its ``diagnostic``.
 
         Returns
         -------
@@ -1095,16 +1129,8 @@ class ScanDataAnalyzer:
                     "parallel=False gives the same result.", stacklevel=2)
 
             def process(row):
-                context, data, results, aux = self._process_row(analyzer, bg, row)
-                if write_analyzed and data is not None:
-                    # Each shot's own scan dir (an sfile can span several scans).
-                    scan, shot_num = int(context['scan']), int(context['Shotnumber'])
-                    shot_dir = self._shot_analysis_dir(scan)
-                    analyzer.write_analyzed_data(data, shot_dir, scan, shot_num, context=context,
-                                                 **_aux_kwarg(analyzer.write_analyzed_data, aux))
-                    if write_lineouts:
-                        analyzer.write_analyzed_lineouts(aux, shot_dir, scan, shot_num)
-                return context, data, results, aux
+                return self._process_row_and_write(analyzer, bg, row, write_analyzed,
+                                                   write_lineouts)
 
             shots = self._iter_shots_parallel(analyzer, bg=bg, max_workers=max_workers,
                                               process=process)
@@ -1128,6 +1154,7 @@ class ScanDataAnalyzer:
             rows, analyzer, analysis_dir, write_columns_to_sfile=write_columns_to_sfile,
             analysis_label=analysis_label, extra_info_str=extra_info_str,
             overwrite_columns=overwrite_columns, keep_unanalysed=keep_unanalysed,
+            column_prefix=column_prefix,
         )
 
     @staticmethod
@@ -1188,7 +1215,7 @@ class ScanDataAnalyzer:
 
     def _finish_analyze_scan(self, rows, analyzer, analysis_dir, write_columns_to_sfile,
                              analysis_label, extra_info_str, overwrite_columns,
-                             keep_unanalysed=True):
+                             keep_unanalysed=True, column_prefix=None):
         """
         Post-loop tail of ``analyze_scan``: build ``add_columns_df``, merge
         the renamed columns into ``self.data``, and optionally write them
@@ -1205,8 +1232,9 @@ class ScanDataAnalyzer:
         add_columns_df = pd.DataFrame(rows) if rows else None
 
         if add_columns_df is not None and len(self.data) > 0:
-            diag_str = analyzer.output_diagnostic if analyzer.output_diagnostic is not None \
-                else analyzer.diagnostic
+            diag_str = column_prefix if column_prefix is not None else (
+                analyzer.output_diagnostic if analyzer.output_diagnostic is not None
+                else analyzer.diagnostic)
 
             # Merge into self.data unconditionally, so the new columns are on
             # active_data and plottable immediately — whether or not anything
@@ -1253,7 +1281,8 @@ class ScanDataAnalyzer:
     def get_scan_data_analysis_dir( self, make_dir=True ):
         return get_analysis_dir(self.top_dir, self.scan, make_dir=True)
 
-    def display_scan(self, displayer, save=False, export=False, suffix='', fig=None, ax=None, **kwargs):
+    def display_scan(self, displayer, save=False, export=False, suffix='', fig=None, ax=None,
+                     output_dir=None, **kwargs):
         """
         Render a scan-level figure using a ``ScanDisplayer``.
 
@@ -1270,6 +1299,9 @@ class ScanDataAnalyzer:
             Suffix appended to the saved filename.
         fig, ax : optional
             Existing matplotlib figure / axis to draw into.
+        output_dir : str or Path, optional
+            Folder for the saved / exported files, instead of the scan's
+            analysis directory (or the displayer's ``output_subdir``).
         **kwargs
             Forwarded to ``displayer.display``.
 
@@ -1279,9 +1311,9 @@ class ScanDataAnalyzer:
         """
         fig, ax = displayer.display(self, fig=fig, ax=ax, **kwargs)
         if save:
-            displayer.save(fig, self, suffix=suffix)
+            displayer.save(fig, self, suffix=suffix, output_dir=output_dir)
         if export:
-            displayer.export(self, suffix=suffix)
+            displayer.export(self, suffix=suffix, output_dir=output_dir)
         return fig, ax
 
     def merge_data_frame_to_sfile(self,
@@ -1290,11 +1322,16 @@ class ScanDataAnalyzer:
                                   overwrite_columns=True,
                                   analysis_label=None,
                                   keep_unanalysed=True,
+                                  target_filename=None,
                                   ):
         """
         Write per-shot result columns into the sfile on disk (and a summary
         file next to it). The sfile is re-read first, so columns written by
-        others since loading are kept.
+        others since loading are kept, and the read-merge-write holds a lock
+        file (``<sfile>.lock``) so two writers can't interleave.
+
+        target_filename: write into this table instead of ``self.sfilename``
+            (e.g. ``scans/ScanNNN/ScanDataScanNNN.txt``); same format.
 
         overwrite_columns=True: an existing column of the same name is
             updated (see ``keep_unanalysed``). False: the new columns are
@@ -1303,28 +1340,30 @@ class ScanDataAnalyzer:
             updated; other shots keep their values. False: the whole column
             is replaced, so shots absent from ``add_columns_df`` become NaN.
         """
-        sfile_data = pd.read_csv(self.sfilename, sep='	')
+        target = os.fspath(target_filename) if target_filename is not None else self.sfilename
         add_columns_df = rename_result_columns(add_columns_df, diagnostic, analysis_label)
 
-        if overwrite_columns:
-            merged_df = merge_results(sfile_data, add_columns_df, keep_unanalysed=keep_unanalysed)
-        else:
-            # Use suffixes to avoid column conflicts
-            merged_df = pd.merge(sfile_data, add_columns_df, on=['scan', 'Shotnumber'], how='left',
-                                 suffixes=('', '_2'))
-            col_rename = {}
-            for col in merged_df.columns:
-                if col.endswith('_2'):
-                    base_name = col[:-2]
-                    suffix_num = sum(base_name in c for c in merged_df.columns) - 1
-                    col_rename[col] = f"{base_name}_{suffix_num}"
-            merged_df = merged_df.rename(columns=col_rename)
+        with file_lock(target):
+            sfile_data = pd.read_csv(target, sep='\t')
+            if overwrite_columns:
+                merged_df = merge_results(sfile_data, add_columns_df, keep_unanalysed=keep_unanalysed)
+            else:
+                # Use suffixes to avoid column conflicts
+                merged_df = pd.merge(sfile_data, add_columns_df, on=['scan', 'Shotnumber'],
+                                     how='left', suffixes=('', '_2'))
+                col_rename = {}
+                for col in merged_df.columns:
+                    if col.endswith('_2'):
+                        base_name = col[:-2]
+                        suffix_num = sum(base_name in c for c in merged_df.columns) - 1
+                        col_rename[col] = f"{base_name}_{suffix_num}"
+                merged_df = merged_df.rename(columns=col_rename)
+            merged_df.to_csv(target, index=False, sep='\t')
 
         analysis_dir = get_analysis_dir(self.top_dir, self.scan, make_dir=True)
         add_columns_path = os.path.join(analysis_dir, f"Scan{int(self.scan):03d}_{diagnostic}_{analysis_label}_Summary.txt")
-        add_columns_df.to_csv(add_columns_path, index=False, sep='	')
-        merged_df.to_csv(self.sfilename, index=False, sep='	')
-        print(f'Columns added to {self.sfilename}')
+        add_columns_df.to_csv(add_columns_path, index=False, sep='\t')
+        print(f'Columns added to {target}')
 
     def mean_std_diagnostic(self, analyzer, bg=None, ddof=0, show_progress=False, rows=None):
         """
