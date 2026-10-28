@@ -14,6 +14,7 @@
 # shot order. pyplot (displayers) stays on the controller thread.
 
 import concurrent.futures
+import threading
 import os
 import re
 import time
@@ -60,12 +61,13 @@ class _ScanState:
         self.first_ready = {}    # shot -> time its files were complete
         self.partial_since = {}  # shot -> time its present files settled, inputs missing
         self.partial = set()     # shots analysed with an input missing
-        self.submitted = {}      # shot -> future
+        self.submitted = {}      # shot -> future of its analysis
+        self.writing = {}        # shot -> (future of its file writes, result row)
         self.done = set()        # shots with results (this run or a previous one)
         self.deferred = set()    # waited too long for their .tdms context
         self.failed = set()
         self.pending = []        # result rows not yet written to the live file
-        self.results = []        # every result row of the scan (for the live views)
+        self.results = []        # every result row of the scan, shown or done (for the live views)
         self.latest = None       # (shot, data, results, aux) of the newest shot collected
         self.scan_info = read_scan_info(top_dir, scan)
         self.live_scan = None    # ScanDataAnalyzer of the running scan, for the live views
@@ -138,6 +140,11 @@ class LiveShotWatcher:
         sfile gave them, else device names (logged at scan start).
     gui_interval_s : float
         Redraw the live windows at most this often.
+    on_shot : callable, optional
+        ``on_shot(scan, shot, data, results, aux)``, called on the watcher's
+        loop as soon as a shot's analysis is done, before its files are
+        written (e.g. to send it to a display in another process). Errors
+        are logged, not raised.
 
     The live windows need an interactive matplotlib backend and ``start()``
     called from the main thread (a script, not a notebook cell).
@@ -151,7 +158,7 @@ class LiveShotWatcher:
                  context_timeout_s=30.0, required_columns=None, start_scan=None, write=True,
                  file_settle_s=1.0, settle_s=30.0, abandon_grace_s=60.0, analyze_partial=False,
                  missing_input_timeout_s=10.0, show_shots=False, live_displayers=(),
-                 gui_interval_s=1.0):
+                 gui_interval_s=1.0, on_shot=None):
         if experiment_dir is None and top_dir is None:
             raise ValueError("Give experiment_dir (watch today's folder) or top_dir.")
         if job is None and not live_displayers:
@@ -176,6 +183,8 @@ class LiveShotWatcher:
         self.missing_input_timeout_s = missing_input_timeout_s
         self.view = LiveView(show_shots and self.job is not None, live_displayers, gui_interval_s,
                              log=self._log)
+        self.on_shot = on_shot
+        self._wake = threading.Event()  # set when an analysis or write finishes
         self.state = None            # _ScanState of the scan being watched
         self.aliases = {}            # .tdms raw name -> sfile alias (from an earlier sfile)
         self.last_scan = {}          # top_dir -> last scan handled
@@ -204,9 +213,10 @@ class LiveShotWatcher:
         return {'scan': st.scan, 'files': len(st.files), 'tdms shots': len(st.context_rows),
                 'done': len(st.done),
                 'arriving': len(set(st.files) - set(st.complete) - st.done),
-                'in progress': running, 'deferred': len(st.deferred), 'failed': len(st.failed),
-                'waiting': len(set(st.complete) - set(st.submitted) - st.done - st.deferred
-                               - st.failed)}
+                'in progress': running, 'writing': len(st.writing),
+                'deferred': len(st.deferred), 'failed': len(st.failed),
+                'waiting': len(set(st.complete) - set(st.submitted) - set(st.writing) - st.done
+                               - st.deferred - st.failed)}
 
     # ------------------------------------------------------------------
     # Discovery
@@ -361,8 +371,8 @@ class LiveShotWatcher:
 
     def _submit_ready(self, st, now):
         """Submit shots whose files are complete and whose context is in the .tdms."""
-        waiting = [s for s in sorted(st.complete) if s not in st.submitted and s not in st.done
-                   and s not in st.deferred and s not in st.failed]
+        waiting = [s for s in sorted(st.complete) if s not in st.submitted and s not in st.writing
+                   and s not in st.done and s not in st.deferred and s not in st.failed]
         if not waiting:
             return
         self._read_context(st, now)
@@ -383,31 +393,72 @@ class LiveShotWatcher:
                 row[f'{diag} file_list'] = path or os.path.join(
                     st.scan_dir, diag, f'{st.label}_{diag}_{shot:03d}{ext}')
                 row[f'{diag} file_exists'] = int(path is not None)
-            st.submitted[shot] = self._pool.submit(
-                helper._process_row_and_write, self.analyzer, st.bg, pd.Series(row),
-                self.job.write_analyzed, self.job.write_lineouts)
+            st.submitted[shot] = self._submit(helper._process_row, self.analyzer, st.bg, pd.Series(row))
+
+    def _submit(self, fn, *args):
+        """Run ``fn(*args)`` in the pool; the loop is woken when it finishes."""
+        future = self._pool.submit(fn, *args)
+        future.add_done_callback(lambda f: self._wake.set())
+        return future
 
     def _collect(self, st, wait=False):
-        """Results of finished shots, in shot order, appended to the live results file.
+        """Finished shots, in two stages.
 
-        A shot with results is ``done``; its row stays in ``st.pending`` until
-        the file write succeeds (retried on the next poll)."""
+        1. Analysis done (any order): the shot is shown at once (``on_shot``,
+           the live windows) and its files are written in the pool.
+        2. Files written (in shot order): its row is appended to the live
+           results file and the shot is ``done``. A row stays in
+           ``st.pending`` until that file write succeeds (retried next poll).
+
+        So a watcher stopped between the two redoes the shot on restart.
+        ``wait``: wait for every analysis and write in flight."""
+        helper = self._helper_scan(st) if st.submitted else None
         for shot in sorted(st.submitted):
             future = st.submitted[shot]
             if not wait and not future.done():
-                break                   # keep shot order: stop at the first unfinished
+                continue
             del st.submitted[shot]
             try:
-                _, data, results, aux = future.result()
-                row = {'scan': st.scan, 'Shotnumber': shot, **results}
-                st.pending.append(row)
-                st.results.append(row)
-                st.done.add(shot)
-                st.latest = (shot, data, results, aux)
+                context, data, results, aux = future.result()
             except Exception:
                 st.failed.add(shot)
                 self._log(f"{st.label}: shot {shot} failed (retried at the end of the scan):\n"
                           f"{traceback.format_exc()}")
+                continue
+            row = {'scan': st.scan, 'Shotnumber': shot, **results}
+            st.results.append(row)
+            if st.latest is None or shot >= st.latest[0]:
+                st.latest = (shot, data, results, aux)
+            if self.on_shot is not None:
+                try:
+                    self.on_shot(st.scan, shot, data, results, aux)
+                except Exception:
+                    self._log(f"{st.label}: on_shot failed for shot {shot}:\n{traceback.format_exc()}")
+            args = (helper._write_row, self.analyzer, context, data, aux,
+                    self.job.write_analyzed, self.job.write_lineouts)
+            if self._pool is not None:
+                st.writing[shot] = (self._submit(*args), row)
+            else:                       # closing: write here
+                done = concurrent.futures.Future()
+                try:
+                    args[0](*args[1:])
+                    done.set_result(None)
+                except Exception as err:
+                    done.set_exception(err)
+                st.writing[shot] = (done, row)
+        for shot in sorted(st.writing):
+            future, row = st.writing[shot]
+            if not wait and not future.done():
+                break                   # keep shot order in the live results file
+            del st.writing[shot]
+            try:
+                future.result()
+                st.pending.append(row)
+                st.done.add(shot)
+            except Exception:
+                st.failed.add(shot)
+                self._log(f"{st.label}: writing shot {shot}'s files failed (retried at the end of "
+                          f"the scan):\n{traceback.format_exc()}")
         if st.pending:
             try:
                 self._append_live(st, pd.DataFrame(st.pending))
@@ -630,7 +681,8 @@ class LiveShotWatcher:
                     # e.g. the network share dropped out: report, back off, carry on
                     errors += 1
                     self._log(f"poll failed ({errors} in a row):\n{traceback.format_exc()}")
-                self.view.wait(min(self.poll_s * 2 ** min(errors, 5), 30.0))
+                self.view.wait(min(self.poll_s * 2 ** min(errors, 5), 30.0), self._wake)
+                self._wake.clear()
         except KeyboardInterrupt:
             pass
         finally:
@@ -643,13 +695,13 @@ class LiveShotWatcher:
         """Cancel queued shots and stop the threads; results written so far are kept."""
         self._running = False
         if self._pool is not None:
-            self._pool.shutdown(wait=True, cancel_futures=True)
-            self._pool = None
             st = self.state
             if st is not None:
-                # keep the shots that finished while shutting down, so a
-                # restarted watcher doesn't redo them; cancelled ones it will
-                for shot in [s for s, f in st.submitted.items() if f.cancelled()]:
+                # drop the shots not started yet (a restarted watcher does them);
+                # finish, show and write the ones running
+                for shot in [s for s, f in st.submitted.items() if f.cancel()]:
                     del st.submitted[shot]
                 self._collect(st, wait=True)
+            self._pool.shutdown(wait=True, cancel_futures=True)
+            self._pool = None
         self._log("Stopped.")

@@ -73,6 +73,47 @@ class MagSpecEBeamAnalyzer(MultiDiagnosticAnalyzer):
         self.ebeam_camera = ebeam_camera
         self.thread_safe = True
 
+    def check_backgrounds(self):
+        """Load both analyzers' default backgrounds now (from ``bg_dir``), so a
+        missing file fails here, with its name, instead of on every shot.
+        Raises FileNotFoundError / ValueError."""
+        errors = []
+        for what, analyzer in (('magspec', self.alle), ('e-beam profile', self.ebeam)):
+            try:
+                analyzer.default_background()
+            except (FileNotFoundError, ValueError, OSError) as err:
+                errors.append(f'{what}: {err}')
+        if errors:
+            raise FileNotFoundError('Backgrounds missing (run the background scans first):\n  '
+                                    + '\n  '.join(errors))
+
+    def live_payload(self, scan, shot, data, results, aux, mmt_bin=4):
+        """A compact, picklable summary of one shot for a live display in
+        another process: allE density [pC/mrad/(GeV/c)] averaged over
+        ``mmt_bin`` momentum columns (float32), its extent, the shot's
+        spectrum [pC/GeV] on its own momentum axis and on the fixed grid
+        (``aux['p']``, for waterfalls), and the scalars (``results``)."""
+        if data is None:
+            return {'kind': 'shot', 'scan': scan, 'shot': shot, 'image': None,
+                    'results': dict(results or {})}
+        aux = aux or {}
+        n_ang, n_mmt = data.shape
+        mmt = np.asarray(aux.get('momentum', np.linspace(0.01, 5.0, n_mmt)), float)
+        ang = np.asarray(aux.get('angle', np.linspace(-1.3, 1.3, n_ang)), float)
+        dm, da = mmt[1] - mmt[0], ang[1] - ang[0]
+        k = max(1, int(mmt_bin))
+        n = n_mmt // k * k
+        dens = (1e-6 * data[:, :n].reshape(n_ang, n // k, k).mean(axis=2) / dm / da).astype(np.float32)
+        return {
+            'kind': 'shot', 'scan': scan, 'shot': shot, 'image': dens,
+            'extent': (mmt[0] - dm / 2, mmt[n - 1] + dm / 2, ang[0] - da / 2, ang[-1] + da / 2),
+            'mmt': mmt.astype(np.float32), 'spectrum': (1e-6 * data.sum(axis=0) / dm).astype(np.float32),
+            'grid': np.asarray(aux.get('p', []), np.float32),
+            'grid_spectrum': np.asarray(aux.get('p_lo', []), np.float32),
+            'results': {k_: float(v) for k_, v in (results or {}).items()
+                        if isinstance(v, (int, float, np.integer, np.floating))},
+        }
+
     def register_with_scan(self, scan, remove_missing_files=False):
         # missing magspec cameras are handled in the analysis (as in MATLAB)
         super().register_with_scan(scan, remove_missing_files=remove_missing_files)

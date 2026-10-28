@@ -192,14 +192,20 @@ class LiveView:
                 self._failed(fig, i, type(displayer).__name__)
             self._refresh(fig)
 
-    def wait(self, seconds):
-        """Sleep ``seconds`` while keeping the windows responsive."""
+    def wait(self, seconds, event=None):
+        """Wait up to ``seconds`` (less if ``event`` is set) while keeping the
+        windows responsive."""
+        import time
         figs = self.figures() if self.show else []
-        if figs:
-            figs[0].canvas.start_event_loop(seconds)
-        else:
-            import time
-            time.sleep(seconds)
+        if not figs:
+            if event is not None:
+                event.wait(seconds)
+            else:
+                time.sleep(seconds)
+            return
+        t_end = time.monotonic() + seconds
+        while time.monotonic() < t_end and not (event is not None and event.is_set()):
+            figs[0].canvas.start_event_loop(min(0.02, max(0.0, t_end - time.monotonic())))
 
     def close_others(self):
         """Close every pyplot figure except the live windows."""

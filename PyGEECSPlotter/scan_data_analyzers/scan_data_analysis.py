@@ -918,6 +918,12 @@ class ScanDataAnalyzer:
         ``analyze_scan`` and of ``LiveShotWatcher``.
         """
         context, data, results, aux = self._process_row(analyzer, bg, row)
+        self._write_row(analyzer, context, data, aux, write_analyzed, write_lineouts)
+        return context, data, results, aux
+
+    def _write_row(self, analyzer, context, data, aux, write_analyzed=False, write_lineouts=False):
+        """The shot's analysed files (if ``write_analyzed``), from ``_process_row``'s
+        output. Separate so a live watcher can show a shot before writing it."""
         if write_analyzed and data is not None:
             # Each shot's own scan dir (an sfile can span several scans).
             scan, shot_num = int(context['scan']), int(context['Shotnumber'])
@@ -926,7 +932,6 @@ class ScanDataAnalyzer:
                                          **_aux_kwarg(analyzer.write_analyzed_data, aux))
             if write_lineouts:
                 analyzer.write_analyzed_lineouts(aux, shot_dir, scan, shot_num)
-        return context, data, results, aux
 
     def _selected_rows(self, rows=None):
         """
