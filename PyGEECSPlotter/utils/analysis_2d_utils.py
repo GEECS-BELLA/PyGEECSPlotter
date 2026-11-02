@@ -455,25 +455,103 @@ def compute_encircled_energy(data, dx=1, dy=1, x0=None, y0=None, radii=(), fract
     as 0.
     """
     w = np.clip(np.nan_to_num(np.asarray(data, dtype=float)), 0, None)
-    N, M = w.shape
-    if x0 is None or y0 is None:
-        x0, y0 = centroid(w)
-    r = np.sqrt(((np.arange(M)[None, :] - x0)*dx)**2 + ((np.arange(N)[:, None] - y0)*dy)**2)
-    total = w.sum()
+    r_sorted, cum = encircled_energy_curve(w, dx=dx, dy=dy, x0=x0, y0=y0)
     out = {}
-    if total <= 0:
+    if not np.isfinite(cum).all():
         out.update({f'ee r={R:g}': np.nan for R in radii})
         out.update({f'ee radius {100*p:g}%': np.nan for p in fractions})
         out['peak fraction'] = np.nan
         return out
-    order = np.argsort(r, axis=None)
-    r_sorted = r.ravel()[order]
-    cum = np.cumsum(w.ravel()[order])/total
     for R in radii:
-        out[f'ee r={R:g}'] = w[r <= R].sum()/total
+        # the cumulative sum includes every pixel up to the last one with r <= R
+        out[f'ee r={R:g}'] = cum[np.searchsorted(r_sorted, R, side='right') - 1] if R >= r_sorted[0] else 0.0
     for p in fractions:
         out[f'ee radius {100*p:g}%'] = float(np.interp(p, cum, r_sorted))
-    out['peak fraction'] = w.max()/total
+    out['peak fraction'] = w.max()/w.sum()
+    return out
+
+
+def encircled_energy_curve(data, dx=1, dy=1, x0=None, y0=None):
+    """
+    Encircled-energy curve about (x0, y0) (pixels; default: centroid).
+
+    Returns ``(r, fraction)``: every pixel's distance from the centre (dx
+    units), sorted, and the fraction of the total energy within it.
+    Negative and NaN pixels count as 0; an empty image gives NaN fractions.
+    """
+    w = np.clip(np.nan_to_num(np.asarray(data, dtype=float)), 0, None)
+    N, M = w.shape
+    if x0 is None or y0 is None:
+        x0, y0 = centroid(w)
+    r = np.sqrt(((np.arange(M)[None, :] - x0)*dx)**2 + ((np.arange(N)[:, None] - y0)*dy)**2)
+    order = np.argsort(r, axis=None)
+    total = w.sum()
+    if total <= 0:
+        return r.ravel()[order], np.full(r.size, np.nan)
+    return r.ravel()[order], np.cumsum(w.ravel()[order])/total
+
+
+
+def focal_spot_stats(data, dx=1, dy=1, energy=np.nan, tau_fs=40.0, wavelength_um=0.8,
+                     x0=None, y0=None):
+    """
+    Peak-intensity figures of merit for one focal-spot image, following the
+    LabVIEW focus analysis.
+
+    ``data`` is the processed (background-subtracted) image, dx / dy the
+    pixel size in um, ``energy`` the pulse energy in J (NaN: the energy
+    figures are NaN), ``tau_fs`` the FWHM pulse duration. Lineouts are the
+    row and column through the centroid (or x0, y0, pixels).
+
+    Returns a dict:
+      'fwhm x', 'fwhm y'           FWHM of the lineouts (um, interpolated)
+      'fw 1/e2 x', 'fw 1/e2 y'     full width at 1/e^2 of the lineouts (um)
+      'w0 x', 'w0 y', 'w0'         Gaussian 1/e^2 radius from the FWHM,
+                                   FWHM/sqrt(2 ln 2), and their mean (um)
+      'ee w0'                      fraction of the energy within r = w0
+      'ee w0 / gaussian'           that over a Gaussian's 1 - e^-2
+      'ee radius 50%', 'ee radius 86.5%'   (um)
+      'energy (J)', 'energy per count (J)'
+      'peak fluence (J/cm^2)'      energy * max / (sum * pixel area)
+      'peak intensity (W/cm^2)'    peak fluence / tau (no temporal shape factor)
+      'a0'                         0.855 * lambda[um] * sqrt(I / 1e18 W/cm^2)
+      'strehl'                     peak intensity over that of a Gaussian
+                                   with the same w0 and energy,
+                                   2 E / (pi w0^2 tau)
+    """
+    w = np.clip(np.nan_to_num(np.asarray(data, dtype=float)), 0, None)
+    if x0 is None or y0 is None:
+        x0, y0 = centroid(w)
+    row = w[int(np.clip(round(y0), 0, w.shape[0] - 1)), :]
+    col = w[:, int(np.clip(round(x0), 0, w.shape[1] - 1))]
+    out = {
+        'fwhm x': a1d.interpolated_width(row, 0.5)*dx,
+        'fwhm y': a1d.interpolated_width(col, 0.5)*dy,
+        'fw 1/e2 x': a1d.interpolated_width(row, np.exp(-2))*dx,
+        'fw 1/e2 y': a1d.interpolated_width(col, np.exp(-2))*dy,
+    }
+    to_w0 = 1/np.sqrt(2*np.log(2))
+    out['w0 x'] = out['fwhm x']*to_w0
+    out['w0 y'] = out['fwhm y']*to_w0
+    out['w0'] = 0.5*(out['w0 x'] + out['w0 y'])
+
+    ee = compute_encircled_energy(w, dx=dx, dy=dy, x0=x0, y0=y0, fractions=(0.5, 0.865),
+                                  radii=(out['w0'],) if np.isfinite(out['w0']) else ())
+    out['ee w0'] = ee.get(f"ee r={out['w0']:g}", np.nan)
+    out['ee w0 / gaussian'] = out['ee w0']/(1 - np.exp(-2))
+    out['ee radius 50%'] = ee['ee radius 50%']
+    out['ee radius 86.5%'] = ee['ee radius 86.5%']
+
+    total = w.sum()
+    pixel_area_cm2 = dx*dy*1e-8
+    tau_s = tau_fs*1e-15
+    out['energy (J)'] = energy
+    out['energy per count (J)'] = energy/total if total > 0 else np.nan
+    out['peak fluence (J/cm^2)'] = out['energy per count (J)']*w.max()/pixel_area_cm2
+    out['peak intensity (W/cm^2)'] = out['peak fluence (J/cm^2)']/tau_s
+    out['a0'] = 0.855*wavelength_um*np.sqrt(out['peak intensity (W/cm^2)']/1e18)
+    w0_cm = out['w0']*1e-4
+    out['strehl'] = out['peak intensity (W/cm^2)']/(2*energy/(np.pi*w0_cm**2*tau_s))
     return out
 
 
