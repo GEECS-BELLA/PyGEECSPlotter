@@ -107,6 +107,26 @@ def get_lineout_width(lineout, x0=None, max_data=None, from_center=True, width_a
             return np.nan, np.nan, np.nan
 
 
+def interpolated_width(lineout, width_at=0.5):
+    """Width (in samples) of ``lineout`` at ``width_at`` of its maximum, the
+    crossings either side of the peak linearly interpolated. NaN if it
+    doesn't drop below that level on both sides."""
+    y = np.nan_to_num(np.asarray(lineout, dtype=float))
+    k = int(np.argmax(y))
+    level = width_at*y[k]
+    if not y[k] > 0:
+        return np.nan
+    below_l = np.where(y[:k] < level)[0]
+    below_r = np.where(y[k:] < level)[0]
+    if len(below_l) == 0 or len(below_r) == 0:
+        return np.nan
+    a = below_l[-1]                      # y[a] < level <= y[a + 1]
+    b = below_r[0] + k                   # y[b - 1] >= level > y[b]
+    left = a + (level - y[a])/(y[a + 1] - y[a])
+    right = b - 1 + (y[b - 1] - level)/(y[b - 1] - y[b])
+    return right - left
+
+
 def width_on_axis(axis, amp, width_at=0.5):
     """
     Width of ``amp`` at ``width_at`` of its peak, in axis units.
