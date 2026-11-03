@@ -827,7 +827,8 @@ class ScanDataAnalyzer:
         """
         try:
             # Retrieve all matching files
-            bg_file_paths = glob.glob(os.path.join(self.top_dir, 'analysis', '*%s_averaged%s' % (diagnostic, file_ext)))
+            # sorted: 'last' is the highest scan number, not file-system order
+            bg_file_paths = sorted(glob.glob(os.path.join(self.top_dir, 'analysis', '*%s_averaged%s' % (diagnostic, file_ext))))
             
             if not bg_file_paths:
                 print(f"No background files found for diagnostic '{diagnostic}'.")

@@ -190,6 +190,10 @@ class ScanWatcher:
         re-checked every poll, so a run past midnight moves to the new day.
     jobs : list of LiveJob (or analyzers)
         Run in order on each scan; put cheap ones first.
+    classifier : ScanClassifier, optional
+        Instead of ``jobs``: default jobs, the extra jobs each scan tag
+        (``#focus`` etc. in the scan info) brings, and day trackers updated
+        after every scan (written to ``analysis/today/``).
     top_dir : str or Path, optional
         Watch this day folder instead (fixed).
     poll_s : float
@@ -216,12 +220,15 @@ class ScanWatcher:
 
     def __init__(self, experiment_dir=None, jobs=(), top_dir=None, poll_s=2.0, start_scan=None,
                  search_replace_filename=None, column_math_filename=None, write=True,
-                 output_dir=None, settle_s=30.0):
+                 output_dir=None, settle_s=30.0, classifier=None):
+        from PyGEECSPlotter.scan_data_analyzers.scan_classifier import ScanClassifier
         if experiment_dir is None and top_dir is None:
             raise ValueError("Give experiment_dir (watch today's folder) or top_dir.")
+        if classifier is not None and jobs:
+            raise ValueError("Give jobs or a classifier, not both (put the jobs in the classifier).")
         self.experiment_dir = os.fspath(experiment_dir) if experiment_dir is not None else None
         self.fixed_top_dir = os.fspath(top_dir) if top_dir is not None else None
-        self.jobs = as_jobs(jobs)
+        self.classifier = classifier if classifier is not None else ScanClassifier(jobs)
         self.poll_s = poll_s
         self.settle_s = settle_s
         self.start_scan = start_scan
@@ -300,8 +307,8 @@ class ScanWatcher:
     def start(self):
         """Poll until ``stop()`` or Ctrl+C."""
         self._running = True
-        self._log(f"Watching {self.analysis_dir} for new scans "
-                  f"({len(self.jobs)} jobs). Ctrl+C to stop.")
+        self._log(f"Watching {self.analysis_dir} for new scans ({self.classifier}). "
+                  f"Ctrl+C to stop.")
         try:
             while self._running:
                 self.poll()
@@ -316,6 +323,17 @@ class ScanWatcher:
         self._running = False
 
     # ------------------------------------------------------------------
+    @property
+    def jobs(self):
+        """The default jobs (the classifier's)."""
+        return self.classifier.jobs
+
+    def today_dir(self, top_dir):
+        """Folder of the day trackers: ``analysis/today`` (``<output_dir>/today`` if set)."""
+        if self.output_dir is None:
+            return os.path.join(top_dir, 'analysis', 'today')
+        return os.path.join(self.output_dir, 'today')
+
     def figure_dir(self, top_dir, scan, job):
         """Where ``job``'s figures for ``scan`` go (made only when a figure is saved)."""
         if self.output_dir is None:
@@ -334,7 +352,6 @@ class ScanWatcher:
         """Run every job on one scan. A failing job is reported and the next one runs."""
         top_dir = top_dir or self.top_dir
         label = f"Scan{int(scan):03d}"
-        self._log(f"{label}: analysing ({len(self.jobs)} jobs)")
         try:
             s = self.load_scan(scan, top_dir)
         except Exception:
@@ -344,16 +361,26 @@ class ScanWatcher:
         if s.aborted:
             self._log(f"{label}: no shots, skipped")
             return s
-        for job in self.jobs:
+        jobs, tags = self.classifier.jobs_for(s)
+        self._log(f"{label}: analysing ({len(jobs)} jobs"
+                  + (f"; tags {' '.join('#' + t for t in tags)}" if tags else '') + ")")
+        for job in jobs:
             t0 = time.monotonic()
             try:
                 with s.filtered():          # each job's missing-file rules apply to it alone
                     results = job.run(s, output_dir=self.figure_dir(top_dir, scan, job),
                                       write=self.write)
-                n = 0 if results is None else len(results)
-                self._log(f"{label}: {job.name}: {n} shots ({time.monotonic() - t0:.1f} s)")
+                done = f"{len(results)} shots" if hasattr(results, 'columns') else 'done'
+                self._log(f"{label}: {job.name}: {done} ({time.monotonic() - t0:.1f} s)")
             except Exception:
                 self._log(f"{label}: {job.name} failed")
+                print(traceback.format_exc())
+        for tracker in self.classifier.day:
+            try:
+                with s.filtered():
+                    tracker.update(s, self.today_dir(top_dir), tags=tags)
+            except Exception:
+                self._log(f"{label}: day tracker {tracker.name} failed")
                 print(traceback.format_exc())
         plt.close('all')
         return s
