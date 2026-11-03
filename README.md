@@ -100,6 +100,38 @@ watcher = ScanWatcher(experiment_dir=r'N:\data', jobs=[
 watcher.start()          # Ctrl+C to stop; watcher.reanalyze([3, 4]) for past scans
 ```
 
+Summaries are written as `analysis/ScanNNN/Scan003_<diag>_online_Summary.txt`.
+
+**Scan tags.** Hashtags in a scan's info text (`ScanInfoScanNNN.ini`, e.g.
+`focus scan #focus #bg`) can add or change jobs for that scan. An experiment
+keeps its tags in a Python config that builds a `ScanClassifier`:
+
+```python
+from PyGEECSPlotter.scan_data_analyzers import (ScanClassifier, Tag, LiveJob, DisplayJob,
+                                                AveragedBackground)
+from PyGEECSPlotter.displayers import FocalScanDisplayer, DayImages, DayScalars, ScanSheet
+
+classifier = ScanClassifier(
+    jobs=[LiveJob(camera, displayers=[...])],             # every scan
+    tags=[Tag('focus', jobs=[DisplayJob([FocalScanDisplayer(camera, 'CAM-X max_counts')])]),
+          Tag('bg', jobs=[AveragedBackground([('CAM-X', '.png')])], replace_default=True)],
+    day=[DayImages(camera, select='max', column='CAM-X max_counts'),
+         DayScalars(['CAM-X x0', 'CAM-X y0']), ScanSheet()],
+)
+ScanWatcher(experiment_dir=r'N:\data', classifier=classifier).start()
+```
+
+- **Tag jobs:** each `Tag` brings extra jobs. It can also change the default jobs
+  for that scan with `modify=` (see `tweak_job`), or replace them entirely with
+  `replace_default=True`.
+- **Unknown tags** are reported in the log, which catches typos.
+- **`AveragedBackground`** writes `analysis/ScanNNN<diag>_averaged.png`. Later scans
+  that use `use_bg` pick it up, and an existing file is never overwritten.
+- **Day trackers** update `analysis/today/` after every scan:
+  - `<diag>_today.png`: one chosen shot per scan;
+  - per-scan mean ± std of chosen columns;
+  - `scan_sheet.tsv`.
+
 `LiveShotWatcher` analyses one analyzer's shots *while the scan runs*:
 
 - **Shot data:** each shot is analysed once its diagnostic file(s) and its row in
