@@ -9,12 +9,12 @@ appears) and then runs a list of jobs on it. Each job:
 2. merges the results into the sfile, and optionally into
    `scans/ScanNNN/ScanDataScanNNN.txt`, while holding a lock file
 3. runs its displayers and saves each figure to
-   `<day>/online_analysis/ScanNNN/<diagnostic>/`
+   `<day>/analysis/ScanNNN/online/<diagnostic>/`
 
 **`LiveShotWatcher`** runs one analyzer *while the scan is running*. A
 shot is analysed as soon as its diagnostic file(s) and its row in the
 scan's `.tdms` are both complete. The results are appended to
-`online_analysis/ScanNNN/<name>_live.txt`, so you can watch them build up.
+`analysis/ScanNNN/online/<name>_live.txt`, so you can watch them build up.
 When the scan ends:
 
 - shots that never got their `.tdms` context in time are analysed with the

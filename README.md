@@ -87,7 +87,7 @@ DataFrames → trace displayers.
 
 `ScanWatcher` runs a list of jobs on each scan as it finishes, i.e. when its
 sfile appears. Each job is analysis, then the results merged into the sfile,
-then the displayers. Figures go to `<day>/online_analysis/ScanNNN/<diagnostic>/`.
+then the displayers. Figures go to `<day>/analysis/ScanNNN/online/<diagnostic>/`.
 
 ```python
 from PyGEECSPlotter.scan_data_analyzers import ScanWatcher, LiveJob
@@ -104,7 +104,7 @@ watcher.start()          # Ctrl+C to stop; watcher.reanalyze([3, 4]) for past sc
 
 - **Shot data:** each shot is analysed once its diagnostic file(s) and its row in
   `scans/ScanNNN/ScanNNN.tdms` are complete, and the results are appended to
-  `online_analysis/ScanNNN/<name>_live.txt`.
+  `analysis/ScanNNN/online/<name>_live.txt`.
 - **End of scan:** any shot whose context never arrived in time is analysed with
   the sfile. The results are then merged into the sfile and the displayers run.
 

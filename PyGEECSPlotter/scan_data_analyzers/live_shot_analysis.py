@@ -2,7 +2,7 @@
 #
 # LiveShotWatcher waits for a scan to start, analyses each shot as soon as its
 # diagnostic file(s) and its row in the scan's .tdms are complete, appends the
-# results to online_analysis/ScanNNN/<name>_live.txt as it goes, and when the
+# results to analysis/ScanNNN/online/<name>_live.txt as it goes, and when the
 # scan ends (its sfile appears) analyses any shots it couldn't, merges the
 # results into the sfile and runs the displayers. Then it waits for the next
 # scan. Optionally, live windows (live_view.py) show the latest shot and scan
@@ -149,9 +149,9 @@ class LiveShotWatcher:
     The live windows need an interactive matplotlib backend and ``start()``
     called from the main thread (a script, not a notebook cell).
 
-    Per-shot results go to ``online_analysis/ScanNNN/<name>_live.txt`` as
+    Per-shot results go to ``analysis/ScanNNN/online/<name>_live.txt`` as
     they come in (a restarted watcher skips the shots already there);
-    displayer figures to ``online_analysis/ScanNNN/<name>/``.
+    displayer figures to ``analysis/ScanNNN/online/<name>/``.
     """
 
     def __init__(self, experiment_dir=None, job=None, top_dir=None, poll_s=1.0, max_workers=None,

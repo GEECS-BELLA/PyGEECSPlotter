@@ -30,7 +30,7 @@ from PyGEECSPlotter.scan_data_analyzers.filters import Filter, combined_mask, su
 from PyGEECSPlotter.scan_data_analyzers.sfile_frame import (
     apply_column_math, apply_search_replace, drop_incomplete_rows, merge_results,
     parse_column_math_from_lv_controls, parse_search_replace_from_lv_controls, read_controls,
-    rename_result_columns, search_replace_text)
+    rename_result_columns, search_replace_text, summary_filename)
 from PyGEECSPlotter.analyzers.multi_diagnostic_analyzer import MultiDiagnosticAnalyzer
 
 import PyGEECSPlotter.utils.plotting as gplt
@@ -1077,7 +1077,7 @@ class ScanDataAnalyzer:
         write_columns_to_sfile : bool, optional
             If True, overwrite ``self.sfilename`` with the new columns merged
             in, and write a standalone summary file
-            (``Scan{scan:03d}_{diagnostic}_{extra_info_str}Summary.txt``)
+            (``Scan{scan:03d}_{diagnostic}[_{extra_info_str}]_Summary.txt``)
             under the scan's analysis dir. The columns are merged into
             ``self.data`` either way, so this only controls whether anything
             on disk is touched.
@@ -1259,13 +1259,8 @@ class ScanDataAnalyzer:
                     overwrite_columns=overwrite_columns,
                     analysis_label=analysis_label,
                     keep_unanalysed=keep_unanalysed,
+                    summary_label=extra_info_str,
                 )
-
-                summary_path = os.path.join(
-                    analysis_dir,
-                    f"Scan{int(self.scan):03d}_{diag_str}_{extra_info_str}Summary.txt",
-                )
-                add_columns_df.to_csv(summary_path, index=False, sep='\t')
 
         return add_columns_df
 
@@ -1323,15 +1318,19 @@ class ScanDataAnalyzer:
                                   analysis_label=None,
                                   keep_unanalysed=True,
                                   target_filename=None,
+                                  summary_label=None,
                                   ):
         """
-        Write per-shot result columns into the sfile on disk (and a summary
-        file next to it). The sfile is re-read first, so columns written by
-        others since loading are kept, and the read-merge-write holds a lock
-        file (``<sfile>.lock``) so two writers can't interleave.
+        Write per-shot result columns into the sfile on disk, and the same
+        columns to a summary file ``analysis/ScanNNN/Scan003_<diagnostic>
+        [_<label>]_Summary.txt``. The sfile is re-read first, so columns
+        written by others since loading are kept, and the read-merge-write
+        holds a lock file (``<sfile>.lock``) so two writers can't interleave.
 
         target_filename: write into this table instead of ``self.sfilename``
             (e.g. ``scans/ScanNNN/ScanDataScanNNN.txt``); same format.
+        summary_label: label in the summary file name only (default:
+            ``analysis_label``); left out when empty.
 
         overwrite_columns=True: an existing column of the same name is
             updated (see ``keep_unanalysed``). False: the new columns are
@@ -1361,7 +1360,8 @@ class ScanDataAnalyzer:
             merged_df.to_csv(target, index=False, sep='\t')
 
         analysis_dir = get_analysis_dir(self.top_dir, self.scan, make_dir=True)
-        add_columns_path = os.path.join(analysis_dir, f"Scan{int(self.scan):03d}_{diagnostic}_{analysis_label}_Summary.txt")
+        label = analysis_label if summary_label is None else summary_label
+        add_columns_path = os.path.join(analysis_dir, summary_filename(self.scan, diagnostic, label))
         add_columns_df.to_csv(add_columns_path, index=False, sep='\t')
         print(f'Columns added to {target}')
 

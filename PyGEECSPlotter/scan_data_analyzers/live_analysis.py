@@ -5,7 +5,7 @@
 # (in threads unless the analyzer is not thread-safe), the results merged
 # into the sfile (and optionally scans/ScanNNN/ScanDataScanNNN.txt) under a
 # file lock, then the job's displayers, saved to
-# <top_dir>/online_analysis/ScanNNN/<diagnostic>/.
+# <top_dir>/analysis/ScanNNN/online/<diagnostic>/.
 #
 # LiveShotWatcher (live_shot_analysis.py) analyses shots while a scan is still
 # running instead.
@@ -20,13 +20,13 @@ import matplotlib.pyplot as plt
 from PyGEECSPlotter.scan_data_analyzers.scan_data_analysis import ScanDataAnalyzer
 import PyGEECSPlotter.utils.navigation_utils as nav_utils
 
-ONLINE_DIR = 'online_analysis'
+ONLINE_DIR = 'online'        # analysis/ScanNNN/online/<name>/
 _SFILE_RE = re.compile(r's(\d+)\.txt$')
 
 
 def online_output_dir(top_dir, scan, name=None, make_dir=True):
-    """``<top_dir>/online_analysis/ScanNNN[/name]``, created if ``make_dir``."""
-    out = os.path.join(os.fspath(top_dir), ONLINE_DIR, f'Scan{int(scan):03d}')
+    """``<top_dir>/analysis/ScanNNN/online[/name]``, created if ``make_dir``."""
+    out = os.path.join(os.fspath(top_dir), 'analysis', f'Scan{int(scan):03d}', ONLINE_DIR)
     if name:
         out = os.path.join(out, name)
     if make_dir:
@@ -52,7 +52,7 @@ class LiveJob:
     analyzer : DiagnosticAnalyzer, ColumnMathAnalyzer or MultiDiagnosticAnalyzer
     displayers : list of ScanDisplayer
         Run after the analysis, on the scan with the new columns; each figure
-        is saved to ``online_analysis/ScanNNN/<name>/`` and closed.
+        is saved to ``analysis/ScanNNN/online/<name>/`` and closed.
     write_sfile : bool [``add_columns_to_masterlog``, default True]
         Merge the results into ``analysis/sN.txt``.
     update_scan_data_file : bool [``update_scan_data_file``, default False]
@@ -64,6 +64,9 @@ class LiveJob:
         Per-shot files, written to ``analysis/ScanNNN`` as by ``analyze_scan``.
     analysis_label : str [``analysis_label``]
         Appended to the result column names.
+    summary_label : str
+        Label in the summary file name only, ``Scan003_<diag>_online_Summary.txt``
+        (default ``'online'``); None or ``''`` leaves it out.
     column_prefix : str
         Prefix of the result column names. Default: the analyzer's
         ``diagnostic`` (none for column maths), as the old watcher wrote; for
@@ -77,7 +80,7 @@ class LiveJob:
 
     def __init__(self, analyzer, displayers=(), write_sfile=None, update_scan_data_file=None,
                  use_bg=None, write_analyzed=None, write_lineouts=None, analysis_label=None,
-                 column_prefix=None, parallel=None, name=None):
+                 column_prefix=None, parallel=None, name=None, summary_label='online'):
         a = analyzer
         self.analyzer = a
         self.displayers = list(displayers)
@@ -87,6 +90,7 @@ class LiveJob:
         self.write_analyzed = _flag(write_analyzed, a, 'write_analyzed', False)
         self.write_lineouts = _flag(write_lineouts, a, 'write_lineouts', False)
         self.analysis_label = _flag(analysis_label, a, 'analysis_label', None)
+        self.summary_label = summary_label
         self.column_prefix = column_prefix if column_prefix is not None else (
             getattr(a, 'diagnostic', None) or getattr(a, 'output_diagnostic', None)
             if getattr(a, 'inputs', None) else getattr(a, 'diagnostic', None))
@@ -137,13 +141,15 @@ class LiveJob:
         """Merge ``results`` into the sfile and / or ScanData file, as configured."""
         if self.write_sfile:
             scan.merge_data_frame_to_sfile(results, self.column_prefix, overwrite_columns=True,
-                                           analysis_label=self.analysis_label)
+                                           analysis_label=self.analysis_label,
+                                           summary_label=self.summary_label)
         if self.update_scan_data_file:
             target = os.path.join(scan.top_dir, 'scans', f'Scan{int(scan.scan):03d}',
                                   f'ScanDataScan{int(scan.scan):03d}.txt')
             if os.path.exists(target):
                 scan.merge_data_frame_to_sfile(results, self.column_prefix, overwrite_columns=True,
                                                analysis_label=self.analysis_label,
+                                               summary_label=self.summary_label,
                                                target_filename=target)
 
     def display(self, scan, output_dir=None):
@@ -197,7 +203,7 @@ class ScanWatcher:
         sfile / ScanData merge, no per-shot files (for testing on real data;
         pair with ``output_dir`` to keep the figures out too).
     output_dir : str or Path, optional
-        Root for the figures instead of ``<top_dir>/online_analysis``; they go
+        Root for the figures instead of ``analysis/ScanNNN/online/``; they go
         to ``<output_dir>/ScanNNN/<name>/``.
     settle_s : float
         A scan counts as finished when its ``sNinfo.txt`` exists (GEECS writes

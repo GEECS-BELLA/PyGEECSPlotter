@@ -10,6 +10,13 @@ import pandas as pd
 KEYS = ['scan', 'Shotnumber']
 
 
+def summary_filename(scan, diagnostic=None, label=None):
+    """``'Scan003_<diagnostic>_<label>_Summary.txt'``, leaving out an empty or
+    None diagnostic / label (e.g. ``'Scan003_CAM-X_Summary.txt'``)."""
+    parts = [f'Scan{int(scan):03d}'] + [str(p) for p in (diagnostic, label) if p not in (None, '')]
+    return '_'.join(parts + ['Summary.txt'])
+
+
 def drop_incomplete_rows(sfile_data):
     """
     Drop rows with no ``scan`` or ``Shotnumber`` (e.g. a partial last row
