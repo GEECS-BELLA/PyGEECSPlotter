@@ -39,6 +39,13 @@ one analyzer per diagnostic. Same pattern as ``MultiDiagnosticAlignment``.
 ``extra_panels`` adds ``ScalarVsParameter`` plots (with the shot
 highlighted) and a table of the shot's scalars next to the scan's.
 
+Day trackers
+------------
+``DayImages`` / ``DayScalars`` / ``ScanSheet`` (``displayers.day``) cover a
+whole experiment day: one chosen shot per scan, per-scan mean ± std of
+columns, and a scan table. ``ScanWatcher`` updates them after each scan
+(``ScanClassifier(day=[...])``) into ``analysis/today/``.
+
 Multi-scan
 ----------
 ``MultiScanDisplayer`` subclasses take a list of scans (each keeping its own
@@ -142,6 +149,7 @@ from PyGEECSPlotter.displayers.lineouts.optical_spectrum import (
 from PyGEECSPlotter.displayers.multi_scan_displayer import MultiScanDisplayer, display_scans
 from PyGEECSPlotter.displayers.hybrid.multi_scan_scalar_vs_parameter import MultiScanScalarVsParameter
 from PyGEECSPlotter.displayers.hybrid.multi_scan_lineout_mean import MultiScanLineoutMean
+from PyGEECSPlotter.displayers.day import DayImages, DayScalars, ScanSheet
 
 __all__ = [
     "ScanDisplayer",
@@ -176,4 +184,7 @@ __all__ = [
     "MultiScanScalarVsParameter",
     "MultiScanLineoutMean",
     "display_scans",
+    "DayImages",
+    "DayScalars",
+    "ScanSheet",
 ]
