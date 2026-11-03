@@ -493,7 +493,7 @@ def encircled_energy_curve(data, dx=1, dy=1, x0=None, y0=None):
 
 
 def focal_spot_stats(data, dx=1, dy=1, energy=np.nan, tau_fs=40.0, wavelength_um=0.8,
-                     x0=None, y0=None):
+                     x0=None, y0=None, norm_data=None):
     """
     Peak-intensity figures of merit for one focal-spot image, following the
     LabVIEW focus analysis.
@@ -503,16 +503,25 @@ def focal_spot_stats(data, dx=1, dy=1, energy=np.nan, tau_fs=40.0, wavelength_um
     figures are NaN), ``tau_fs`` the FWHM pulse duration. Lineouts are the
     row and column through the centroid (or x0, y0, pixels).
 
+    ``norm_data`` (default ``data``) is the image whose total counts hold
+    ``energy`` and that the encircled energy is measured on, e.g. the same
+    shot without a threshold, so energy in a low-level halo isn't credited
+    to the peak. The peak and widths always come from ``data``. If the two
+    images differ in shape, the encircled energy is centred on
+    ``norm_data``'s own centroid.
+
     Returns a dict:
       'fwhm x', 'fwhm y'           FWHM of the lineouts (um, interpolated)
       'fw 1/e2 x', 'fw 1/e2 y'     full width at 1/e^2 of the lineouts (um)
       'w0 x', 'w0 y', 'w0'         Gaussian 1/e^2 radius from the FWHM,
                                    FWHM/sqrt(2 ln 2), and their mean (um)
+      'x0', 'y0'                   centre used (pixels of ``data``)
       'ee w0'                      fraction of the energy within r = w0
       'ee w0 / gaussian'           that over a Gaussian's 1 - e^-2
       'ee radius 50%', 'ee radius 86.5%'   (um)
       'energy (J)', 'energy per count (J)'
-      'peak fluence (J/cm^2)'      energy * max / (sum * pixel area)
+      'total counts'               sum of ``norm_data`` (negatives as 0)
+      'peak fluence (J/cm^2)'      energy * max(data) / (total * pixel area)
       'peak intensity (W/cm^2)'    peak fluence / tau (no temporal shape factor)
       'a0'                         0.855 * lambda[um] * sqrt(I / 1e18 W/cm^2)
       'strehl'                     peak intensity over that of a Gaussian
@@ -535,14 +544,19 @@ def focal_spot_stats(data, dx=1, dy=1, energy=np.nan, tau_fs=40.0, wavelength_um
     out['w0 y'] = out['fwhm y']*to_w0
     out['w0'] = 0.5*(out['w0 x'] + out['w0 y'])
 
-    ee = compute_encircled_energy(w, dx=dx, dy=dy, x0=x0, y0=y0, fractions=(0.5, 0.865),
+    out['x0'], out['y0'] = x0, y0
+
+    wn = w if norm_data is None else np.clip(np.nan_to_num(np.asarray(norm_data, dtype=float)), 0, None)
+    nx0, ny0 = (x0, y0) if wn.shape == w.shape else (None, None)
+    ee = compute_encircled_energy(wn, dx=dx, dy=dy, x0=nx0, y0=ny0, fractions=(0.5, 0.865),
                                   radii=(out['w0'],) if np.isfinite(out['w0']) else ())
     out['ee w0'] = ee.get(f"ee r={out['w0']:g}", np.nan)
     out['ee w0 / gaussian'] = out['ee w0']/(1 - np.exp(-2))
     out['ee radius 50%'] = ee['ee radius 50%']
     out['ee radius 86.5%'] = ee['ee radius 86.5%']
 
-    total = w.sum()
+    total = wn.sum()
+    out['total counts'] = total
     pixel_area_cm2 = dx*dy*1e-8
     tau_s = tau_fs*1e-15
     out['energy (J)'] = energy
