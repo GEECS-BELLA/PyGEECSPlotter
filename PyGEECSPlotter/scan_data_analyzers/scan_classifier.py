@@ -4,8 +4,8 @@
 # config file that builds one ScanClassifier and hands it to ScanWatcher.
 #
 # A job is anything with a ``name`` and ``run(scan, output_dir=None,
-# write=True)``: a LiveJob, AveragedBackground or PlaceholderJob below, or
-# your own class.
+# write=True)``: a LiveJob, DisplayJob, AveragedBackground or PlaceholderJob
+# below, or your own class.
 
 import copy
 import os
@@ -134,14 +134,18 @@ class AveragedBackground:
     ``use_bg`` / ``get_bg_file_path`` looks for, so later scans use it.
 
     cameras : list of (diagnostic, file_ext)
+    overwrite : bool
+        False (default): a file of that name already there (e.g. GEECS's
+        own average of a background scan) is kept, and this camera skipped.
     The image is saved as a plain 16-bit PNG of rounded counts, read back
     unchanged by ``read_imaq_image``. With ``write=False`` it goes to the
     run's ``output_dir`` instead of the analysis folder.
     """
 
-    def __init__(self, cameras, name='background'):
+    def __init__(self, cameras, name='background', overwrite=False):
         self.cameras = [(d, e) for d, e in cameras]
         self.name = name
+        self.overwrite = overwrite
 
     def __repr__(self):
         return f"AveragedBackground({', '.join(d for d, _ in self.cameras)})"
@@ -154,6 +158,11 @@ class AveragedBackground:
         import imageio
         written = []
         for diagnostic, file_ext in self.cameras:
+            path = self.path(scan, diagnostic, file_ext, output_dir, write)
+            if os.path.exists(path) and not self.overwrite:
+                print(f"{scan.scan_label}: {os.path.basename(path)} already exists; kept "
+                      f"(AveragedBackground(overwrite=True) to replace it)")
+                continue
             reader = DataReader(diagnostic=diagnostic, file_ext=file_ext)
             with scan.filtered():
                 reader.register_with_scan(scan)
@@ -163,12 +172,38 @@ class AveragedBackground:
                 mean, _ = scan.mean_std_diagnostic(reader)
             if mean is None:
                 continue
-            path = self.path(scan, diagnostic, file_ext, output_dir, write)
             os.makedirs(os.path.dirname(path), exist_ok=True)
             imageio.imwrite(path, np.clip(np.round(mean), 0, 65535).astype(np.uint16))
             print(f"Background written to {path}")
             written.append(path)
         return written
+
+
+class DisplayJob:
+    """
+    Run displayers on the scan as it is, without analysing again: e.g. a
+    tag's extra figures from columns the default jobs have just added.
+
+    displayers : list of ScanDisplayer
+    register : list of analyzers / readers whose file lists the displayers
+        need besides their own ``analyzer`` (which is registered anyway).
+    name : output folder name, ``analysis/ScanNNN/online/<name>/``.
+    """
+
+    def __init__(self, displayers, register=(), name='figures'):
+        self.displayers = list(displayers)
+        self.register = list(register)
+        self.name = name
+
+    def __repr__(self):
+        return f"DisplayJob({self.name}: {len(self.displayers)} displayers)"
+
+    def run(self, scan, output_dir=None, write=True):
+        from PyGEECSPlotter.scan_data_analyzers.live_analysis import run_displayers
+        for reader in self.register:
+            reader.register_with_scan(scan)
+        run_displayers(scan, self.displayers, output_dir)
+        return None
 
 
 class PlaceholderJob:

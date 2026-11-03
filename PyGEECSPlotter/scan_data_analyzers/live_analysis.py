@@ -62,6 +62,9 @@ class LiveJob:
         multi-diagnostic analyzer, one per input).
     write_analyzed, write_lineouts : bool [same keys, default False]
         Per-shot files, written to ``analysis/ScanNNN`` as by ``analyze_scan``.
+    write_displayed : bool [same key, default False]
+        Draw every shot's ``display_data`` figure and save it under
+        ``analysis/ScanNNN/<output_diagnostic>`` (slow: one figure per shot).
     analysis_label : str [``analysis_label``]
         Appended to the result column names.
     summary_label : str
@@ -80,7 +83,8 @@ class LiveJob:
 
     def __init__(self, analyzer, displayers=(), write_sfile=None, update_scan_data_file=None,
                  use_bg=None, write_analyzed=None, write_lineouts=None, analysis_label=None,
-                 column_prefix=None, parallel=None, name=None, summary_label='online'):
+                 column_prefix=None, parallel=None, name=None, summary_label='online',
+                 write_displayed=None):
         a = analyzer
         self.analyzer = a
         self.displayers = list(displayers)
@@ -89,6 +93,7 @@ class LiveJob:
         self.use_bg = _flag(use_bg, a, 'use_bg', False)
         self.write_analyzed = _flag(write_analyzed, a, 'write_analyzed', False)
         self.write_lineouts = _flag(write_lineouts, a, 'write_lineouts', False)
+        self.write_displayed = _flag(write_displayed, a, 'write_displayed', False)
         self.analysis_label = _flag(analysis_label, a, 'analysis_label', None)
         self.summary_label = summary_label
         self.column_prefix = column_prefix if column_prefix is not None else (
@@ -130,6 +135,8 @@ class LiveJob:
             a, bg=self.bg(scan), write_columns_to_sfile=False,
             analysis_label=self.analysis_label or '', write_analyzed=write and self.write_analyzed,
             write_lineouts=write and self.write_lineouts, parallel=self.parallel,
+            display_data=write and self.write_displayed,
+            write_displayed=write and self.write_displayed,
             column_prefix=self.column_prefix,
             extra_info_str=self.analysis_label or '')
         if write and results is not None:
@@ -153,22 +160,30 @@ class LiveJob:
                                                target_filename=target)
 
     def display(self, scan, output_dir=None):
-        """Run each displayer on ``scan``, saving to ``output_dir``; errors are reported, not raised.
-        A displayer with its own analyzer (e.g. a reader of the files the job
-        wrote) has it registered with the scan first."""
-        for displayer in self.displayers:
-            try:
-                other = getattr(displayer, 'analyzer', None)
-                if other is not None and other is not self.analyzer and hasattr(other, 'register_with_scan'):
-                    other.register_with_scan(scan)
-                fig, _ = scan.display_scan(displayer, save=True, output_dir=output_dir)
-                plt.close(fig)
-            except Exception:
-                print(f"Displayer {type(displayer).__name__} failed on {scan.scan_label}:")
-                print(traceback.format_exc())
-            finally:
-                for extra in getattr(displayer, 'figures', []) or []:
-                    plt.close(extra[-1] if isinstance(extra, tuple) else extra)
+        """Run each displayer on ``scan``, saving to ``output_dir`` (see ``run_displayers``)."""
+        run_displayers(scan, self.displayers, output_dir, registered=self.analyzer)
+
+
+def run_displayers(scan, displayers, output_dir=None, registered=None):
+    """
+    Run each displayer on ``scan``, saving to ``output_dir`` and closing its
+    figures; a failing displayer is reported, not raised. A displayer with
+    its own analyzer (e.g. a reader of files a job wrote) has it registered
+    with the scan first, unless it is ``registered`` already.
+    """
+    for displayer in displayers:
+        try:
+            other = getattr(displayer, 'analyzer', None)
+            if other is not None and other is not registered and hasattr(other, 'register_with_scan'):
+                other.register_with_scan(scan)
+            fig, _ = scan.display_scan(displayer, save=True, output_dir=output_dir)
+            plt.close(fig)
+        except Exception:
+            print(f"Displayer {type(displayer).__name__} failed on {scan.scan_label}:")
+            print(traceback.format_exc())
+        finally:
+            for extra in getattr(displayer, 'figures', []) or []:
+                plt.close(extra[-1] if isinstance(extra, tuple) else extra)
 
 
 def as_jobs(jobs):
