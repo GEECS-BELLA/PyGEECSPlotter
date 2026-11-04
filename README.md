@@ -100,7 +100,9 @@ watcher = ScanWatcher(experiment_dir=r'N:\data', jobs=[
 watcher.start()          # Ctrl+C to stop; watcher.reanalyze([3, 4]) for past scans
 ```
 
-Summaries are written as `analysis/ScanNNN/Scan003_<diag>_online_Summary.txt`.
+Summaries are written as `analysis/ScanNNN/Scan003_<diag>_online_Summary.txt`, with a
+`..._provenance.json` beside each: analyzer settings, code version and git commit,
+scan tags and config file. Offline `analyze_scan(write_columns_to_sfile=True)` writes one too.
 
 **Scan tags.** Hashtags in a scan's info text (`ScanInfoScanNNN.ini`, e.g.
 `focus scan #focus #bg`) can add or change jobs for that scan. An experiment

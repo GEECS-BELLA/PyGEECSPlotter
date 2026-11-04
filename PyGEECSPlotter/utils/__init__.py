@@ -11,6 +11,7 @@
     analysis_1d_utils  lineout / trace / spectrum maths: widths, centroids, resampling
     io_utils           controls JSON, lineout text files, scaled 16-bit PNGs, file_lock
     tdms_utils         reading a scan's .tdms (one row per shot) while it is being written
+    provenance         what produced a set of results: analyzer settings, code version / commit
     general            deprecated re-exports of the old ``PyGEECSPlotter.utils`` module
 
 ``from PyGEECSPlotter.utils import <name>`` still works for names from the old

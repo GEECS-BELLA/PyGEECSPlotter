@@ -123,6 +123,24 @@ if MODE == 'scan':
 #   with a shared colour scale, to catch drift.
 # - **`DayScalars`** plots per-scan mean ± std of chosen columns.
 # - **`ScanSheet`** keeps a table of the day's scans.
+#
+# ## Provenance
+#
+# Every result written to the sfile gets a record beside its summary,
+# `analysis/ScanNNN/Scan003_<diag>_online_provenance.json`. It holds:
+#
+# - when and where the analysis ran;
+# - the analyzer's class and `analyzer_dict`;
+# - its settings: plain-type attributes, so constructor arguments such as a
+#   column name or a background file are included;
+# - the version and git commit of PyGEECSPlotter, and of the analyzer's
+#   package when it is a git checkout;
+# - the scan's tags;
+# - the config file's path and SHA-256 (`ScanClassifier(config_file=...)`).
+#
+# With these you can later tell which settings and which code produced a
+# number. Offline `analyze_scan(write_columns_to_sfile=True)` writes the same
+# record.
 
 # %%
 from PyGEECSPlotter.scan_data_analyzers import (ScanClassifier, Tag, DisplayJob,
@@ -130,6 +148,7 @@ from PyGEECSPlotter.scan_data_analyzers import (ScanClassifier, Tag, DisplayJob,
 from PyGEECSPlotter.displayers import FocalScanDisplayer, DayImages, DayScalars, ScanSheet
 
 classifier = ScanClassifier(
+    config_file=globals().get('__file__'),   # path + hash go into provenance (None in a notebook)
     jobs=jobs,
     tags=[
         Tag('focus', jobs=[DisplayJob([FocalScanDisplayer(hpd, 'CAM-HPD-CCD max_counts')],
