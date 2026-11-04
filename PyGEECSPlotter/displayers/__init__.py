@@ -9,14 +9,16 @@ Modules are grouped by what they show:
 
     scan_displayer.py        ScanDisplayer base (display / save / export)
     multi_scan_displayer.py  MultiScanDisplayer base + display_scans()
-    _lineout_binning.py, _trace_binning.py, _shot_selection.py   shared helpers
+    _lineout_binning.py, _trace_binning.py, _shot_selection.py,
+    _focus.py                shared helpers
     scalars/    sfile columns: ScalarVsParameter, CorrelationHeatmap, ScanStatsTable
     lineouts/   1-D per-shot output: Lineout*, Trace*, OpticalSpectrum*
     images/     2-D per-shot output: ImageGridDisplayer, MeanImagePerBin,
                 ShotSelectionGrid, SampledImages, RepresentativeImagePerBin,
                 PeakWidthImages
     hybrid/     several diagnostics or several scans in one view: ShotCompare,
-                MultiDiagnosticAlignment, FocalScanDisplayer, MultiScan*
+                MultiDiagnosticAlignment, FocalScanDisplayer, FocusStatsDisplayer,
+                MultiScan*
     magspec/    MagSpecAllE* (physical-units subclasses of the lineout and
                 image families)
 
@@ -62,8 +64,13 @@ side (``find_peak_bins``).
 Focal scan
 ----------
 ``FocalScanDisplayer`` is a custom composite for laser focal scans:
-``PeakWidthImages`` of the max counts on top, and max counts with the 2nd
-moments (x/y, x45/y45) vs stage position below.
+a fit of max counts vs stage position (peak marked) and ``PeakWidthImages``
+of the max counts on top, max counts with the 2nd moments (x/y, x45/y45)
+vs stage position below, and with ``detailed=True`` the peak shot's log
+image, encircled energy and intensity / a0 table.
+``FocusStatsDisplayer`` is its no-scan counterpart: shot-to-shot
+statistics of the same focus figures of merit over N shots at focus, with
+the mean encircled energy and its spread.
 
 Trace family
 ------------
@@ -117,6 +124,7 @@ from PyGEECSPlotter.displayers.images.sampled_images import SampledImages
 from PyGEECSPlotter.displayers.images.representative_image_per_bin import RepresentativeImagePerBin
 from PyGEECSPlotter.displayers.images.peak_width_images import PeakWidthImages, find_peak_bins
 from PyGEECSPlotter.displayers.hybrid.focal_scan import FocalScanDisplayer
+from PyGEECSPlotter.displayers.hybrid.focus_stats import FocusStatsDisplayer
 from PyGEECSPlotter.displayers.hybrid.multi_diagnostic_alignment import MultiDiagnosticAlignment
 from PyGEECSPlotter.displayers.hybrid.shot_compare import ShotCompare
 from PyGEECSPlotter.displayers.lineouts.trace_waterfall import TraceWaterfall
@@ -156,6 +164,7 @@ __all__ = [
     "PeakWidthImages",
     "find_peak_bins",
     "FocalScanDisplayer",
+    "FocusStatsDisplayer",
     "MultiDiagnosticAlignment",
     "ShotCompare",
     "TraceWaterfall",

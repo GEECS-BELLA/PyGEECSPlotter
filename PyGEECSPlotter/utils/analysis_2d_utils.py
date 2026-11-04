@@ -521,6 +521,7 @@ def focal_spot_stats(data, dx=1, dy=1, energy=np.nan, tau_fs=40.0, wavelength_um
       'ee radius 50%', 'ee radius 86.5%'   (um)
       'energy (J)', 'energy per count (J)'
       'total counts'               sum of ``norm_data`` (negatives as 0)
+      'peak counts'                max of ``data``
       'peak fluence (J/cm^2)'      energy * max(data) / (total * pixel area)
       'peak intensity (W/cm^2)'    peak fluence / tau (no temporal shape factor)
       'a0'                         0.855 * lambda[um] * sqrt(I / 1e18 W/cm^2)
@@ -557,6 +558,7 @@ def focal_spot_stats(data, dx=1, dy=1, energy=np.nan, tau_fs=40.0, wavelength_um
 
     total = wn.sum()
     out['total counts'] = total
+    out['peak counts'] = w.max()
     pixel_area_cm2 = dx*dy*1e-8
     tau_s = tau_fs*1e-15
     out['energy (J)'] = energy

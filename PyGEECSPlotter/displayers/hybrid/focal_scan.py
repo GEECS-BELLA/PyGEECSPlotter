@@ -1,6 +1,4 @@
-import copy
 import re
-import warnings
 from contextlib import contextmanager
 from typing import Optional, Dict, Any
 
@@ -14,11 +12,7 @@ from PyGEECSPlotter.displayers.scalars.scalar_vs_parameter import ScalarVsParame
 from PyGEECSPlotter.displayers.scalars.scan_stats_table import draw_table
 from PyGEECSPlotter.utils.fitting import fit_export
 import PyGEECSPlotter.utils.analysis_1d_utils as a1d
-import PyGEECSPlotter.utils.analysis_2d_utils as a2d
-
-
-# 1BL compressor transmission before scans recorded it in the sfile
-_DEFAULT_TRANSMISSION = 0.586
+from PyGEECSPlotter.displayers import _focus
 
 
 class FocalScanDisplayer(ScanDisplayer):
@@ -300,66 +294,33 @@ class FocalScanDisplayer(ScanDisplayer):
     def _draw_detailed(self, fig, scan, pos, data, return_dict, x_col):
         """Log image, encircled energy and stats table for the peak shot
         (row ``pos`` of active_data)."""
-        ad = self.analyzer.analyzer_dict or {}
-        dx, dy = ad.get('dx', 1), ad.get('dy', 1)
         row = scan.active_data.iloc[pos]
-        raw, transmission = self._shot_energy(row)
-        norm_data = self._norm_image(scan, pos)
-        stats = a2d.focal_spot_stats(data, dx=dx, dy=dy, energy=raw*transmission,
-                                     tau_fs=self.pulse_fwhm_fs, wavelength_um=self.wavelength_um,
-                                     norm_data=norm_data)
-        # the pipeline's own 2nd moments (its r_max etc.) if it computed them
-        rd = return_dict or {}
-        moments = a2d.compute_second_moments(data, dx=dx, dy=dy)
-        moments = {k: rd.get(f'2nd moment {k}', moments[k]) for k in ('x', 'y', 'x45', 'y45')}
+        raw, transmission = _focus.shot_energy(row, self.energy_col, self.transmission_col,
+                                               self.energy_scale)
+        norm_an = _focus.norm_analyzer(self.analyzer, self.norm_pipeline)
+        (_, norm_data, _, _), = list(scan._iter_shots(norm_an, bg=self.bg, show_progress=False,
+                                                      rows=scan.active_data.iloc[[pos]]))
+        norm_data = np.asarray(norm_data, dtype=float)
+        stats = _focus.shot_focus_stats(self.analyzer, data, return_dict, norm_data,
+                                        raw*transmission, self.pulse_fwhm_fs, self.wavelength_um)
         shot = int(row['Shotnumber']) if 'Shotnumber' in row.index else None
 
         ax_img, ax_ee, ax_tab = fig.subplots(1, 3, width_ratios=[1, 1.2, 1])
         self._draw_log_image(fig, ax_img, data, return_dict,
                              f'shot {shot}, {self.images.label_fmt.format(row[x_col])} (log)')
-        same_frame = norm_data.shape == np.shape(data)
-        r, frac = self._draw_encircled_energy(ax_ee, norm_data, dx, dy, stats,
-                                              stats['x0'] if same_frame else None,
-                                              stats['y0'] if same_frame else None)
-        self._draw_stats_table(ax_tab, shot, row[x_col], raw, transmission, stats, moments)
+        r, frac = _focus.encircled_energy(self.analyzer, norm_data, np.shape(data), stats)
+        ax_ee.plot(r, frac, color='C0', lw=1.5, label='data')
+        _focus.finish_ee_axes(ax_ee, self.analyzer, r.max(), stats['w0'],
+                              self.display_dict.get('ee_rmax'))
+        ax_ee.set_title(f"energy within $w_0$ = {stats['ee w0']:.0%} "
+                        f"({stats['ee w0 / gaussian']:.2f} of Gaussian)")
+        self._draw_stats_table(ax_tab, shot, row[x_col], raw, transmission, stats)
 
         export = {'detail_shot': shot, 'detail_image': np.asarray(data),
                   'detail_norm_image': norm_data, 'detail_energy_raw': raw,
                   'detail_transmission': transmission, 'ee_r': r, 'ee_frac': frac}
         export.update({'detail_' + re.sub(r'\W+', '_', k).strip('_'): v for k, v in stats.items()})
-        export.update({f'detail_2nd_moment_{k}': v for k, v in moments.items()})
         return [ax_img, ax_ee, ax_tab], export
-
-    def _shot_energy(self, row):
-        """(``energy_col``, transmission) for one shot. The transmission is
-        ``energy_scale`` if given, else ``transmission_col``, else 0.586."""
-        raw = float(row[self.energy_col]) if self.energy_col in row.index else np.nan
-        if not np.isfinite(raw):
-            warnings.warn(f"No pulse energy in '{self.energy_col}' for the peak shot; "
-                          f"fluence, intensity, a0 and Strehl are NaN.")
-        if self.energy_scale is not None:
-            return raw, float(self.energy_scale)
-        t = float(row[self.transmission_col]) if self.transmission_col in row.index else np.nan
-        if not np.isfinite(t):
-            warnings.warn(f"No '{self.transmission_col}' in the sfile; using "
-                          f"{_DEFAULT_TRANSMISSION:g}.")
-            t = _DEFAULT_TRANSMISSION
-        return raw, t
-
-    def _norm_image(self, scan, pos):
-        """The peak shot through ``norm_pipeline`` (default: the analyzer's
-        pipeline without thresholds), whose counts hold the pulse energy."""
-        ad = self.analyzer.analyzer_dict or {}
-        pipeline = self.norm_pipeline
-        if pipeline is None:
-            pipeline = [(name, kw) for name, kw in self.analyzer._resolve_pipeline(ad)
-                        if name != 'threshold']
-        norm_analyzer = copy.copy(self.analyzer)
-        norm_analyzer.analyzer_dict = {**ad, 'pipeline': pipeline}
-        rows = scan.active_data.iloc[[pos]]
-        (_, data, _, _), = list(scan._iter_shots(norm_analyzer, bg=self.bg,
-                                                 show_progress=False, rows=rows))
-        return np.asarray(data, dtype=float)
 
     def _draw_log_image(self, fig, a, data, return_dict, title):
         dd = self.analyzer.display_dict
@@ -375,28 +336,7 @@ class FocalScanDisplayer(ScanDisplayer):
                                     tick_dx=self.display_dict.get('log_tick_dx')):
             self.analyzer.display_data(data, return_dict=return_dict, fig=fig, ax=a, title=title)
 
-    def _draw_encircled_energy(self, a, data, dx, dy, stats, x0=None, y0=None):
-        r, frac = a2d.encircled_energy_curve(data, dx=dx, dy=dy, x0=x0, y0=y0)
-        w0 = stats['w0']
-        a.plot(r, frac, color='C0', lw=1.5, label='data')
-        if np.isfinite(w0):
-            rr = np.linspace(0, r.max(), 400)
-            a.plot(rr, 1 - np.exp(-2*rr**2/w0**2), color='C3', ls='--', lw=1,
-                   label=f'Gaussian, $w_0$ = {w0:.3g}')
-            a.axvline(w0, color='0.4', ls=':', lw=1)
-        rmax = self.display_dict.get('ee_rmax', 10*w0 if np.isfinite(w0) else r.max())
-        a.set_xlim(0, min(rmax, r.max()))
-        a.set_ylim(0, 1.02)
-        units = (self.analyzer.display_dict or {}).get('spatial_units', 'pixels')
-        a.set_xlabel(rf'radius ($\mathrm{{{units}}}$)')
-        a.set_ylabel('encircled energy fraction')
-        a.set_title(f"energy within $w_0$ = {stats['ee w0']:.0%} "
-                    f"({stats['ee w0 / gaussian']:.2f} of Gaussian)")
-        a.grid(alpha=0.3)
-        a.legend(fontsize='small', loc='lower right')
-        return r, frac
-
-    def _draw_stats_table(self, a, shot, position, raw_energy, transmission, stats, moments):
+    def _draw_stats_table(self, a, shot, position, raw_energy, transmission, stats):
         def pair(u, v, fmt='{:.3g}'):
             return f'{fmt.format(u)} / {fmt.format(v)}'
 
@@ -408,8 +348,8 @@ class FocalScanDisplayer(ScanDisplayer):
             ('FWHM x / y (µm)', pair(stats['fwhm x'], stats['fwhm y'])),
             ('w0 from FWHM x / y (µm)', pair(stats['w0 x'], stats['w0 y'])),
             ('FW 1/e² x / y (µm)', pair(stats['fw 1/e2 x'], stats['fw 1/e2 y'])),
-            ('2nd moment x / y (µm)', pair(moments['x'], moments['y'])),
-            ('2nd moment x45 / y45 (µm)', pair(moments['x45'], moments['y45'])),
+            ('2nd moment x / y (µm)', pair(stats['2nd moment x'], stats['2nd moment y'])),
+            ('2nd moment x45 / y45 (µm)', pair(stats['2nd moment x45'], stats['2nd moment y45'])),
             ('ee radius 50% / 86.5% (µm)', pair(stats['ee radius 50%'], stats['ee radius 86.5%'])),
             ('energy within w0', f"{stats['ee w0']:.1%} ({stats['ee w0 / gaussian']:.2f} of Gaussian)"),
             ('total counts (no threshold)', f"{stats['total counts']:.3g}"),
