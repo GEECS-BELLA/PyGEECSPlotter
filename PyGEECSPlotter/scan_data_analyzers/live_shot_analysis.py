@@ -27,7 +27,7 @@ import matplotlib.pyplot as plt
 from PyGEECSPlotter.scan_data_analyzers.scan_data_analysis import ScanDataAnalyzer
 from PyGEECSPlotter.scan_data_analyzers.live_analysis import LiveJob, online_output_dir
 from PyGEECSPlotter.scan_data_analyzers.live_view import LiveView, read_scan_info
-from PyGEECSPlotter.scan_data_analyzers.live_trigger import TriggerListener, unc_of_drive
+from PyGEECSPlotter.scan_data_analyzers.live_trigger import TriggerListener
 from PyGEECSPlotter.scan_data_analyzers.sfile_frame import merge_results, rename_result_columns
 from PyGEECSPlotter.utils.io_utils import file_lock
 from PyGEECSPlotter.utils.tdms_utils import read_scan_tdms, scan_tdms_path, alias_map_for_scan
@@ -88,7 +88,7 @@ class _ScanState:
 
 
 class LiveShotWatcher:
-    """
+    r"""
     Analyse each shot while the scan runs; finish up when the scan ends.
 
     Parameters
@@ -160,10 +160,13 @@ class LiveShotWatcher:
         ``trigger_settle_s``. ``ScanEnd`` ends the scan (finished when the
         sfile is written; aborted if none comes within ``settle_s``).
         Shots whose message is lost are still found by the folder polling.
-    share_map : dict, optional
-        ``{'\\\\server\\share': 'N:'}`` to map the messages' UNC paths to the
-        watched folder. Default: the share the watched folder's drive is
-        mapped to (Windows).
+    trigger_root : str, optional
+        The experiment's root path as master control sends it, when
+        ``experiment_dir`` is its local mapping. Both are in the
+        experiment's GEECS database, e.g.
+        ``trigger_root=r'\\192.168.13.6\pdna2\data\ControlRoom'`` for
+        ``experiment_dir=r'N:\data\ControlRoom'``. Not needed when
+        ``experiment_dir`` is given as that path itself.
     trigger_settle_s : float
         File-settle time of a triggered shot (``file_settle_s`` otherwise).
 
@@ -179,7 +182,7 @@ class LiveShotWatcher:
                  context_timeout_s=30.0, required_columns=None, start_scan=None, write=True,
                  file_settle_s=1.0, settle_s=30.0, abandon_grace_s=60.0, analyze_partial=False,
                  missing_input_timeout_s=10.0, show_shots=False, live_displayers=(),
-                 gui_interval_s=1.0, on_shot=None, trigger=None, share_map=None,
+                 gui_interval_s=1.0, on_shot=None, trigger=None, trigger_root=None,
                  trigger_settle_s=0.1):
         if experiment_dir is None and top_dir is None:
             raise ValueError("Give experiment_dir (watch today's folder) or top_dir.")
@@ -208,7 +211,7 @@ class LiveShotWatcher:
         self.on_shot = on_shot
         self._wake = threading.Event()  # set when an analysis or write finishes, or a trigger arrives
         self.trigger = trigger
-        self.share_map = share_map
+        self.trigger_root = trigger_root
         self.trigger_settle_s = trigger_settle_s
         self.listener = None         # TriggerListener, once started
         self._held = []              # trigger events of a scan after the one being watched
@@ -519,18 +522,16 @@ class LiveShotWatcher:
         the watcher carries on with folder polling."""
         if self.trigger is None or self.listener is not None:
             return
-        share_map = self.share_map
-        if share_map is None:
-            # the share the watched drive is mapped to, on any host: the
-            # messages may name the server by another address (another network)
-            mapped = unc_of_drive(self.fixed_top_dir or self.experiment_dir)
-            share = mapped[1].lstrip('\\').split('\\', 1)[1] if mapped and mapped[1].count('\\') >= 3 else None
-            share_map = {'\\\\*\\' + share: mapped[0]} if share else {}
+        root_map = None
+        if self.trigger_root:
+            local = self.experiment_dir or os.path.dirname(os.path.dirname(os.path.dirname(
+                os.path.normpath(self.fixed_top_dir))))
+            root_map = (self.trigger_root, local)
         try:
             self.listener = TriggerListener(self.trigger, lambda top: self._trigger_top(top) is not None,
-                                            share_map, self._wake).start()
+                                            root_map, self._wake).start()
             self._log(f"Listening for master-control messages on {self.listener.group}:"
-                      f"{self.listener.port}" + (f" (paths {share_map})" if share_map else ''))
+                      f"{self.listener.port}" + (f" ({root_map[0]} -> {root_map[1]})" if root_map else ''))
         except OSError as err:
             self._log(f"Can't listen on {self.trigger} ({err!r}); finding shots by folder polling only")
             self.trigger = None
@@ -785,8 +786,11 @@ class LiveShotWatcher:
             if self.listener is not None and not st.warned_silent and not st.triggered \
                     and len(st.context_rows) >= 3:
                 st.warned_silent = True
+                lst = self.listener
+                other = (f"; {lst.rejected} Path>> messages were for another folder, e.g. "
+                         f"{lst.last_rejected} (see trigger_root)" if lst.rejected else '')
                 self._log(f"{st.label}: no Path>> message for this scan on {self.trigger} "
-                          f"({self.listener.packets} packets received); is it this experiment's "
+                          f"({lst.packets} packets received{other}); is it this experiment's "
                           f"group? Carrying on with folder polling")
             if self._abandoned(st, now):
                 self._collect(st, wait=True)

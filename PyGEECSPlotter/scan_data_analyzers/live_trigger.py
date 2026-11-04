@@ -12,7 +12,6 @@
 # TriggerListener receives them in a thread, keeps those for the watched
 # experiment, and queues them as TriggerEvents for the watcher's loop.
 
-import os
 import queue
 import re
 import socket
@@ -37,23 +36,6 @@ class TriggerEvent:
                 if self.kind == 'shot' else f'TriggerEvent({self.kind}, from {self.sender})')
 
 
-def unc_of_drive(path):
-    """``(drive, '\\\\server\\share')`` for a path on a mapped network drive
-    (Windows), else None."""
-    drive = os.path.splitdrive(os.fspath(path))[0]
-    if len(drive) != 2 or drive[1] != ':' or os.name != 'nt':
-        return None
-    import ctypes
-    from ctypes import wintypes
-    buf = ctypes.create_unicode_buffer(1024)
-    size = wintypes.DWORD(len(buf))
-    try:
-        rc = ctypes.WinDLL('mpr').WNetGetConnectionW(drive, buf, ctypes.byref(size))
-    except (OSError, AttributeError):
-        return None
-    return (drive, buf.value) if rc == 0 and buf.value else None
-
-
 def parse_group(trigger):
     """``'234.5.6.17:58456'`` or ``('234.5.6.17', 58456)`` -> ``(group, port)``."""
     if isinstance(trigger, str):
@@ -64,7 +46,7 @@ def parse_group(trigger):
 
 
 class TriggerListener:
-    """
+    r"""
     Receive master-control messages on ``group:port`` in a thread.
 
     Parameters
@@ -74,10 +56,12 @@ class TriggerListener:
     accept : callable
         ``accept(top)``: True for a day folder (local path) of the watched
         experiment. Other experiments' messages are ignored.
-    share_map : dict, optional
-        ``{'\\\\server\\share': 'N:'}``, to turn the UNC paths in the messages
-        into local ones. ``'\\\\*\\share'`` matches that share on any host
-        (the same server is often reached under several addresses).
+    root_map : (str, str), optional
+        ``(remote_root, local_root)``: the experiment's root path as master
+        control sends it and the local folder it maps to, both from the
+        experiment's GEECS database, e.g.
+        ``(r'\\192.168.13.6\pdna2\data\ControlRoom', r'N:\data\ControlRoom')``.
+        None: the message paths are used as they are.
     wake : threading.Event, optional
         Set whenever an event is queued.
 
@@ -85,14 +69,16 @@ class TriggerListener:
     path) are kept only from senders whose Path messages were accepted.
     """
 
-    def __init__(self, trigger, accept, share_map=None, wake=None):
+    def __init__(self, trigger, accept, root_map=None, wake=None):
         self.group, self.port = parse_group(trigger)
         self.accept = accept
-        self.share_map = sorted((share_map or {}).items(), key=lambda kv: -len(kv[0]))
+        self.root_map = root_map
         self.wake = wake
         self.events = queue.Queue()
         self.packets = 0                 # every packet received
         self.malformed = 0               # Path messages not understood
+        self.rejected = 0                # Path messages for another folder
+        self.last_rejected = None        # the latest of those (as mapped to a local path)
         self.last_packet = None          # monotonic time of the last packet
         self.senders = set()             # senders of accepted Path messages
         self.error = None
@@ -134,13 +120,12 @@ class TriggerListener:
                 return out
 
     def to_local(self, path):
-        for unc, local in self.share_map:
-            if unc.startswith('\\\\*\\'):           # any host: '\\*\share'
-                m = re.match(r'\\\\[^\\]+\\' + re.escape(unc[4:]) + r'(?=\\|$)', path, re.I)
-                if m:
-                    return local + path[m.end():]
-            elif path.lower().startswith(unc.lower()):
-                return local + path[len(unc):]
+        """The message's path moved from the remote root to the local one
+        (unchanged without a ``root_map``, or if it isn't under the remote root)."""
+        if self.root_map:
+            remote, local = (r.rstrip('\\/') for r in self.root_map)
+            if path.lower().startswith(remote.lower()) and path[len(remote):][:1] in ('\\', '/'):
+                return local + path[len(remote):]
         return path
 
     def parse(self, text, sender, t):
@@ -152,6 +137,8 @@ class TriggerListener:
                 self.malformed += 1
                 return None
             if not self.accept(m.group('top')):
+                self.rejected += 1
+                self.last_rejected = m.group('top')
                 return None
             self.senders.add(sender)
             return TriggerEvent('shot', t, sender, text, m.group('top'), int(m.group('scan')),
