@@ -6,7 +6,8 @@
 # scan ends (its sfile appears) analyses any shots it couldn't, merges the
 # results into the sfile and runs the displayers. Then it waits for the next
 # scan. Optionally, live windows (live_view.py) show the latest shot and scan
-# displayers redrawn as the scan runs.
+# displayers redrawn as the scan runs, and the master control's multicast
+# messages (live_trigger.py) say which shot to look for and when a scan ends.
 #
 # Threading: one controller loop (the thread that calls start()) owns all the
 # bookkeeping, so there are no shared-state races; a thread pool only runs
@@ -26,6 +27,7 @@ import matplotlib.pyplot as plt
 from PyGEECSPlotter.scan_data_analyzers.scan_data_analysis import ScanDataAnalyzer
 from PyGEECSPlotter.scan_data_analyzers.live_analysis import LiveJob, online_output_dir
 from PyGEECSPlotter.scan_data_analyzers.live_view import LiveView, read_scan_info
+from PyGEECSPlotter.scan_data_analyzers.live_trigger import TriggerListener, unc_of_drive
 from PyGEECSPlotter.scan_data_analyzers.sfile_frame import merge_results, rename_result_columns
 from PyGEECSPlotter.utils.io_utils import file_lock
 from PyGEECSPlotter.utils.tdms_utils import read_scan_tdms, scan_tdms_path, alias_map_for_scan
@@ -71,6 +73,10 @@ class _ScanState:
         self.latest = None       # (shot, data, results, aux) of the newest shot collected
         self.scan_info = read_scan_info(top_dir, scan)
         self.live_scan = None    # ScanDataAnalyzer of the running scan, for the live views
+        self.triggered = {}      # shot -> time its Path>> message arrived
+        self.expected = {}       # triggered shot -> {diagnostic: path} not seen yet
+        self.ended_at = None     # time ScanEnd arrived
+        self.warned_silent = False
         self.context = None      # last good .tdms frame
         self.context_size = None # .tdms size when it was read
         self.context_rows = {}   # shot -> row position in context (its last row)
@@ -145,6 +151,21 @@ class LiveShotWatcher:
         loop as soon as a shot's analysis is done, before its files are
         written (e.g. to send it to a display in another process). Errors
         are logged, not raised.
+    trigger : str or (str, int), optional
+        The experiment's master-control multicast group, e.g.
+        ``'234.5.6.17:58456'`` (each experiment has its own). Its ``Path>>``
+        message names each shot ~0.3-2 s before the shot's files exist: the
+        watcher then checks exactly those files and analyses the shot once
+        its ``.tdms`` row is in and its files have kept their size for
+        ``trigger_settle_s``. ``ScanEnd`` ends the scan (finished when the
+        sfile is written; aborted if none comes within ``settle_s``).
+        Shots whose message is lost are still found by the folder polling.
+    share_map : dict, optional
+        ``{'\\\\server\\share': 'N:'}`` to map the messages' UNC paths to the
+        watched folder. Default: the share the watched folder's drive is
+        mapped to (Windows).
+    trigger_settle_s : float
+        File-settle time of a triggered shot (``file_settle_s`` otherwise).
 
     The live windows need an interactive matplotlib backend and ``start()``
     called from the main thread (a script, not a notebook cell).
@@ -158,7 +179,8 @@ class LiveShotWatcher:
                  context_timeout_s=30.0, required_columns=None, start_scan=None, write=True,
                  file_settle_s=1.0, settle_s=30.0, abandon_grace_s=60.0, analyze_partial=False,
                  missing_input_timeout_s=10.0, show_shots=False, live_displayers=(),
-                 gui_interval_s=1.0, on_shot=None):
+                 gui_interval_s=1.0, on_shot=None, trigger=None, share_map=None,
+                 trigger_settle_s=0.1):
         if experiment_dir is None and top_dir is None:
             raise ValueError("Give experiment_dir (watch today's folder) or top_dir.")
         if job is None and not live_displayers:
@@ -184,7 +206,12 @@ class LiveShotWatcher:
         self.view = LiveView(show_shots and self.job is not None, live_displayers, gui_interval_s,
                              log=self._log)
         self.on_shot = on_shot
-        self._wake = threading.Event()  # set when an analysis or write finishes
+        self._wake = threading.Event()  # set when an analysis or write finishes, or a trigger arrives
+        self.trigger = trigger
+        self.share_map = share_map
+        self.trigger_settle_s = trigger_settle_s
+        self.listener = None         # TriggerListener, once started
+        self._held = []              # trigger events of a scan after the one being watched
         self.state = None            # _ScanState of the scan being watched
         self.aliases = {}            # .tdms raw name -> sfile alias (from an earlier sfile)
         self.last_scan = {}          # top_dir -> last scan handled
@@ -210,7 +237,12 @@ class LiveShotWatcher:
         if st is None:
             return None
         running = sum(1 for f in st.submitted.values() if not f.done())
-        return {'scan': st.scan, 'files': len(st.files), 'tdms shots': len(st.context_rows),
+        extra = {}
+        if self.listener is not None:
+            age = None if self.listener.last_packet is None else time.monotonic() - self.listener.last_packet
+            extra = {'triggered': len(st.triggered), 'packets': self.listener.packets,
+                     'last packet s': None if age is None else round(age, 1)}
+        return {'scan': st.scan, **extra, 'files': len(st.files), 'tdms shots': len(st.context_rows),
                 'done': len(st.done),
                 'arriving': len(set(st.files) - set(st.complete) - st.done),
                 'in progress': running, 'writing': len(st.writing),
@@ -283,15 +315,15 @@ class LiveShotWatcher:
             except FileNotFoundError:
                 continue
 
-    def _settled(self, st, path, now):
-        """The file exists and has kept its (non-zero) size for ``file_settle_s``."""
+    def _settled(self, st, path, now, settle_s):
+        """The file exists and has kept its (non-zero) size for ``settle_s``."""
         try:
             size = os.path.getsize(path)
         except OSError:
             return False
         if st.sizes.get(path, (None,))[0] != size:
             st.sizes[path] = (size, now)
-        return size > 0 and now - st.sizes[path][1] >= self.file_settle_s
+        return size > 0 and now - st.sizes[path][1] >= settle_s
 
     def _update_complete(self, st, now):
         """Shots whose every input file exists and kept its size for ``file_settle_s``
@@ -301,7 +333,8 @@ class LiveShotWatcher:
         for shot, paths in st.files.items():
             if shot in st.complete or shot in st.done:
                 continue
-            settled = all([self._settled(st, path, now) for path in paths.values()])
+            settle_s = self.trigger_settle_s if shot in st.triggered else self.file_settle_s
+            settled = all([self._settled(st, path, now, settle_s) for path in paths.values()])
             if not settled:
                 continue
             if len(paths) < n_inputs:
@@ -468,6 +501,98 @@ class LiveShotWatcher:
                           f"({len(st.pending)} shots kept, retrying): {err!r}")
 
     # ------------------------------------------------------------------
+    # Master-control triggers
+    # ------------------------------------------------------------------
+    def _trigger_top(self, top):
+        """The watcher's own name for a message's day folder, or None if it
+        isn't a day of the watched experiment."""
+        norm = lambda p: os.path.normcase(os.path.normpath(os.path.abspath(p)))
+        if self.fixed_top_dir:
+            return self.fixed_top_dir if norm(top) == norm(self.fixed_top_dir) else None
+        parts = os.path.normpath(top).split(os.sep)
+        if len(parts) < 4 or norm(os.sep.join(parts[:-3])) != norm(self.experiment_dir):
+            return None
+        return os.path.join(self.experiment_dir, *parts[-3:])
+
+    def _start_trigger(self):
+        """Start listening (once). A listener that can't start is logged and
+        the watcher carries on with folder polling."""
+        if self.trigger is None or self.listener is not None:
+            return
+        share_map = self.share_map
+        if share_map is None:
+            # the share the watched drive is mapped to, on any host: the
+            # messages may name the server by another address (another network)
+            mapped = unc_of_drive(self.fixed_top_dir or self.experiment_dir)
+            share = mapped[1].lstrip('\\').split('\\', 1)[1] if mapped and mapped[1].count('\\') >= 3 else None
+            share_map = {'\\\\*\\' + share: mapped[0]} if share else {}
+        try:
+            self.listener = TriggerListener(self.trigger, lambda top: self._trigger_top(top) is not None,
+                                            share_map, self._wake).start()
+            self._log(f"Listening for master-control messages on {self.listener.group}:"
+                      f"{self.listener.port}" + (f" (paths {share_map})" if share_map else ''))
+        except OSError as err:
+            self._log(f"Can't listen on {self.trigger} ({err!r}); finding shots by folder polling only")
+            self.trigger = None
+
+    def _handle_triggers(self):
+        """Apply the master-control events: a Path>> message begins its scan if
+        need be and marks its shot triggered (its files are then checked by
+        name); ScanEnd marks the scan ended. Messages for a later scan wait
+        until the current one is finished."""
+        events, self._held = self._held + self.listener.drain(), []
+        for ev in events:
+            st = self.state
+            if ev.kind == 'end':
+                if st is not None and st.ended_at is None:
+                    st.ended_at = ev.t
+                    self._log(f"{st.label}: ScanEnd received; finishing when the sfile is written")
+                continue
+            if ev.kind != 'shot':
+                continue
+            top = self._trigger_top(ev.top)
+            if top is None:
+                continue
+            if st is None:
+                if top in self.last_scan and ev.scan <= self.last_scan[top]:
+                    continue                    # a scan already handled
+                if self.start_scan is not None and not self.last_scan and ev.scan < self.start_scan:
+                    continue
+                self.last_scan.setdefault(top, ev.scan - 1)
+                self._begin(top, ev.scan)
+                st = self.state
+            elif os.path.normcase(top) != os.path.normcase(st.top_dir) or ev.scan != st.scan:
+                if (os.path.normcase(top), ev.scan) > (os.path.normcase(st.top_dir), st.scan):
+                    self._held.append(ev)       # the next scan: after this one is finished
+                continue
+            if ev.shot in st.done or ev.shot in st.triggered:
+                continue
+            st.triggered[ev.shot] = ev.t
+            st.expected[ev.shot] = {d: os.path.join(st.scan_dir, d, f'{st.label}_{d}_{ev.shot:03d}{e}')
+                                    for d, e in self.inputs}
+
+    def _check_triggered(self, st):
+        """The expected files of triggered shots, checked by name (no listing)."""
+        for shot in list(st.expected):
+            found = st.files.setdefault(shot, {})
+            for diag, path in list(st.expected[shot].items()):
+                if os.path.exists(path):
+                    found[diag] = path
+                    del st.expected[shot][diag]
+            if not st.expected[shot]:
+                del st.expected[shot]
+            if not found:
+                del st.files[shot]
+
+    def _trigger_pending(self):
+        """A triggered shot is waiting for its files or row (poll fast)."""
+        st = self.state
+        if st is None or not st.triggered:
+            return False
+        busy = st.done | st.failed | st.deferred
+        return any(s not in busy and s not in st.submitted and s not in st.writing for s in st.triggered)
+
+    # ------------------------------------------------------------------
     # Live views
     # ------------------------------------------------------------------
     def _live_scan(self, st):
@@ -556,9 +681,12 @@ class LiveShotWatcher:
         return size > 0 and (os.path.exists(st.info) or now - st.sfile_size[1] >= self.settle_s)
 
     def _abandoned(self, st, now):
-        """No sfile, and a newer scan has been running for ``abandon_grace_s``."""
+        """No sfile, and a newer scan has been running for ``abandon_grace_s``,
+        or ScanEnd came ``settle_s`` ago."""
         if st.sfile_size is not None:
             return False
+        if st.ended_at is not None and now - st.ended_at >= self.settle_s:
+            return True
         if st.newer_since is None:
             if any(n > st.scan and os.path.exists(scan_tdms_path(st.top_dir, n))
                    for n in self._scan_numbers(st.top_dir)):
@@ -631,6 +759,9 @@ class LiveShotWatcher:
         """One step of the controller loop. Returns the scan finished in this step, if any."""
         if self._pool is None:
             self._pool = concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers)
+        self._start_trigger()
+        if self.listener is not None:
+            self._handle_triggers()
         st = self.state
         if st is None:
             top_dir = self.top_dir
@@ -642,6 +773,8 @@ class LiveShotWatcher:
         now = time.monotonic()
         ended = self._scan_ended(st, now)   # checked before the sweep, so no late file is missed
         self._find_files(st)
+        if st.expected:
+            self._check_triggered(st)
         self._update_complete(st, now)
         self._submit_ready(st, now)
         self._collect(st)
@@ -649,9 +782,16 @@ class LiveShotWatcher:
             self._read_context(st, now)
         self._update_views(st, now)
         if not ended:
+            if self.listener is not None and not st.warned_silent and not st.triggered \
+                    and len(st.context_rows) >= 3:
+                st.warned_silent = True
+                self._log(f"{st.label}: no Path>> message for this scan on {self.trigger} "
+                          f"({self.listener.packets} packets received); is it this experiment's "
+                          f"group? Carrying on with folder polling")
             if self._abandoned(st, now):
                 self._collect(st, wait=True)
-                self._log(f"{st.label}: no sfile and a newer scan has started; giving up on it"
+                why = 'ScanEnd came' if st.ended_at is not None else 'a newer scan has started'
+                self._log(f"{st.label}: no sfile and {why}; giving up on it"
                           + (f" ({len(st.done)} shots in "
                              f"{self.live_results_path(st.top_dir, st.scan)}, nothing merged)"
                              if self.job else ''))
@@ -681,7 +821,10 @@ class LiveShotWatcher:
                     # e.g. the network share dropped out: report, back off, carry on
                     errors += 1
                     self._log(f"poll failed ({errors} in a row):\n{traceback.format_exc()}")
-                self.view.wait(min(self.poll_s * 2 ** min(errors, 5), 30.0), self._wake)
+                wait = min(self.poll_s * 2 ** min(errors, 5), 30.0)
+                if not errors and self._trigger_pending():
+                    wait = min(wait, 0.05)      # a triggered shot's files / row are due
+                self.view.wait(wait, self._wake)
                 self._wake.clear()
         except KeyboardInterrupt:
             pass
@@ -704,4 +847,7 @@ class LiveShotWatcher:
                 self._collect(st, wait=True)
             self._pool.shutdown(wait=True, cancel_futures=True)
             self._pool = None
+        if self.listener is not None:
+            self.listener.stop()
+            self.listener = None
         self._log("Stopped.")
