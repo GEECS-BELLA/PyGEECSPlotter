@@ -40,6 +40,7 @@ import secrets
 import subprocess
 import sys
 import threading
+import time
 
 # geecs_cmaps factories first, then matplotlib names
 GEECS_CMAPS = ['white_blue_yellow', 'white_blue_yellow_black', 'enhance_low', 'bwr_enhance_low',
@@ -149,7 +150,10 @@ def _run(port, key_hex, title, options_json, log_path):
     def reader():
         while True:
             try:
-                q.put(conn.recv())
+                msg = conn.recv()
+                if isinstance(msg, dict):
+                    msg['t_received'] = time.time()     # off the pipe (the window draws later)
+                q.put(msg)
             except (EOFError, OSError):
                 q.put({'kind': 'quit'})
                 return

@@ -235,7 +235,7 @@ def window_class():
                     self._draw_aggregates()
                     self.grab().save(msg['path'])
                 elif kind == 'shot':
-                    msg['t_received'] = time.time()
+                    msg.setdefault('t_received', time.time())
                     self._store(msg)
                     newest = msg
             paused = self.c['pause'].isChecked()
