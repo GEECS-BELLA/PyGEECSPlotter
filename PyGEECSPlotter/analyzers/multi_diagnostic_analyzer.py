@@ -137,3 +137,32 @@ class MultiDiagnosticAnalyzer(DiagnosticAnalyzer):
         if isinstance(bg, dict):
             return bg.get(name)
         return None
+
+    # ------------------------------------------------------------------
+    # Online analysis
+    # ------------------------------------------------------------------
+    def check_ready(self):
+        """This analyzer's ``check_backgrounds()`` (if any), then each
+        sub-analyzer's ``check_ready()``."""
+        super().check_ready()
+        for sub in self.sub_analyzers.values():
+            if hasattr(sub, 'check_ready'):
+                sub.check_ready()
+
+    def live_payload(self, scan, shot, data, results, aux):
+        """As ``DiagnosticAnalyzer.live_payload``, with one image panel per
+        input whose data (in a ``{input: data}`` dict) is a 2-D image."""
+        from PyGEECSPlotter.utils.live_payload import image_panel, lineout, scalars
+        panels = []
+        if isinstance(data, dict):
+            for name, _ in self.inputs:
+                panel = image_panel(name, data.get(name))
+                if panel:
+                    panels.append(panel)
+        else:
+            panel = image_panel(self.output_diagnostic or '', data, results)
+            if panel:
+                panels.append(panel)
+        line = lineout(aux, data if not isinstance(data, dict) else None)
+        return {'kind': 'shot', 'scan': scan, 'shot': shot, 'results': scalars(results),
+                'images': panels, 'line': line, 'wf': line}

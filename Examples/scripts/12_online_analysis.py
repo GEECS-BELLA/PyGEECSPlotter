@@ -43,7 +43,7 @@ from PyGEECSPlotter.displayers import ScalarVsParameter, SampledImages, MeanImag
 
 DATA_ROOT = r'N:\data'
 MODE = 'scan'                # 'scan': ScanWatcher; 'tags': with scan tags + day trackers;
-                             # 'shots': LiveShotWatcher; 'windows': with live windows
+                             # 'shots': LiveShotWatcher; 'windows': with the live GUI + trigger
 WRITE = False                # True: write results into the sfiles
 
 # %% [markdown]
@@ -209,27 +209,47 @@ if MODE == 'shots':
     live.start()                 # Ctrl+C to stop
 
 # %% [markdown]
-# ## Live windows
+# ## The live GUI
 #
-# `show_shots=True` opens a window with the latest analysed shot, drawn by
-# the analyzer's `display_data`. `live_displayers` are scan displayers
-# redrawn in their own windows as the scan runs, at most every
-# `gui_interval_s`. They see every `.tdms` row so far, which holds the
-# device scalars, plus the live results under the names they will have in
-# the sfile.
+# `show_shots=True` opens the live GUI, a Qt window in its own process, so
+# drawing never slows the analysis. Each shot is sent as soon as it is
+# analysed, before its files are written. The window shows:
 #
-# Mid-scan, the bins come from the ScanInfo file's shots per step. `.tdms`
-# columns carry their alias only if an earlier sfile that day, or on an
-# earlier day, gave it; otherwise they keep their device names.
+# - **left:** the latest shot's images (one panel per camera of a
+#   multi-diagnostic job) and its 1-D view (a lineout or spectrum)
+# - **right:** trends of the results and of the `.tdms` device scalars,
+#   against shot or the scan parameter, and a waterfall of the 1-D views
+# - **controls** for the x range, color scales, colormap, log scale,
+#   waterfall length, the trends, and pause. They are remembered between runs.
 #
-# Without a `job`, the watcher only draws the live plots: nothing is analysed
-# or written.
+# What a shot shows comes from the analyzer's `live_payload()`. The default
+# covers 2-D images and lineout-style `aux`; an analyzer can override it, as
+# the magspec analyzer does. `gui_options` sets labels, default trends and so
+# on. Without a `job`, the window shows the `.tdms` scalars alone.
+# `live_view='pyplot'` gives the older in-process pyplot window instead, and
+# `live_displayers` still draws scan displayers in pyplot windows.
 #
-# The windows need an interactive backend, so remove `matplotlib.use('Agg')`
-# above. `start()` must also run in the main thread of a script.
+# **Master-control trigger.** GEECS master control multicasts a message per
+# shot naming its files, and one when the scan ends. With `trigger` (the
+# experiment's multicast group and port) and `trigger_root` (the root path
+# it sends), all from the experiment's GEECS database, the watcher checks
+# each shot's files by name as soon as the message arrives, and ends the
+# scan on `ScanEnd`. Shots whose message is lost are still found by polling.
+#
+# **End of scan.** `end_process=True` runs the job's displayers (and
+# `write_displayed` per-shot figures) in a separate process, so the next
+# scan isn't delayed.
+#
+# **Start-up checks.** `start()` first calls the analyzer's `check_ready()`
+# (e.g. missing default backgrounds stop it there), and warns if Windows
+# caches the network drive's listings (new files then arrive in ~10 s bursts).
 
 # %%
+TRIGGER = '234.5.6.17:58456'                                # ControlRoom, from its GEECS database
+TRIGGER_ROOT = r'\\192.168.13.6\pdna2\data\ControlRoom'     # the root path master control sends ...
+EXPERIMENT_DIR = r'N:\data\ControlRoom'                     # ... and its local mapping
+
 if MODE == 'windows':
-    live = LiveShotWatcher(experiment_dir=DATA_ROOT, job=jobs[1], write=WRITE, show_shots=True,
-                           live_displayers=[ScalarVsParameter('CAM-HPD-CCD sum_counts')])
+    live = LiveShotWatcher(experiment_dir=EXPERIMENT_DIR, job=jobs[1], write=WRITE, show_shots=True,
+                           trigger=TRIGGER, trigger_root=TRIGGER_ROOT, end_process=True)
     live.start()

@@ -21,6 +21,7 @@ import re
 import time
 import traceback
 
+import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
@@ -44,6 +45,47 @@ def _inputs(analyzer):
     if getattr(analyzer, 'diagnostic', None) and getattr(analyzer, 'file_ext', None):
         return [(analyzer.diagnostic, analyzer.file_ext)]
     return []
+
+
+_SMB_KEYS = ('DirectoryCacheLifetime', 'FileNotFoundCacheLifetime', 'FileInfoCacheLifetime')
+
+
+def smb_cache_warning(path):
+    """A warning (str) if ``path`` is on a network drive and Windows' SMB client
+    caches listings / file info there (new files then show up only every ~10 s,
+    and a file being written can look complete), else None."""
+    if os.name != 'nt' or not path:
+        return None
+    path = os.path.abspath(os.fspath(path))
+    remote = path.startswith('\\\\')
+    if not remote:
+        import ctypes
+        try:
+            remote = ctypes.windll.kernel32.GetDriveTypeW(os.path.splitdrive(path)[0] + '\\') == 4
+        except (OSError, AttributeError):
+            remote = False
+    if not remote:
+        return None
+    import winreg
+    bad = []
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                            r'SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters') as key:
+            for name in _SMB_KEYS:
+                try:
+                    value = winreg.QueryValueEx(key, name)[0]
+                except OSError:
+                    value = None            # not set: Windows' default (10 s, or 5 s for not-found)
+                if value != 0:
+                    bad.append(f'{name}={value if value is not None else "default"}')
+    except OSError:
+        return None
+    if not bad:
+        return None
+    return (f"{path} is on a network drive and this PC caches its listings ({', '.join(bad)}): new "
+            f"shots will show up in bursts every ~10 s. Set {', '.join(_SMB_KEYS)} to 0 (DWORD) under "
+            r"HKLM\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters (admin) on the PC "
+            f"that runs the watcher.")
 
 
 class _ScanState:
@@ -77,6 +119,7 @@ class _ScanState:
         self.expected = {}       # triggered shot -> {diagnostic: path} not seen yet
         self.ended_at = None     # time ScanEnd arrived
         self.warned_silent = False
+        self.gui_sent = set()    # shots sent to the live GUI from the .tdms alone (no job)
         self.context = None      # last good .tdms frame
         self.context_size = None # .tdms size when it was read
         self.context_rows = {}   # shot -> row position in context (its last row)
@@ -136,8 +179,25 @@ class LiveShotWatcher:
     missing_input_timeout_s : float
         See ``analyze_partial``.
     show_shots : bool
-        Show the latest analysed shot (the analyzer's ``display_data``) in a
-        window.
+        Show each shot live, as soon as it is analysed (before its files are
+        written). By default in the live GUI, a Qt window in its own process
+        (``PyGEECSPlotter.displayers.live_gui``) fed by the analyzer's
+        ``live_payload``: the latest shot's images and 1-D view, trends of
+        its results and ``.tdms`` scalars (against shot or scan parameter)
+        and a waterfall. Without a job, the ``.tdms`` scalars alone (trends).
+    live_view : str
+        ``'qt'`` (default): ``show_shots`` uses the live GUI. ``'pyplot'``:
+        the analyzer's ``display_data`` in a pyplot window redrawn by the
+        watcher's own loop (slower; it shares the loop with the analysis).
+    gui_options : dict, optional
+        Options of the live GUI window (see ``live_gui``), e.g. ``labels``,
+        ``trends``, ``x_range``, ``log_line``.
+    end_process : bool
+        Run the job's displayers (and its ``write_displayed`` per-shot
+        figures) after each scan in a separate process (``live_end.py``,
+        output in ``analysis/ScanNNN/online/end_of_scan.log``), so the
+        watcher is ready for the next scan within about a second. Default:
+        here (a job that doesn't pickle is also run here).
     live_displayers : list of ScanDisplayer
         Redrawn in their own windows as the scan runs, on every ``.tdms`` row
         so far (device scalars) plus the live results (named as they will be
@@ -178,16 +238,18 @@ class LiveShotWatcher:
     displayer figures to ``analysis/ScanNNN/online/<name>/``.
     """
 
-    def __init__(self, experiment_dir=None, job=None, top_dir=None, poll_s=1.0, max_workers=None,
+    def __init__(self, experiment_dir=None, job=None, top_dir=None, poll_s=0.1, max_workers=None,
                  context_timeout_s=30.0, required_columns=None, start_scan=None, write=True,
-                 file_settle_s=1.0, settle_s=30.0, abandon_grace_s=60.0, analyze_partial=False,
+                 file_settle_s=0.3, settle_s=30.0, abandon_grace_s=60.0, analyze_partial=False,
                  missing_input_timeout_s=10.0, show_shots=False, live_displayers=(),
                  gui_interval_s=1.0, on_shot=None, trigger=None, trigger_root=None,
-                 trigger_settle_s=0.1):
+                 trigger_settle_s=0.1, live_view='qt', gui_options=None, end_process=False):
         if experiment_dir is None and top_dir is None:
             raise ValueError("Give experiment_dir (watch today's folder) or top_dir.")
-        if job is None and not live_displayers:
+        if job is None and not live_displayers and not (show_shots and live_view == 'qt'):
             raise ValueError("Give the job (a LiveJob or an analyzer) to run, or live_displayers.")
+        if live_view not in ('qt', 'pyplot'):
+            raise ValueError("live_view is 'qt' or 'pyplot'.")
         self.experiment_dir = os.fspath(experiment_dir) if experiment_dir is not None else None
         self.fixed_top_dir = os.fspath(top_dir) if top_dir is not None else None
         self.job = job if job is None or isinstance(job, LiveJob) else LiveJob(job)
@@ -206,8 +268,13 @@ class LiveShotWatcher:
         self.abandon_grace_s = abandon_grace_s
         self.analyze_partial = analyze_partial
         self.missing_input_timeout_s = missing_input_timeout_s
-        self.view = LiveView(show_shots and self.job is not None, live_displayers, gui_interval_s,
-                             log=self._log)
+        self.view = LiveView(show_shots and live_view == 'pyplot' and self.job is not None, live_displayers,
+                             gui_interval_s, log=self._log)
+        self.use_gui = show_shots and live_view == 'qt'
+        self.gui_options = dict(gui_options or {})
+        self.gui_process = None      # LiveGui (the Qt process), once started
+        self.end_process = end_process
+        self.end_procs = []          # end-of-scan processes (live_end.py) still running
         self.on_shot = on_shot
         self._wake = threading.Event()  # set when an analysis or write finishes, or a trigger arrives
         self.trigger = trigger
@@ -303,6 +370,13 @@ class LiveShotWatcher:
         self._log(f"{st.label}: started; "
                   + ("analysing shots as they arrive" if self.job else "live plots only")
                   + (f" ({len(st.done)} already done)" if st.done else ''))
+        if self.job is not None and self.job.use_bg:
+            self._helper_scan(st)              # resolves st.bg now, not on the first shot
+            missing = [d for d, _ in self.inputs
+                       if not (st.bg.get(d) if isinstance(st.bg, dict) else st.bg)]
+            if missing:
+                self._log(f"{st.label}: use_bg, but no background file in "
+                          f"{os.path.join(top_dir, 'analysis')} for {', '.join(missing)}")
 
     def _find_files(self, st):
         """New shot files of each input, ``ScanNNN_<diag>_<shot><ext>``."""
@@ -470,6 +544,9 @@ class LiveShotWatcher:
                     self.on_shot(st.scan, shot, data, results, aux)
                 except Exception:
                     self._log(f"{st.label}: on_shot failed for shot {shot}:\n{traceback.format_exc()}")
+            if self.gui_process is not None:
+                self._send_shot(st, shot, context, data, results, aux)
+                self._send_status(st)
             args = (helper._write_row, self.analyzer, context, data, aux,
                     self.job.write_analyzed, self.job.write_lineouts)
             if self._pool is not None:
@@ -594,6 +671,82 @@ class LiveShotWatcher:
         return any(s not in busy and s not in st.submitted and s not in st.writing for s in st.triggered)
 
     # ------------------------------------------------------------------
+    # Live GUI (Qt, in its own process)
+    # ------------------------------------------------------------------
+    def _start_gui(self):
+        """Start the live GUI process (once). If it can't start, that is logged
+        and the watcher carries on without it."""
+        if not self.use_gui or self.gui_process is not None:
+            return
+        from PyGEECSPlotter.displayers.live_gui import start_gui
+        options = {'n_images': len(self.inputs) if len(self.inputs) > 1 else 1}
+        options.update(self.gui_options)
+        log_path = options.pop('log_path', None)     # per drawn shot: scan, shot, t_sent, t_received, t_drawn
+        try:
+            self.gui_process = start_gui(self.name, title=f'Live {self.name}', options=options, log_path=log_path)
+        except Exception as err:
+            self._log(f"The live GUI didn't start ({err!r}); carrying on without it")
+            self.use_gui = False
+
+    @staticmethod
+    def _numeric_context(context):
+        """The shot's .tdms scalars (numbers only; not shot counters or file columns)."""
+        out = {}
+        for k, v in context.items():
+            if (isinstance(v, (int, float, np.integer, np.floating)) and not isinstance(v, bool)
+                    and k not in ('scan', 'Shotnumber', 'Bin #', 'temp Bin number')
+                    and not k.endswith((' shot #', ' file_exists'))):
+                out[k] = float(v)
+        return out
+
+    def _param(self, st, context):
+        raw = st.scan_info.get('Scan Parameter', '')
+        name = self.aliases.get(raw, raw)
+        if name in context:
+            try:
+                return {'name': name, 'value': float(context[name])}
+            except (TypeError, ValueError):
+                pass
+        return None
+
+    def _send_shot(self, st, shot, context, data, results, aux):
+        """One shot to the live GUI: the analyzer's live_payload, plus its .tdms
+        scalars and scan parameter value."""
+        try:
+            msg = (self.analyzer.live_payload(st.scan, shot, data, results, aux) if self.job
+                   else {'kind': 'shot', 'scan': st.scan, 'shot': shot})
+            msg['context'] = self._numeric_context(context)
+            msg['param'] = self._param(st, context)
+            msg['t_sent'] = time.time()
+            self.gui_process.send(msg)
+        except Exception:
+            if not getattr(self, '_warned_payload', False):
+                self._warned_payload = True
+                self._log(f"{st.label}: live payload of shot {shot} failed (logged once):\n"
+                          f"{traceback.format_exc()}")
+
+    def _send_status(self, st, text=None):
+        if self.gui_process is None:
+            return
+        if text is None:
+            p = self.progress() or {}
+            text = (f"{st.label}: {p.get('done', 0)} done, {p.get('in progress', 0)} analysing, "
+                    f"{p.get('writing', 0)} writing, {p.get('waiting', 0) + p.get('arriving', 0)} waiting, "
+                    f"{p.get('failed', 0)} failed"
+                    + (f", {p['triggered']} triggered" if 'triggered' in p else '')
+                    + (f"; GUI dropped {self.gui_process.dropped}" if self.gui_process.dropped else ''))
+        self.gui_process.send({'kind': 'status', 'text': text})
+
+    def _send_tdms_rows(self, st):
+        """No job: each new .tdms row to the live GUI (trends of the device scalars)."""
+        if st.context is None:
+            return
+        for shot, i in sorted(st.context_rows.items()):
+            if shot not in st.gui_sent:
+                st.gui_sent.add(shot)
+                self._send_shot(st, shot, st.context.iloc[i].to_dict(), None, None, None)
+
+    # ------------------------------------------------------------------
     # Live views
     # ------------------------------------------------------------------
     def _live_scan(self, st):
@@ -681,6 +834,40 @@ class LiveShotWatcher:
             return False
         return size > 0 and (os.path.exists(st.info) or now - st.sfile_size[1] >= self.settle_s)
 
+    def _launch_end(self, st, results, out):
+        """The job's displayers (and write_displayed) in a separate process
+        (live_end.py). False if the job can't be handed over (e.g. it doesn't
+        pickle): the caller then runs them here."""
+        import pickle
+        import subprocess
+        import sys
+        from PyGEECSPlotter.displayers.live_gui import package_env
+        spec = {'job': self.job, 'sfile': st.sfile, 'results': results,
+                'merged': self.write and self.job.write_sfile, 'output_dir': out}
+        folder = online_output_dir(st.top_dir, st.scan)
+        path = os.path.join(folder, 'end_of_scan.pkl')
+        try:
+            with open(path, 'wb') as f:
+                pickle.dump(spec, f)
+        except Exception as err:
+            try:
+                os.remove(path)                 # the partly written spec
+            except OSError:
+                pass
+            if not getattr(self, '_warned_pickle', False):
+                self._warned_pickle = True
+                self._log(f"The end-of-scan work can't go to a separate process ({err!r}); "
+                          f"running it here (logged once)")
+            return False
+        self.end_procs = [p for p in self.end_procs if p.poll() is None]
+        log = open(os.path.join(folder, 'end_of_scan.log'), 'w')
+        self.end_procs.append(subprocess.Popen(
+            [sys.executable, '-m', 'PyGEECSPlotter.scan_data_analyzers.live_end', path],
+            stdout=log, stderr=subprocess.STDOUT, env=package_env()))
+        log.close()
+        self._log(f"{st.label}: scan views being drawn in a separate process (end_of_scan.log)")
+        return True
+
     def _abandoned(self, st, now):
         """No sfile, and a newer scan has been running for ``abandon_grace_s``,
         or ScanEnd came ``settle_s`` ago."""
@@ -701,6 +888,7 @@ class LiveShotWatcher:
         self._update_views(st, time.monotonic(), force=True)
         if self.job is None:
             self._log(f"{st.label}: finished (live plots only)")
+            self._send_status(st, f'{st.label} finished; waiting for the next scan')
             return
 
         scan = ScanDataAnalyzer(sfilename=st.sfile)
@@ -746,12 +934,21 @@ class LiveShotWatcher:
         results = pd.concat(parts, ignore_index=True) if parts else None
         if results is not None and self.write:
             job.write(scan, results.drop_duplicates(['scan', 'Shotnumber'], keep='last'))
-        job.display(scan, online_output_dir(st.top_dir, st.scan, job.name))
+        out = online_output_dir(st.top_dir, st.scan, job.name)
+        if not (self.end_process and self._launch_end(st, results, out)):
+            job.display(scan, out)
+            if job.write_displayed and results is not None:
+                from PyGEECSPlotter.scan_data_analyzers.live_end import end_of_scan
+                end_of_scan({'job': LiveJob(job.analyzer, write_displayed=True, column_prefix=job.column_prefix,
+                                            analysis_label=job.analysis_label, use_bg=job.use_bg),
+                             'sfile': st.sfile, 'results': results,
+                             'merged': self.write and job.write_sfile, 'output_dir': out})
         self.view.close_others()
         n = 0 if results is None else results['Shotnumber'].nunique()
         self._log(f"{st.label}: finished, {n} shots ({len(st.deferred)} deferred, "
                   f"{len(st.failed)} failed live"
                   + (f", {len(st.partial)} with an input missing" if st.partial else '') + ")")
+        self._send_status(st, f'{st.label} finished ({n} shots); waiting for the next scan')
 
     # ------------------------------------------------------------------
     # Loop
@@ -760,6 +957,7 @@ class LiveShotWatcher:
         """One step of the controller loop. Returns the scan finished in this step, if any."""
         if self._pool is None:
             self._pool = concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers)
+        self._start_gui()
         self._start_trigger()
         if self.listener is not None:
             self._handle_triggers()
@@ -779,8 +977,11 @@ class LiveShotWatcher:
         self._update_complete(st, now)
         self._submit_ready(st, now)
         self._collect(st)
-        if self.view.displayers or (ended and self.view.active):
+        gui_tdms = self.gui_process is not None and self.job is None
+        if self.view.displayers or (ended and self.view.active) or gui_tdms:
             self._read_context(st, now)
+        if gui_tdms:
+            self._send_tdms_rows(st)
         self._update_views(st, now)
         if not ended:
             if self.listener is not None and not st.warned_silent and not st.triggered \
@@ -810,8 +1011,20 @@ class LiveShotWatcher:
         self.state = None
         return st.scan
 
+    def check_ready(self):
+        """Fail fast, before watching: the analyzer's ``check_ready()`` (e.g. its
+        default backgrounds or calibrations; raises with the missing files).
+        Also logs a warning if the SMB cache will delay new files."""
+        if self.job is not None and hasattr(self.analyzer, 'check_ready'):
+            self.analyzer.check_ready()
+        warning = smb_cache_warning(self.fixed_top_dir or self.experiment_dir)
+        if warning:
+            self._log(warning)
+
     def start(self):
-        """Run until ``stop()`` or Ctrl+C."""
+        """Run until ``stop()`` or Ctrl+C (after ``check_ready()``, which raises
+        if the analyzer can't analyse shots)."""
+        self.check_ready()
         self._running = True
         self._log(f"Watching {os.path.join(self.top_dir, 'scans')} for scans to start "
                   f"({self.name}). Ctrl+C to stop.")
@@ -854,4 +1067,7 @@ class LiveShotWatcher:
         if self.listener is not None:
             self.listener.stop()
             self.listener = None
+        if self.gui_process is not None:
+            self.gui_process.stop()
+            self.gui_process = None
         self._log("Stopped.")
