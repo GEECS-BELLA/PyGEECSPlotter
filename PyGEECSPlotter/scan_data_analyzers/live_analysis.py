@@ -149,7 +149,8 @@ class LiveJob:
         if self.write_sfile:
             scan.merge_data_frame_to_sfile(results, self.column_prefix, overwrite_columns=True,
                                            analysis_label=self.analysis_label,
-                                           summary_label=self.summary_label)
+                                           summary_label=self.summary_label,
+                                           provenance=self.provenance(scan))
         if self.update_scan_data_file:
             target = os.path.join(scan.top_dir, 'scans', f'Scan{int(scan.scan):03d}',
                                   f'ScanDataScan{int(scan.scan):03d}.txt')
@@ -158,6 +159,14 @@ class LiveJob:
                                                analysis_label=self.analysis_label,
                                                summary_label=self.summary_label,
                                                target_filename=target)
+
+    def provenance(self, scan):
+        """Provenance of this job's results on ``scan``, plus what the watcher
+        recorded on the scan (``scan.provenance_extra``: tags, config file)."""
+        from PyGEECSPlotter.utils.provenance import analysis_provenance
+        extra = dict(getattr(scan, 'provenance_extra', None) or {}, job=self.name,
+                     source='online (ScanWatcher)')
+        return analysis_provenance(self.analyzer, scan, extra=extra)
 
     def display(self, scan, output_dir=None):
         """Run each displayer on ``scan``, saving to ``output_dir`` (see ``run_displayers``)."""
@@ -377,6 +386,7 @@ class ScanWatcher:
             self._log(f"{label}: no shots, skipped")
             return s
         jobs, tags = self.classifier.jobs_for(s)
+        s.provenance_extra = {'tags': tags, **self.classifier.provenance()}
         self._log(f"{label}: analysing ({len(jobs)} jobs"
                   + (f"; tags {' '.join('#' + t for t in tags)}" if tags else '') + ")")
         for job in jobs:

@@ -74,13 +74,25 @@ class ScanClassifier:
         Applied in this order to scans that carry them.
     day : list of day trackers
         Updated after each scan (see ``displayers.day``).
+    config_file : str, optional
+        The config file this classifier came from; its path and SHA-256 go
+        into every result's provenance record.
     """
 
-    def __init__(self, jobs=(), tags=(), day=()):
+    def __init__(self, jobs=(), tags=(), day=(), config_file=None):
         from PyGEECSPlotter.scan_data_analyzers.live_analysis import as_jobs
         self.jobs = as_jobs(jobs)
         self.tags = {t.name: t for t in tags}
         self.day = list(day)
+        self.config_file = os.fspath(config_file) if config_file is not None else None
+
+    def provenance(self):
+        """``{'config': path, 'config_sha256': hash}`` (empty without a config file)."""
+        if self.config_file is None:
+            return {}
+        from PyGEECSPlotter.utils.provenance import file_hash
+        return {'config': os.path.abspath(self.config_file),
+                'config_sha256': file_hash(self.config_file)}
 
     def __repr__(self):
         tags = ' '.join(f'#{n}' for n in self.tags)

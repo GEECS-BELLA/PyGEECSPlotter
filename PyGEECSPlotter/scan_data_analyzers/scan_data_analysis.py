@@ -25,12 +25,13 @@ from PyGEECSPlotter.utils.navigation_utils import (
     get_top_dir, get_top_dir_from_sfilename, open_directory_in_explorer,
 )
 from PyGEECSPlotter.utils.io_utils import write_controls_from_python, file_lock
+from PyGEECSPlotter.utils.provenance import analysis_provenance
 from PyGEECSPlotter.scan_data_analyzers.binning import compute_bin_numbers
 from PyGEECSPlotter.scan_data_analyzers.filters import Filter, combined_mask, summary
 from PyGEECSPlotter.scan_data_analyzers.sfile_frame import (
     apply_column_math, apply_search_replace, drop_incomplete_rows, merge_results,
     parse_column_math_from_lv_controls, parse_search_replace_from_lv_controls, read_controls,
-    rename_result_columns, search_replace_text, summary_filename)
+    rename_result_columns, search_replace_text, summary_filename, provenance_filename)
 from PyGEECSPlotter.analyzers.multi_diagnostic_analyzer import MultiDiagnosticAnalyzer
 
 import PyGEECSPlotter.utils.plotting as gplt
@@ -1078,7 +1079,7 @@ class ScanDataAnalyzer:
         write_columns_to_sfile : bool, optional
             If True, overwrite ``self.sfilename`` with the new columns merged
             in, and write a standalone summary file
-            (``Scan{scan:03d}_{diagnostic}[_{extra_info_str}]_Summary.txt``)
+            (``Scan{scan:03d}_{diagnostic}[_{analysis_label}]_Summary.txt``)
             under the scan's analysis dir. The columns are merged into
             ``self.data`` either way, so this only controls whether anything
             on disk is touched.
@@ -1260,7 +1261,7 @@ class ScanDataAnalyzer:
                     overwrite_columns=overwrite_columns,
                     analysis_label=analysis_label,
                     keep_unanalysed=keep_unanalysed,
-                    summary_label=extra_info_str,
+                    provenance=analysis_provenance(analyzer, self, extra={'source': 'analyze_scan'}),
                 )
 
         return add_columns_df
@@ -1320,6 +1321,7 @@ class ScanDataAnalyzer:
                                   keep_unanalysed=True,
                                   target_filename=None,
                                   summary_label=None,
+                                  provenance=None,
                                   ):
         """
         Write per-shot result columns into the sfile on disk, and the same
@@ -1332,6 +1334,10 @@ class ScanDataAnalyzer:
             (e.g. ``scans/ScanNNN/ScanDataScanNNN.txt``); same format.
         summary_label: label in the summary file name only (default:
             ``analysis_label``); left out when empty.
+        provenance: dict from ``utils.provenance.analysis_provenance``; written
+            (with the columns and shot count added) as
+            ``Scan003_<diagnostic>[_<label>]_provenance.json`` beside the
+            summary, when writing the sfile itself (not ``target_filename``).
 
         overwrite_columns=True: an existing column of the same name is
             updated (see ``keep_unanalysed``). False: the new columns are
@@ -1364,6 +1370,11 @@ class ScanDataAnalyzer:
         label = analysis_label if summary_label is None else summary_label
         add_columns_path = os.path.join(analysis_dir, summary_filename(self.scan, diagnostic, label))
         add_columns_df.to_csv(add_columns_path, index=False, sep='\t')
+        if provenance is not None and target_filename is None:
+            record = dict(provenance, shots=int(len(add_columns_df)), written_to=target,
+                          columns=[c for c in add_columns_df.columns if c not in ('scan', 'Shotnumber')])
+            write_controls_from_python(
+                os.path.join(analysis_dir, provenance_filename(self.scan, diagnostic, label)), record)
         print(f'Columns added to {target}')
 
     def mean_std_diagnostic(self, analyzer, bg=None, ddof=0, show_progress=False, rows=None):

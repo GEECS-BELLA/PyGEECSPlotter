@@ -17,6 +17,11 @@ def summary_filename(scan, diagnostic=None, label=None):
     return '_'.join(parts + ['Summary.txt'])
 
 
+def provenance_filename(scan, diagnostic=None, label=None):
+    """``summary_filename`` with ``_provenance.json`` in place of ``_Summary.txt``."""
+    return summary_filename(scan, diagnostic, label)[:-len('Summary.txt')] + 'provenance.json'
+
+
 def drop_incomplete_rows(sfile_data):
     """
     Drop rows with no ``scan`` or ``Shotnumber`` (e.g. a partial last row
