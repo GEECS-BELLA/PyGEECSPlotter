@@ -9,12 +9,12 @@ appears) and then runs a list of jobs on it. Each job:
 2. merges the results into the sfile, and optionally into
    `scans/ScanNNN/ScanDataScanNNN.txt`, while holding a lock file
 3. runs its displayers and saves each figure to
-   `<day>/online_analysis/ScanNNN/<diagnostic>/`
+   `<day>/analysis/ScanNNN/online/<diagnostic>/`
 
 **`LiveShotWatcher`** runs one analyzer *while the scan is running*. A
 shot is analysed as soon as its diagnostic file(s) and its row in the
 scan's `.tdms` are both complete. The results are appended to
-`online_analysis/ScanNNN/<name>_live.txt`, so you can watch them build up.
+`analysis/ScanNNN/online/<name>_live.txt`, so you can watch them build up.
 When the scan ends:
 
 - shots that never got their `.tdms` context in time are analysed with the
@@ -42,7 +42,8 @@ from PyGEECSPlotter.analyzers.column_math_analysis import ColumnMathAnalyzer
 from PyGEECSPlotter.displayers import ScalarVsParameter, SampledImages, MeanImagePerBin
 
 DATA_ROOT = r'N:\data'
-MODE = 'scan'                # 'scan': ScanWatcher; 'shots': LiveShotWatcher; 'windows': with live windows
+MODE = 'scan'                # 'scan': ScanWatcher; 'tags': with scan tags + day trackers;
+                             # 'shots': LiveShotWatcher; 'windows': with live windows
 WRITE = False                # True: write results into the sfiles
 
 # %% [markdown]
@@ -98,6 +99,73 @@ jobs = [
 if MODE == 'scan':
     watcher = ScanWatcher(experiment_dir=DATA_ROOT, jobs=jobs, write=WRITE)
     watcher.start()              # Ctrl+C to stop
+
+# %% [markdown]
+# ## Scan tags and day trackers
+#
+# Hashtags in a scan's info text (the start info typed in GEECS, saved in
+# `ScanInfoScanNNN.ini`, e.g. `focus scan #focus`) choose extra jobs for that
+# scan. A `ScanClassifier` collects:
+#
+# - the default jobs, run on every scan;
+# - each `Tag`'s extra jobs. A tag can also change the default jobs for that
+#   scan (`modify=`, with `tweak_job`) or replace them (`replace_default=True`);
+# - day trackers, updated in `analysis/today/` after every scan.
+#
+# Keep one classifier per experiment in its own config file. Tags missing
+# from the config are reported in the log, which catches typos.
+#
+# - **`DisplayJob`** draws figures from the columns the default jobs have just
+#   added, without analysing again.
+# - **`AveragedBackground`** writes the scan's mean image as
+#   `analysis/ScanNNN<diag>_averaged.png`, which later `use_bg` scans pick up.
+# - **`DayImages`** shows one shot per scan (first, max or median of a column)
+#   with a shared colour scale, to catch drift.
+# - **`DayScalars`** plots per-scan mean ± std of chosen columns.
+# - **`ScanSheet`** keeps a table of the day's scans.
+#
+# ## Provenance
+#
+# Every result written to the sfile gets a record beside its summary,
+# `analysis/ScanNNN/Scan003_<diag>_online_provenance.json`. It holds:
+#
+# - when and where the analysis ran;
+# - the analyzer's class and `analyzer_dict`;
+# - its settings: plain-type attributes, so constructor arguments such as a
+#   column name or a background file are included;
+# - the version and git commit of PyGEECSPlotter, and of the analyzer's
+#   package when it is a git checkout;
+# - the scan's tags;
+# - the config file's path and SHA-256 (`ScanClassifier(config_file=...)`).
+#
+# With these you can later tell which settings and which code produced a
+# number. Offline `analyze_scan(write_columns_to_sfile=True)` writes the same
+# record.
+
+# %%
+from PyGEECSPlotter.scan_data_analyzers import (ScanClassifier, Tag, DisplayJob,
+                                                AveragedBackground, tweak_job)
+from PyGEECSPlotter.displayers import FocalScanDisplayer, DayImages, DayScalars, ScanSheet
+
+classifier = ScanClassifier(
+    config_file=globals().get('__file__'),   # path + hash go into provenance (None in a notebook)
+    jobs=jobs,
+    tags=[
+        Tag('focus', jobs=[DisplayJob([FocalScanDisplayer(hpd, 'CAM-HPD-CCD max_counts')],
+                                      name='CAM-HPD-CCD_focus')]),
+        Tag('nobg', modify=lambda js: [tweak_job(j, use_bg=False) if isinstance(j, LiveJob) else j
+                                       for j in js]),
+        Tag('bg', jobs=[AveragedBackground([('CAM-HPD-CCD', '.png')])], replace_default=True),
+    ],
+    day=[
+        DayImages(hpd, select='max', column='CAM-HPD-CCD max_counts'),
+        DayScalars(['CAM-HPD-CCD x0', 'CAM-HPD-CCD y0', 'CAM-HPD-CCD max_counts'], name='HPD'),
+        ScanSheet(),
+    ],
+)
+
+if MODE == 'tags':
+    ScanWatcher(experiment_dir=DATA_ROOT, classifier=classifier, write=WRITE).start()
 
 # %% [markdown]
 # ## LiveShotWatcher: during each scan

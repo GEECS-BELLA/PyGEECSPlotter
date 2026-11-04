@@ -13,6 +13,9 @@ from PyGEECSPlotter.scan_data_analyzers.parallel_scan_data_analyzer import Paral
 from PyGEECSPlotter.scan_data_analyzers.data_dir_analysis import DataDirAnalyzer
 from PyGEECSPlotter.scan_data_analyzers.live_analysis import LiveJob, ScanWatcher
 from PyGEECSPlotter.scan_data_analyzers.live_shot_analysis import LiveShotWatcher
+from PyGEECSPlotter.scan_data_analyzers.scan_classifier import (
+    ScanClassifier, Tag, AveragedBackground, DisplayJob, PlaceholderJob, scan_tags, tweak_job)
 
 __all__ = ["ScanDataAnalyzer", "ParallelScanDataAnalyzer", "DataDirAnalyzer", "LiveJob", "ScanWatcher",
-           "LiveShotWatcher"]
+           "LiveShotWatcher",
+           "ScanClassifier", "Tag", "AveragedBackground", "DisplayJob", "PlaceholderJob", "scan_tags", "tweak_job"]

@@ -5,7 +5,7 @@
 # (in threads unless the analyzer is not thread-safe), the results merged
 # into the sfile (and optionally scans/ScanNNN/ScanDataScanNNN.txt) under a
 # file lock, then the job's displayers, saved to
-# <top_dir>/online_analysis/ScanNNN/<diagnostic>/.
+# <top_dir>/analysis/ScanNNN/online/<diagnostic>/.
 #
 # LiveShotWatcher (live_shot_analysis.py) analyses shots while a scan is still
 # running instead.
@@ -20,13 +20,13 @@ import matplotlib.pyplot as plt
 from PyGEECSPlotter.scan_data_analyzers.scan_data_analysis import ScanDataAnalyzer
 import PyGEECSPlotter.utils.navigation_utils as nav_utils
 
-ONLINE_DIR = 'online_analysis'
+ONLINE_DIR = 'online'        # analysis/ScanNNN/online/<name>/
 _SFILE_RE = re.compile(r's(\d+)\.txt$')
 
 
 def online_output_dir(top_dir, scan, name=None, make_dir=True):
-    """``<top_dir>/online_analysis/ScanNNN[/name]``, created if ``make_dir``."""
-    out = os.path.join(os.fspath(top_dir), ONLINE_DIR, f'Scan{int(scan):03d}')
+    """``<top_dir>/analysis/ScanNNN/online[/name]``, created if ``make_dir``."""
+    out = os.path.join(os.fspath(top_dir), 'analysis', f'Scan{int(scan):03d}', ONLINE_DIR)
     if name:
         out = os.path.join(out, name)
     if make_dir:
@@ -52,7 +52,7 @@ class LiveJob:
     analyzer : DiagnosticAnalyzer, ColumnMathAnalyzer or MultiDiagnosticAnalyzer
     displayers : list of ScanDisplayer
         Run after the analysis, on the scan with the new columns; each figure
-        is saved to ``online_analysis/ScanNNN/<name>/`` and closed.
+        is saved to ``analysis/ScanNNN/online/<name>/`` and closed.
     write_sfile : bool [``add_columns_to_masterlog``, default True]
         Merge the results into ``analysis/sN.txt``.
     update_scan_data_file : bool [``update_scan_data_file``, default False]
@@ -62,8 +62,14 @@ class LiveJob:
         multi-diagnostic analyzer, one per input).
     write_analyzed, write_lineouts : bool [same keys, default False]
         Per-shot files, written to ``analysis/ScanNNN`` as by ``analyze_scan``.
+    write_displayed : bool [same key, default False]
+        Draw every shot's ``display_data`` figure and save it under
+        ``analysis/ScanNNN/<output_diagnostic>`` (slow: one figure per shot).
     analysis_label : str [``analysis_label``]
         Appended to the result column names.
+    summary_label : str
+        Label in the summary file name only, ``Scan003_<diag>_online_Summary.txt``
+        (default ``'online'``); None or ``''`` leaves it out.
     column_prefix : str
         Prefix of the result column names. Default: the analyzer's
         ``diagnostic`` (none for column maths), as the old watcher wrote; for
@@ -77,7 +83,8 @@ class LiveJob:
 
     def __init__(self, analyzer, displayers=(), write_sfile=None, update_scan_data_file=None,
                  use_bg=None, write_analyzed=None, write_lineouts=None, analysis_label=None,
-                 column_prefix=None, parallel=None, name=None):
+                 column_prefix=None, parallel=None, name=None, summary_label='online',
+                 write_displayed=None):
         a = analyzer
         self.analyzer = a
         self.displayers = list(displayers)
@@ -86,7 +93,9 @@ class LiveJob:
         self.use_bg = _flag(use_bg, a, 'use_bg', False)
         self.write_analyzed = _flag(write_analyzed, a, 'write_analyzed', False)
         self.write_lineouts = _flag(write_lineouts, a, 'write_lineouts', False)
+        self.write_displayed = _flag(write_displayed, a, 'write_displayed', False)
         self.analysis_label = _flag(analysis_label, a, 'analysis_label', None)
+        self.summary_label = summary_label
         self.column_prefix = column_prefix if column_prefix is not None else (
             getattr(a, 'diagnostic', None) or getattr(a, 'output_diagnostic', None)
             if getattr(a, 'inputs', None) else getattr(a, 'diagnostic', None))
@@ -126,6 +135,8 @@ class LiveJob:
             a, bg=self.bg(scan), write_columns_to_sfile=False,
             analysis_label=self.analysis_label or '', write_analyzed=write and self.write_analyzed,
             write_lineouts=write and self.write_lineouts, parallel=self.parallel,
+            display_data=write and self.write_displayed,
+            write_displayed=write and self.write_displayed,
             column_prefix=self.column_prefix,
             extra_info_str=self.analysis_label or '')
         if write and results is not None:
@@ -137,32 +148,51 @@ class LiveJob:
         """Merge ``results`` into the sfile and / or ScanData file, as configured."""
         if self.write_sfile:
             scan.merge_data_frame_to_sfile(results, self.column_prefix, overwrite_columns=True,
-                                           analysis_label=self.analysis_label)
+                                           analysis_label=self.analysis_label,
+                                           summary_label=self.summary_label,
+                                           provenance=self.provenance(scan))
         if self.update_scan_data_file:
             target = os.path.join(scan.top_dir, 'scans', f'Scan{int(scan.scan):03d}',
                                   f'ScanDataScan{int(scan.scan):03d}.txt')
             if os.path.exists(target):
                 scan.merge_data_frame_to_sfile(results, self.column_prefix, overwrite_columns=True,
                                                analysis_label=self.analysis_label,
+                                               summary_label=self.summary_label,
                                                target_filename=target)
 
+    def provenance(self, scan):
+        """Provenance of this job's results on ``scan``, plus what the watcher
+        recorded on the scan (``scan.provenance_extra``: tags, config file)."""
+        from PyGEECSPlotter.utils.provenance import analysis_provenance
+        extra = dict(getattr(scan, 'provenance_extra', None) or {}, job=self.name,
+                     source='online (ScanWatcher)')
+        return analysis_provenance(self.analyzer, scan, extra=extra)
+
     def display(self, scan, output_dir=None):
-        """Run each displayer on ``scan``, saving to ``output_dir``; errors are reported, not raised.
-        A displayer with its own analyzer (e.g. a reader of the files the job
-        wrote) has it registered with the scan first."""
-        for displayer in self.displayers:
-            try:
-                other = getattr(displayer, 'analyzer', None)
-                if other is not None and other is not self.analyzer and hasattr(other, 'register_with_scan'):
-                    other.register_with_scan(scan)
-                fig, _ = scan.display_scan(displayer, save=True, output_dir=output_dir)
-                plt.close(fig)
-            except Exception:
-                print(f"Displayer {type(displayer).__name__} failed on {scan.scan_label}:")
-                print(traceback.format_exc())
-            finally:
-                for extra in getattr(displayer, 'figures', []) or []:
-                    plt.close(extra[-1] if isinstance(extra, tuple) else extra)
+        """Run each displayer on ``scan``, saving to ``output_dir`` (see ``run_displayers``)."""
+        run_displayers(scan, self.displayers, output_dir, registered=self.analyzer)
+
+
+def run_displayers(scan, displayers, output_dir=None, registered=None):
+    """
+    Run each displayer on ``scan``, saving to ``output_dir`` and closing its
+    figures; a failing displayer is reported, not raised. A displayer with
+    its own analyzer (e.g. a reader of files a job wrote) has it registered
+    with the scan first, unless it is ``registered`` already.
+    """
+    for displayer in displayers:
+        try:
+            other = getattr(displayer, 'analyzer', None)
+            if other is not None and other is not registered and hasattr(other, 'register_with_scan'):
+                other.register_with_scan(scan)
+            fig, _ = scan.display_scan(displayer, save=True, output_dir=output_dir)
+            plt.close(fig)
+        except Exception:
+            print(f"Displayer {type(displayer).__name__} failed on {scan.scan_label}:")
+            print(traceback.format_exc())
+        finally:
+            for extra in getattr(displayer, 'figures', []) or []:
+                plt.close(extra[-1] if isinstance(extra, tuple) else extra)
 
 
 def as_jobs(jobs):
@@ -184,6 +214,10 @@ class ScanWatcher:
         re-checked every poll, so a run past midnight moves to the new day.
     jobs : list of LiveJob (or analyzers)
         Run in order on each scan; put cheap ones first.
+    classifier : ScanClassifier, optional
+        Instead of ``jobs``: default jobs, the extra jobs each scan tag
+        (``#focus`` etc. in the scan info) brings, and day trackers updated
+        after every scan (written to ``analysis/today/``).
     top_dir : str or Path, optional
         Watch this day folder instead (fixed).
     poll_s : float
@@ -197,7 +231,7 @@ class ScanWatcher:
         sfile / ScanData merge, no per-shot files (for testing on real data;
         pair with ``output_dir`` to keep the figures out too).
     output_dir : str or Path, optional
-        Root for the figures instead of ``<top_dir>/online_analysis``; they go
+        Root for the figures instead of ``analysis/ScanNNN/online/``; they go
         to ``<output_dir>/ScanNNN/<name>/``.
     settle_s : float
         A scan counts as finished when its ``sNinfo.txt`` exists (GEECS writes
@@ -210,12 +244,15 @@ class ScanWatcher:
 
     def __init__(self, experiment_dir=None, jobs=(), top_dir=None, poll_s=2.0, start_scan=None,
                  search_replace_filename=None, column_math_filename=None, write=True,
-                 output_dir=None, settle_s=30.0):
+                 output_dir=None, settle_s=30.0, classifier=None):
+        from PyGEECSPlotter.scan_data_analyzers.scan_classifier import ScanClassifier
         if experiment_dir is None and top_dir is None:
             raise ValueError("Give experiment_dir (watch today's folder) or top_dir.")
+        if classifier is not None and jobs:
+            raise ValueError("Give jobs or a classifier, not both (put the jobs in the classifier).")
         self.experiment_dir = os.fspath(experiment_dir) if experiment_dir is not None else None
         self.fixed_top_dir = os.fspath(top_dir) if top_dir is not None else None
-        self.jobs = as_jobs(jobs)
+        self.classifier = classifier if classifier is not None else ScanClassifier(jobs)
         self.poll_s = poll_s
         self.settle_s = settle_s
         self.start_scan = start_scan
@@ -294,8 +331,8 @@ class ScanWatcher:
     def start(self):
         """Poll until ``stop()`` or Ctrl+C."""
         self._running = True
-        self._log(f"Watching {self.analysis_dir} for new scans "
-                  f"({len(self.jobs)} jobs). Ctrl+C to stop.")
+        self._log(f"Watching {self.analysis_dir} for new scans ({self.classifier}). "
+                  f"Ctrl+C to stop.")
         try:
             while self._running:
                 self.poll()
@@ -310,6 +347,17 @@ class ScanWatcher:
         self._running = False
 
     # ------------------------------------------------------------------
+    @property
+    def jobs(self):
+        """The default jobs (the classifier's)."""
+        return self.classifier.jobs
+
+    def today_dir(self, top_dir):
+        """Folder of the day trackers: ``analysis/today`` (``<output_dir>/today`` if set)."""
+        if self.output_dir is None:
+            return os.path.join(top_dir, 'analysis', 'today')
+        return os.path.join(self.output_dir, 'today')
+
     def figure_dir(self, top_dir, scan, job):
         """Where ``job``'s figures for ``scan`` go (made only when a figure is saved)."""
         if self.output_dir is None:
@@ -328,7 +376,6 @@ class ScanWatcher:
         """Run every job on one scan. A failing job is reported and the next one runs."""
         top_dir = top_dir or self.top_dir
         label = f"Scan{int(scan):03d}"
-        self._log(f"{label}: analysing ({len(self.jobs)} jobs)")
         try:
             s = self.load_scan(scan, top_dir)
         except Exception:
@@ -338,16 +385,27 @@ class ScanWatcher:
         if s.aborted:
             self._log(f"{label}: no shots, skipped")
             return s
-        for job in self.jobs:
+        jobs, tags = self.classifier.jobs_for(s)
+        s.provenance_extra = {'tags': tags, **self.classifier.provenance()}
+        self._log(f"{label}: analysing ({len(jobs)} jobs"
+                  + (f"; tags {' '.join('#' + t for t in tags)}" if tags else '') + ")")
+        for job in jobs:
             t0 = time.monotonic()
             try:
                 with s.filtered():          # each job's missing-file rules apply to it alone
                     results = job.run(s, output_dir=self.figure_dir(top_dir, scan, job),
                                       write=self.write)
-                n = 0 if results is None else len(results)
-                self._log(f"{label}: {job.name}: {n} shots ({time.monotonic() - t0:.1f} s)")
+                done = f"{len(results)} shots" if hasattr(results, 'columns') else 'done'
+                self._log(f"{label}: {job.name}: {done} ({time.monotonic() - t0:.1f} s)")
             except Exception:
                 self._log(f"{label}: {job.name} failed")
+                print(traceback.format_exc())
+        for tracker in self.classifier.day:
+            try:
+                with s.filtered():
+                    tracker.update(s, self.today_dir(top_dir), tags=tags)
+            except Exception:
+                self._log(f"{label}: day tracker {tracker.name} failed")
                 print(traceback.format_exc())
         plt.close('all')
         return s
