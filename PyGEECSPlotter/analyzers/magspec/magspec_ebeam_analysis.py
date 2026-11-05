@@ -104,12 +104,17 @@ class MagSpecEBeamAnalyzer(MultiDiagnosticAnalyzer):
         k = max(1, int(mmt_bin))
         n = n_mmt // k * k
         dens = (1e-6 * data[:, :n].reshape(n_ang, n // k, k).mean(axis=2) / dm / da).astype(np.float32)
+        mmt32 = mmt.astype(np.float32)
+        spectrum = (1e-6 * data.sum(axis=0) / dm).astype(np.float32)
+        grid = np.asarray(aux.get('p', []), np.float32)
+        grid_spectrum = np.asarray(aux.get('p_lo', []), np.float32)
         return {
             'kind': 'shot', 'scan': scan, 'shot': shot, 'image': dens,
             'extent': (mmt[0] - dm / 2, mmt[n - 1] + dm / 2, ang[0] - da / 2, ang[-1] + da / 2),
-            'mmt': mmt.astype(np.float32), 'spectrum': (1e-6 * data.sum(axis=0) / dm).astype(np.float32),
-            'grid': np.asarray(aux.get('p', []), np.float32),
-            'grid_spectrum': np.asarray(aux.get('p_lo', []), np.float32),
+            'mmt': mmt32, 'spectrum': spectrum, 'grid': grid, 'grid_spectrum': grid_spectrum,
+            # the generic live GUI's keys (live_gui): the spectrum, and the waterfall row on the grid
+            'line': {'x': mmt32, 'y': spectrum},
+            'wf': {'x': grid, 'y': grid_spectrum} if grid.size and grid.size == grid_spectrum.size else None,
             'results': {k_: float(v) for k_, v in (results or {}).items()
                         if isinstance(v, (int, float, np.integer, np.floating))},
         }

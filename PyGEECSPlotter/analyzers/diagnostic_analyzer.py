@@ -125,3 +125,32 @@ class DiagnosticAnalyzer:
         if self.diagnostic is None or self.file_ext is None:
             return
         scan.add_file_list_to_scan_data(self.diagnostic, self.file_ext, remove_missing_files)
+
+    # ------------------------------------------------------------------
+    # Online analysis
+    # ------------------------------------------------------------------
+    def check_ready(self):
+        """
+        Raise (with the missing file names) if the analyzer can't analyse
+        shots, e.g. default backgrounds or calibrations are missing. A live
+        watcher calls it before watching. Default: ``check_backgrounds()`` if
+        the analyzer has one, else nothing.
+        """
+        check = getattr(self, 'check_backgrounds', None)
+        if callable(check):
+            check()
+
+    def live_payload(self, scan, shot, data, results, aux):
+        """
+        One shot for a live display in another process (see
+        ``PyGEECSPlotter.displayers.live_gui``): the scalar ``results``, a 2-D
+        ``data`` as a downsampled image, and the shot's 1-D view (a
+        lineout-style ``aux`` pair such as ``'x'``/``'x_lo'``, or a 1-D
+        ``data``) as the line and the waterfall row. Override to send
+        something more specific (as the magspec analyzer does).
+        """
+        from PyGEECSPlotter.utils.live_payload import image_panel, lineout, scalars
+        panel = image_panel(self.diagnostic or '', data, results)
+        line = lineout(aux, data)
+        return {'kind': 'shot', 'scan': scan, 'shot': shot, 'results': scalars(results),
+                'images': [panel] if panel else [], 'line': line, 'wf': line}
