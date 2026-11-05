@@ -129,9 +129,8 @@ class _ScanState:
         self.required = []       # required_columns as named in the .tdms frame
         self.sfile_size = None   # (size, time first seen at that size)
         self.newer_since = None  # time a newer scan was first seen started
-        self.times = {}          # shot -> {stage: wall-clock time} (see LiveShotWatcher.timing_log)
-        self.read_s = []         # duration of each .tdms read
-        self.poll_s = []         # duration of each poll() during the scan
+        self.written_at = {}     # shot -> mtime of its newest input file
+        self.latency = {}        # shot -> s from written_at to shown
 
 
 class LiveShotWatcher:
@@ -233,16 +232,6 @@ class LiveShotWatcher:
         ``experiment_dir`` is given as that path itself.
     trigger_settle_s : float
         File-settle time of a triggered shot (``file_settle_s`` otherwise).
-    timing_log : str, optional
-        A local CSV file to which each shot's stage times are appended
-        (wall clock, ``time.time()``): ``path`` (its Path>> message),
-        ``mtime`` (newest input file's modification time, the file server's
-        clock), ``seen`` (every input file found), ``complete`` (settled),
-        ``row`` (its ``.tdms`` row first read), ``submit``, ``start`` /
-        ``analysed`` (in the pool), ``shown`` (sent to the GUI / ``on_shot``)
-        and ``written``. Join it with the GUI's ``log_path`` (``t_sent``,
-        ``t_received``, ``t_drawn``) on scan and shot. A summary of the
-        stage delays is logged at the end of every scan either way.
 
     The live windows need an interactive matplotlib backend and ``start()``
     called from the main thread (a script, not a notebook cell).
@@ -257,8 +246,7 @@ class LiveShotWatcher:
                  file_settle_s=0.3, settle_s=30.0, abandon_grace_s=60.0, analyze_partial=False,
                  missing_input_timeout_s=10.0, show_shots=False, live_displayers=(),
                  gui_interval_s=1.0, on_shot=None, trigger=None, trigger_root=None,
-                 trigger_settle_s=0.1, live_view='qt', gui_options=None, end_process=False,
-                 timing_log=None):
+                 trigger_settle_s=0.1, live_view='qt', gui_options=None, end_process=False):
         if experiment_dir is None and top_dir is None:
             raise ValueError("Give experiment_dir (watch today's folder) or top_dir.")
         if job is None and not live_displayers and not (show_shots and live_view == 'qt'):
@@ -301,7 +289,6 @@ class LiveShotWatcher:
         self.aliases = {}            # .tdms raw name -> sfile alias (from an earlier sfile)
         self.last_scan = {}          # top_dir -> last scan handled
         self.status = ''
-        self.timing_log = timing_log
         self._running = False
         self._pool = None
 
@@ -426,8 +413,6 @@ class LiveShotWatcher:
         for shot, paths in st.files.items():
             if shot in st.complete or shot in st.done:
                 continue
-            if len(paths) == n_inputs:
-                self._stamp(st, shot, 'seen')
             settle_s = self.trigger_settle_s if shot in st.triggered else self.file_settle_s
             settled = all([self._settled(st, path, now, settle_s) for path in paths.values()])
             if not settled:
@@ -444,9 +429,8 @@ class LiveShotWatcher:
                           f"analysing it without")
             st.complete[shot] = dict(paths)
             st.first_ready[shot] = now
-            self._stamp(st, shot, 'complete')
             try:
-                self._stamp(st, shot, 'mtime', max(os.stat(p).st_mtime for p in paths.values()))
+                st.written_at[shot] = max(os.stat(p).st_mtime for p in paths.values())
             except (OSError, ValueError):
                 pass
 
@@ -469,15 +453,11 @@ class LiveShotWatcher:
         df = st.tdms_tail.frame(self.aliases)     # only the new segments are parsed
         t1 = time.monotonic()
         st.next_read = t1 + 2 * (t1 - t0)
-        st.read_s.append(t1 - t0)
         if df is None:
             return
         st.context, st.context_size = df, size
         shots = df['Shotnumber'] if 'Shotnumber' in df.columns else []
         st.context_rows = {int(n): i for i, n in enumerate(shots) if n == n}
-        wall = time.time()
-        for shot in st.context_rows:
-            self._stamp(st, shot, 'row', wall)
         if len(df) and not st.context_rows and not st.warned_no_shots:
             st.warned_no_shots = True
             self._log(f"{st.label}: the .tdms has {len(df)} rows but no shot numbers "
@@ -531,59 +511,14 @@ class LiveShotWatcher:
                 row[f'{diag} file_list'] = path or os.path.join(
                     st.scan_dir, diag, f'{st.label}_{diag}_{shot:03d}{ext}')
                 row[f'{diag} file_exists'] = int(path is not None)
-            self._stamp(st, shot, 'submit')
-            st.submitted[shot] = self._submit(self._timed, st.times[shot], helper._process_row,
-                                              self.analyzer, st.bg, pd.Series(row))
+            st.submitted[shot] = self._submit(helper._process_row, self.analyzer, st.bg, pd.Series(row))
 
-    @staticmethod
-    def _timed(times, fn, *args):
-        """``fn(*args)``, noting in ``times`` when it started and finished (in the pool)."""
-        times['start'] = time.time()
-        try:
-            return fn(*args)
-        finally:
-            times['analysed'] = time.time()
-
-    def _stamp(self, st, shot, stage, t=None):
-        """Note when ``shot`` first reached ``stage`` (wall clock)."""
-        st.times.setdefault(shot, {}).setdefault(stage, time.time() if t is None else t)
-
-    _STAGES = ('path', 'mtime', 'seen', 'complete', 'row', 'submit', 'start', 'analysed', 'shown', 'written')
-
-    def _log_timing(self, st, shot):
-        """Append the shot's stage times to ``timing_log``."""
-        if not self.timing_log:
-            return
-        times = st.times.get(shot, {})
-        try:
-            new = not os.path.exists(self.timing_log)
-            with open(self.timing_log, 'a') as f:
-                if new:
-                    f.write('scan,shot,' + ','.join(self._STAGES) + '\n')
-                f.write(f'{st.scan},{shot},' + ','.join(
-                    f'{times[k]:.3f}' if k in times else '' for k in self._STAGES) + '\n')
-        except OSError as err:
-            if not getattr(self, '_warned_timing', False):
-                self._warned_timing = True
-                self._log(f"Can't write the timing log {self.timing_log} ({err!r})")
-
-    def _timing_summary(self, st):
-        """One line: median / max delay of each stage, over the shots shown live."""
-        rows = [t for t in st.times.values() if 'shown' in t]
-        if not rows:
-            return
-        def q(a, b):
-            v = sorted(t[b] - t[a] for t in rows if a in t and b in t)
-            return f'{v[len(v) // 2]:.2f}/{v[-1]:.2f}' if v else '-'
-        parts = [f"file mtime->seen {q('mtime', 'seen')}", f"seen->complete {q('seen', 'complete')}",
-                 f"complete->row {q('complete', 'row')}", f"complete->submit {q('complete', 'submit')}",
-                 f"submit->start {q('submit', 'start')}", f"analyse {q('start', 'analysed')}",
-                 f"analysed->shown {q('analysed', 'shown')}", f"mtime->shown {q('mtime', 'shown')}"]
-        if any('path' in t for t in rows):
-            parts = [f"Path>>->mtime {q('path', 'mtime')}"] + parts + [f"Path>>->shown {q('path', 'shown')}"]
-        med = lambda v: f'{sorted(v)[len(v) // 2]:.3f}/{max(v):.3f}' if v else '-'
-        self._log(f"{st.label} timing, median/max s over {len(rows)} shots: " + ', '.join(parts)
-                  + f"; .tdms read {med(st.read_s)} ({len(st.read_s)} reads), poll {med(st.poll_s)}")
+    def _latency_summary(self, st):
+        """Log how long after its files were written each shot was shown."""
+        v = sorted(st.latency.values())
+        if v:
+            self._log(f"{st.label}: shots shown {v[len(v) // 2]:.2f} s after their files were written "
+                      f"(median of {len(v)}; max {v[-1]:.2f} s)")
 
     def _submit(self, fn, *args):
         """Run ``fn(*args)`` in the pool; the loop is woken when it finishes."""
@@ -627,7 +562,8 @@ class LiveShotWatcher:
             if self.gui_process is not None:
                 self._send_shot(st, shot, context, data, results, aux)
                 self._send_status(st)
-            self._stamp(st, shot, 'shown')
+            if shot in st.written_at:
+                st.latency[shot] = time.time() - st.written_at[shot]
             args = (helper._write_row, self.analyzer, context, data, aux,
                     self.job.write_analyzed, self.job.write_lineouts)
             if self._pool is not None:
@@ -649,8 +585,6 @@ class LiveShotWatcher:
                 future.result()
                 st.pending.append(row)
                 st.done.add(shot)
-                self._stamp(st, shot, 'written')
-                self._log_timing(st, shot)
             except Exception:
                 st.failed.add(shot)
                 self._log(f"{st.label}: writing shot {shot}'s files failed (retried at the end of "
@@ -729,7 +663,6 @@ class LiveShotWatcher:
             if ev.shot in st.done or ev.shot in st.triggered:
                 continue
             st.triggered[ev.shot] = ev.t
-            self._stamp(st, ev.shot, 'path', ev.t + time.time() - time.monotonic())
             st.expected[ev.shot] = {d: os.path.join(st.scan_dir, d, f'{st.label}_{d}_{ev.shot:03d}{e}')
                                     for d, e in self.inputs}
 
@@ -1028,7 +961,7 @@ class LiveShotWatcher:
                              'sfile': st.sfile, 'results': results,
                              'merged': self.write and job.write_sfile, 'output_dir': out})
         self.view.close_others()
-        self._timing_summary(st)
+        self._latency_summary(st)
         n = 0 if results is None else results['Shotnumber'].nunique()
         self._log(f"{st.label}: finished, {n} shots ({len(st.deferred)} deferred, "
                   f"{len(st.failed)} failed live"
@@ -1040,15 +973,6 @@ class LiveShotWatcher:
     # ------------------------------------------------------------------
     def poll(self):
         """One step of the controller loop. Returns the scan finished in this step, if any."""
-        t0, st = time.monotonic(), self.state
-        try:
-            return self._poll()
-        finally:
-            st = st or self.state
-            if st is not None:
-                st.poll_s.append(time.monotonic() - t0)
-
-    def _poll(self):
         if self._pool is None:
             self._pool = concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers)
         self._start_gui()
@@ -1089,7 +1013,7 @@ class LiveShotWatcher:
                           f"group? Carrying on with folder polling")
             if self._abandoned(st, now):
                 self._collect(st, wait=True)
-                self._timing_summary(st)
+                self._latency_summary(st)
                 why = 'ScanEnd came' if st.ended_at is not None else 'a newer scan has started'
                 self._log(f"{st.label}: no sfile and {why}; giving up on it"
                           + (f" ({len(st.done)} shots in "

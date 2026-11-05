@@ -240,11 +240,10 @@ if MODE == 'shots':
 # `write_displayed` per-shot figures) in a separate process, so the next
 # scan isn't delayed.
 #
-# **Timing.** At the end of each scan the log shows where a shot's time went,
-# median/max seconds per stage: file written → seen → complete → `.tdms` row →
-# analysed → shown. `timing_log='timing.csv'` (a local file) keeps every shot's
-# stage times, and `gui_options={'log_path': 'gui.csv'}` the window's
-# received/drawn times; join them on scan and shot.
+# **Latency.** At the end of each scan the log shows how long after their
+# files were written the shots were shown (median and max).
+# `gui_options={'log_path': 'gui.csv'}` also logs each shot's sent, received
+# and drawn times in the window.
 #
 # **Start-up checks.** `start()` first calls the analyzer's `check_ready()`
 # (e.g. missing default backgrounds stop it there), and warns if Windows
