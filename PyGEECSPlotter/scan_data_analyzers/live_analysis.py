@@ -195,11 +195,18 @@ def run_displayers(scan, displayers, output_dir=None, registered=None):
                 plt.close(extra[-1] if isinstance(extra, tuple) else extra)
 
 
+def _is_job(obj):
+    """A job (``name`` + ``run``) rather than an analyzer."""
+    return isinstance(obj, LiveJob) or (callable(getattr(obj, 'run', None)) and hasattr(obj, 'name')
+                                        and not hasattr(obj, 'analyze_data'))
+
+
 def as_jobs(jobs):
-    """A list of LiveJob, wrapping bare analyzers in a default LiveJob."""
-    if isinstance(jobs, LiveJob) or hasattr(jobs, 'analyze_data'):
+    """A list of jobs: bare analyzers are wrapped in a default LiveJob; other
+    jobs (DisplayJob, AveragedBackground, ...) are kept as they are."""
+    if _is_job(jobs) or hasattr(jobs, 'analyze_data'):
         jobs = [jobs]
-    return [j if isinstance(j, LiveJob) else LiveJob(j) for j in jobs]
+    return [j if _is_job(j) else LiveJob(j) for j in jobs]
 
 
 class ScanWatcher:
