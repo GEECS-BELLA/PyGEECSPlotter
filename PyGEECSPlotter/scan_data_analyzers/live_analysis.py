@@ -225,7 +225,8 @@ class ScanWatcher:
     start_scan : int, optional
         First scan to analyse. Default: only scans finishing after ``start()``.
     search_replace_filename, column_math_filename : optional
-        Passed to ``load_scan_data``.
+        Passed to ``load_scan_data``: a path, ``(path, parse_from)``, an
+        inline list of dicts, or a list of these (format auto-detected).
     write : bool
         False: analyse and plot but write nothing into the day's folders: no
         sfile / ScanData merge, no per-shot files (for testing on real data;

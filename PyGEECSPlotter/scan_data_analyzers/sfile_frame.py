@@ -4,6 +4,10 @@ Used by ScanDataAnalyzer for loading, renaming and merging per-shot results.
 Rows are identified by the ``(scan, Shotnumber)`` key throughout.
 """
 
+import json
+import os
+import warnings
+
 import numpy as np
 import pandas as pd
 
@@ -117,13 +121,38 @@ def merge_results(base, results, keep_unanalysed=True):
 
 
 # ---------------------------------------------------------------- controls
-def read_controls(filename, kind, parse_from='python'):
+PARSE_FROM = ('auto', 'python', 'labview')
+_REQUIRED_KEYS = {'search_replace': ('Search', 'Replace'),
+                  'column_math': ('column_name', 'formula', 'variables')}
+
+
+def detect_controls_format(filename):
+    """
+    ``'python'`` if ``filename`` is JSON (as written by
+    ``write_controls_from_python``), ``'labview'`` if it is a LabVIEW controls
+    dump (``...Cluster.<name>=<value>`` lines); otherwise ValueError.
+    """
+    with open(filename, 'r') as file:
+        text = file.read()
+    try:
+        json.loads(text)
+        return 'python'
+    except ValueError:
+        pass
+    if 'Cluster.' in text:
+        return 'labview'
+    raise ValueError(f"{filename} is neither a JSON controls file nor a LabVIEW controls dump.")
+
+
+def read_controls(filename, kind, parse_from='auto'):
     """
     Search / replace pairs (``kind='search_replace'``) or column-math
-    clusters (``kind='column_math'``) from a controls file:
+    clusters (``kind='column_math'``) from one controls file:
     ``parse_from='python'`` reads JSON written by ``write_controls_from_python``,
-    ``'labview'`` a LabVIEW controls dump.
+    ``'labview'`` a LabVIEW controls dump, ``'auto'`` (default) detects which.
     """
+    if parse_from == 'auto':
+        parse_from = detect_controls_format(filename)
     if parse_from == 'python':
         from PyGEECSPlotter.utils.io_utils import parse_controls_from_python
         return parse_controls_from_python(filename)
@@ -131,16 +160,89 @@ def read_controls(filename, kind, parse_from='python'):
         if kind == 'search_replace':
             return parse_search_replace_from_lv_controls(filename)
         return parse_column_math_from_lv_controls(filename)
-    raise ValueError(f"parse_from must be 'python' or 'labview', got {parse_from!r}")
+    raise ValueError(f"parse_from must be one of {PARSE_FROM}, got {parse_from!r}")
+
+
+def _is_inline(spec):
+    return (isinstance(spec, (list, tuple)) and len(spec) > 0
+            and all(isinstance(e, dict) for e in spec))
+
+
+def _is_file_pair(spec):
+    return (isinstance(spec, tuple) and len(spec) == 2
+            and isinstance(spec[0], (str, os.PathLike))
+            and isinstance(spec[1], str) and spec[1] in PARSE_FROM)
+
+
+def iter_control_sources(spec, parse_from='auto'):
+    """
+    ``spec`` as a list of ``(label, parse_from, payload)``, in order.
+
+    ``spec`` is None (nothing), a path (read with ``parse_from``), a
+    ``(path, parse_from)`` tuple, an inline list of dicts (already-parsed
+    controls; ``parse_from`` None, label ``'<inline>'``), or a list / tuple of
+    any of these. A list whose elements are all dicts is one inline source;
+    a 2-tuple whose second item is one of ``PARSE_FROM`` is a file pair.
+    """
+    if spec is None:
+        return []
+    if isinstance(spec, dict):
+        spec = [spec]
+    if _is_inline(spec):
+        return [('<inline>', None, list(spec))]
+    if _is_file_pair(spec):
+        return [(os.fspath(spec[0]), spec[1], os.fspath(spec[0]))]
+    if isinstance(spec, (str, os.PathLike)):
+        return [(os.fspath(spec), parse_from, os.fspath(spec))]
+    if isinstance(spec, (list, tuple)):
+        return [source for item in spec for source in iter_control_sources(item, parse_from)]
+    raise TypeError(f"Can't read controls from {spec!r}: give a path, (path, parse_from), "
+                    f"a list of dicts, or a list of these.")
+
+
+def _check_entries(entries, kind, label):
+    if not isinstance(entries, list):
+        raise ValueError(f"{label}: expected a list of {kind} entries, got {type(entries).__name__}.")
+    for i, entry in enumerate(entries):
+        missing = [k for k in _REQUIRED_KEYS[kind] if not isinstance(entry, dict) or k not in entry]
+        if kind == 'column_math' and not missing:
+            missing = [f"variables[{j}].{k}" for j, v in enumerate(entry['variables'])
+                       for k in ('vars', 'column_name') if k not in v]
+        if missing:
+            raise ValueError(f"{label}: {kind} entry {i} is missing {missing}.")
+
+
+def load_controls(spec, kind, parse_from='auto'):
+    """
+    ``(entries, labels)``: the search / replace pairs or column-math clusters
+    of every source in ``spec`` (see ``iter_control_sources``), concatenated
+    in order, and one label per source (its path, or ``'<inline>'``).
+    Each entry is checked for the keys ``kind`` needs.
+    """
+    if kind not in _REQUIRED_KEYS:
+        raise ValueError(f"kind must be one of {tuple(_REQUIRED_KEYS)}, got {kind!r}")
+    entries, labels = [], []
+    for label, source_parse_from, payload in iter_control_sources(spec, parse_from):
+        found = payload if source_parse_from is None else read_controls(payload, kind, source_parse_from)
+        _check_entries(found, kind, label)
+        entries += found
+        labels.append(label)
+    return entries, labels
 
 
 def apply_search_replace(df, pairs):
-    """``df`` with each pair's ``Search`` replaced by ``Replace`` in every column name."""
-    def rename(col):
-        for pair in pairs:
-            col = col.replace(pair['Search'], pair['Replace'])
-        return col
-    return df.rename(columns=rename)
+    """
+    ``df`` with each pair's ``Search`` replaced by ``Replace`` in every column
+    name, pairs applied in order. Warns if the renames give two columns the
+    same name.
+    """
+    renamed = df.rename(columns=lambda col: search_replace_text(col, pairs))
+    before = set(df.columns[df.columns.duplicated()])
+    clashes = sorted(set(renamed.columns[renamed.columns.duplicated()]) - before)
+    if clashes:
+        warnings.warn(f"Search / replace gave more than one column each of the names {clashes}.",
+                      stacklevel=2)
+    return renamed
 
 
 def search_replace_text(text, pairs):
@@ -150,15 +252,20 @@ def search_replace_text(text, pairs):
     return text
 
 
-_FORMULA_FUNCS = ["sqrt", "exp", "sin", "cos", "abs", "min", "max"]
+# Names available in column-math formulas (besides the formula's variables).
+FORMULA_NAMESPACE = {'np': np, 'sqrt': np.sqrt, 'exp': np.exp, 'log': np.log,
+                     'log10': np.log10, 'sin': np.sin, 'cos': np.cos, 'abs': np.abs,
+                     'min': np.min, 'max': np.max, 'pi': np.pi}
 
 
 def apply_column_math(df, clusters, verbose=False):
     """
     ``df`` with one new column per column-math cluster
-    (``{'column_name', 'formula', 'variables': [{'vars', 'column_name'}]}``).
-    A cluster whose input columns are missing, or whose formula fails, is
-    skipped (reported if ``verbose``).
+    (``{'column_name', 'formula', 'variables': [{'vars', 'column_name'}]}``),
+    in order, so a formula can use columns made by earlier clusters.
+    Formulas may use ``^`` for powers and the names in ``FORMULA_NAMESPACE``
+    (``min`` / ``max`` are numpy reductions). A cluster whose input columns are
+    missing, or whose formula fails, is skipped (reported if ``verbose``).
     """
     df = df.copy()
     for cluster in clusters:
@@ -168,11 +275,9 @@ def apply_column_math(df, clusters, verbose=False):
                 print(f"Column {name} not added — missing input columns.")
             continue
         formula = cluster['formula'].replace('^', '**')
-        for func in _FORMULA_FUNCS:
-            formula = formula.replace(func, f"np.{func}")
         local_vars = {v['vars']: df[v['column_name']] for v in cluster['variables']}
         try:
-            df[name] = eval(formula, {"np": np}, local_vars)
+            df[name] = eval(formula, dict(FORMULA_NAMESPACE), local_vars)
         except Exception as e:
             if verbose:
                 print(f"Error evaluating formula for {name}: {e}")
@@ -181,6 +286,7 @@ def apply_column_math(df, clusters, verbose=False):
 
 # ------------------------------------------------------- LabVIEW controls
 def parse_column_math_from_lv_controls(file_path):
+    """Column-math clusters from a LabVIEW controls dump."""
     clusters = []
     current_cluster = {}
     variables = []
@@ -188,30 +294,29 @@ def parse_column_math_from_lv_controls(file_path):
     with open(file_path, 'r') as file:
         for line in file:
             line = line.strip()
+            if '=' not in line:
+                continue
+            value = line.split('=', 1)[1].strip()
             if line.startswith('Value') and '.Cluster.New (or old) column name' in line:
                 if current_cluster:
                     current_cluster['variables'] = variables
                     clusters.append(current_cluster)
                     variables = []
-                current_cluster = {'column_name': line.split('=')[1].strip()}
+                current_cluster = {'column_name': value}
             elif line.startswith('Value') and '.Cluster.Formula' in line:
-                current_cluster['formula'] = line.split('=')[1].strip()
+                current_cluster['formula'] = value
             elif '.Cluster.vars' in line and '.Cluster.Column name' in line:
-                # This is not expected to happen as per the provided format,
-                # it seems to be a misunderstanding of the format.
                 pass
             elif '.Cluster.vars' in line or '.Cluster.Column name' in line:
-                var_name = line.split('=')[1].strip()
                 var_key = 'vars' if '.Cluster.vars' in line else 'column_name'
                 if variables and var_key in variables[-1]:
-                    # If the last variable already has this key, start a new variable
-                    variables.append({var_key: var_name})
+                    # The last variable already has this key: start a new one
+                    variables.append({var_key: value})
                 elif variables:
-                    variables[-1][var_key] = var_name
+                    variables[-1][var_key] = value
                 else:
-                    variables.append({var_key: var_name})
+                    variables.append({var_key: value})
 
-        # Add the last cluster if it exists
         if current_cluster:
             current_cluster['variables'] = variables
             clusters.append(current_cluster)
@@ -220,18 +325,22 @@ def parse_column_math_from_lv_controls(file_path):
 
 
 def parse_search_replace_from_lv_controls(file_path):
-    search_replace_pairs = []
-
+    """
+    Search / replace pairs from a LabVIEW controls dump. Search terms
+    containing ``'Bella'`` are skipped (as in the LabVIEW tool), and a Search
+    with no matching Replace line gets ``''``.
+    """
     with open(file_path, 'r') as file:
-        text_content = file.read()
+        lines = file.read().strip().split('\n')
+    values = {line.split('=', 1)[0]: line.split('=', 1)[1] for line in lines if '=' in line}
 
-    lines = text_content.strip().split('\n')
+    search_replace_pairs = []
     for line in lines:
         if 'Cluster.Search=' in line:
-            search_term = line.split('=')[1]
+            search_term = line.split('=', 1)[1]
             if "Bella" in search_term:
                 continue
-            replace_term = next((l.split('=')[1] for l in lines if l.startswith(line.split('.Search')[0] + '.Replace=')), '')
+            replace_term = values.get(line.split('.Search')[0] + '.Replace', '')
             search_replace_pairs.append({'Search': search_term, 'Replace': replace_term})
 
     return search_replace_pairs

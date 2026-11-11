@@ -30,7 +30,7 @@ from PyGEECSPlotter.scan_data_analyzers.binning import compute_bin_numbers
 from PyGEECSPlotter.scan_data_analyzers.filters import Filter, combined_mask, summary
 from PyGEECSPlotter.scan_data_analyzers.sfile_frame import (
     apply_column_math, apply_search_replace, drop_incomplete_rows, merge_results,
-    parse_column_math_from_lv_controls, parse_search_replace_from_lv_controls, read_controls,
+    load_controls, parse_column_math_from_lv_controls, parse_search_replace_from_lv_controls,
     rename_result_columns, search_replace_text, summary_filename, provenance_filename)
 from PyGEECSPlotter.analyzers.multi_diagnostic_analyzer import MultiDiagnosticAnalyzer
 
@@ -124,6 +124,7 @@ class ScanDataAnalyzer:
         self.data_columns = None
         self.data = None
         self.aborted = False
+        self.controls_applied = {}   # kind -> source labels applied (see load_scan_data)
         self.print_data = False
         self._filters = {}
         self._order = None           # (column, ascending, per_bin) set by order_by
@@ -533,10 +534,27 @@ class ScanDataAnalyzer:
         search_replace_filename=None, 
         column_math_filename=None, 
         analyzer=None,
-        parse_from='python', 
+        parse_from='auto',
         remove_missing_diagnostic_files=True,
         ):
+        """
+        Read the sfile into ``self.data`` and set the scan number and parameter.
 
+        search_replace_filename, column_math_filename : optional
+            Controls applied after loading: all search / replace first (column
+            names and the scan parameter), then all column math (which refers
+            to the renamed columns). Each is a path, a ``(path, parse_from)``
+            tuple, an inline list of dicts, or a list of any of these, applied
+            in order; e.g. ``['campaign.txt', ('lv_dump.txt', 'labview')]``.
+            Applied sources are listed in ``self.controls_applied``.
+        analyzer : optional
+            Registers its diagnostic files with the scan.
+        parse_from : {'auto', 'python', 'labview'}
+            Format of controls files given without one; 'auto' detects it.
+        remove_missing_diagnostic_files : bool
+            Passed to ``analyzer.register_with_scan``.
+        """
+        self.controls_applied = {}
         sfile_data = pd.read_csv(self.sfilename, sep='\t')
         sfile_data = self._drop_incomplete_rows(sfile_data)
         if len(sfile_data) == 0:
@@ -566,8 +584,7 @@ class ScanDataAnalyzer:
             self.data['temp Bin number'] = self.data['Bin #']
 
             if search_replace_filename is not None:
-                self.add_search_replace_column_names(search_replace_filename, parse_from=parse_from)
-                self.add_search_replace_scan_parameter(search_replace_filename, parse_from=parse_from)
+                self.add_search_replace(search_replace_filename, parse_from=parse_from)
             if column_math_filename is not None:
                 self.add_column_math(column_math_filename, parse_from=parse_from)
             
@@ -601,24 +618,48 @@ class ScanDataAnalyzer:
         return scan_info_text
 
         
-    def add_search_replace_column_names(self, search_replace_filename, parse_from='labview'):
-        """Rename columns with a search / replace controls file (``sfile_frame.apply_search_replace``)."""
-        pairs = read_controls(search_replace_filename, 'search_replace', parse_from)
-        self.data = apply_search_replace(self.data, pairs)
+    # Controls specs (search_replace_filename / column_math_filename below): a
+    # path, a (path, parse_from) tuple, an inline list of dicts, or a list of
+    # any of these, applied in order (``sfile_frame.iter_control_sources``).
+    # parse_from='auto' detects JSON (python) vs LabVIEW dump per file.
 
-    def add_search_replace_scan_parameter(self, search_replace_filename, parse_from='labview'):
-        """Apply the same search / replace to the scan parameter's name."""
-        pairs = read_controls(search_replace_filename, 'search_replace', parse_from)
-        self.scan_parameter = search_replace_text(self.scan_parameter, pairs)
+    def _record_controls(self, kind, labels):
+        if labels:
+            if getattr(self, 'controls_applied', None) is None:
+                self.controls_applied = {}
+            self.controls_applied.setdefault(kind, []).extend(labels)
 
-    def add_column_math(self, column_math_filename, parse_from='labview'):
-        """Add computed columns from a column-math controls file (``sfile_frame.apply_column_math``)."""
-        clusters = read_controls(column_math_filename, 'column_math', parse_from)
+    def _apply_search_replace(self, pairs, labels, columns=True, scan_parameter=True):
+        if columns:
+            self.data = apply_search_replace(self.data, pairs)
+        if scan_parameter:
+            self.scan_parameter = search_replace_text(self.scan_parameter, pairs)
+        self._record_controls('search_replace', labels)
+
+    def add_search_replace(self, search_replace_filename, parse_from='auto'):
+        """Rename columns and the scan parameter with one or more search / replace sources."""
+        self._apply_search_replace(*load_controls(search_replace_filename, 'search_replace', parse_from))
+
+    def add_search_replace_column_names(self, search_replace_filename, parse_from='auto'):
+        """Rename columns with one or more search / replace sources (``sfile_frame.apply_search_replace``)."""
+        self._apply_search_replace(*load_controls(search_replace_filename, 'search_replace', parse_from),
+                                   scan_parameter=False)
+
+    def add_search_replace_scan_parameter(self, search_replace_filename, parse_from='auto'):
+        """Apply search / replace sources to the scan parameter's name only."""
+        self._apply_search_replace(*load_controls(search_replace_filename, 'search_replace', parse_from),
+                                   columns=False)
+
+    def add_column_math(self, column_math_filename, parse_from='auto'):
+        """Add computed columns from one or more column-math sources (``sfile_frame.apply_column_math``)."""
+        clusters, labels = load_controls(column_math_filename, 'column_math', parse_from)
         self.data = apply_column_math(self.data, clusters, verbose=self.print_data)
+        self._record_controls('column_math', labels)
 
-    def merge_column_math_to_sfile(self, column_math_filename, parse_from='labview'):
+    def merge_column_math_to_sfile(self, column_math_filename, parse_from='auto'):
+        """Write the columns named by the column-math sources into the sfile (changes the file)."""
         if not self.aborted:
-            math_clusters_list = read_controls(column_math_filename, 'column_math', parse_from)
+            math_clusters_list, _ = load_controls(column_math_filename, 'column_math', parse_from)
             cols_to_add = ['scan', 'Shotnumber']
             for math_cluster in math_clusters_list:
                 cols_to_add.append( math_cluster['column_name'] )

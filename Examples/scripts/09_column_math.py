@@ -10,7 +10,7 @@ file on disk:
 Both are lists of dicts saved as JSON with `write_controls_from_python`, and
 read by `load_scan_data(search_replace_filename=..., column_math_filename=...)`.
 Keep them next to your analysis and reuse them for every scan of a campaign.
-(LabVIEW-made files also work, with `parse_from='labview'`.)
+LabVIEW-made files also work: the format is detected per file.
 
 Example data: the HPD focal scan, 2024-01-31 scan 23.
 """
@@ -72,9 +72,28 @@ scan.load_scan_data(search_replace_filename=search_replace_file,
 print('scan parameter:', scan.scan_parameter)
 print('new columns present:', [c for c in ('Focus offset (um)', 'Counts per shot (norm.)')
                                if c in scan.data.columns])
+print('controls applied:', scan.controls_applied)
 
 scan.display_scan(ScalarVsParameter('Counts per shot (norm.)', x_col='Focus offset (um)',
                                     bin_summary='mean'))
+
+# %% [markdown]
+# ## Several sources
+#
+# Either argument also takes a list, applied in order: files, inline lists of
+# dicts (no file needed), and `(path, parse_from)` tuples to force a format,
+# e.g. a LabVIEW campaign file plus your own:
+# `search_replace_filename=[('campaign_lv.txt', 'labview'), 'mine.txt']`.
+# Column math in a later source can use columns made by an earlier one.
+
+# %%
+extra_math = [{'column_name': 'Focus offset (mm)',
+               'formula': 'a / 1000',
+               'variables': [{'vars': 'a', 'column_name': 'Focus offset (um)'}]}]
+scan.load_scan_data(search_replace_filename=search_replace_file,
+                    column_math_filename=[column_math_file, extra_math])
+print('Focus offset (mm) present:', 'Focus offset (mm)' in scan.data.columns)
+print('controls applied:', scan.controls_applied)
 
 # %% [markdown]
 # The new columns exist only in memory. To add them to the sfile itself,
