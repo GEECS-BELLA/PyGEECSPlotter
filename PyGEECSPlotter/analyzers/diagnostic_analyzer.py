@@ -2,7 +2,13 @@
 # Subclasses (ImageAnalyzer, ColumnMathAnalyzer, ...) implement the
 # four-method pipeline below.
 
+import os
+import re
 from typing import Optional, Dict, Tuple, Any
+
+import pandas as pd
+
+_NUMERIC_LINE = re.compile(r'^[\s\d.eE+\-,;]*$')
 
 
 class DiagnosticAnalyzer:
@@ -12,7 +18,8 @@ class DiagnosticAnalyzer:
     The contract used by ``ScanDataAnalyzer.analyze_scan``:
 
     ``load_data(filename) -> data``
-        Load a single shot's raw data from disk.
+        Load a single shot's raw data from disk. The default reads GEECS
+        ``.png`` images and ``.txt`` tables (see ``load_data``).
 
     ``analyze_data(data, *, bg=None, context=None) -> (data, results, aux)``
         Process one shot. ``results`` is a dict of scalars to be added to the
@@ -58,9 +65,18 @@ class DiagnosticAnalyzer:
     # Pipeline contract
     # ------------------------------------------------------------------
     def load_data(self, filename):
-        raise NotImplementedError(
-            f"{type(self).__name__} must implement load_data(filename)."
-        )
+        """
+        Load one shot's file; None if it is missing. Default loaders:
+
+        - ``.png``: ``ni_imread.read_imaq_image`` (GEECS camera PNGs, shifted
+          by their ``sBIT`` depth), as float.
+        - ``.txt``: a tab-separated table with a header row, or, when the
+          first line is all numbers, a whitespace-separated table without
+          one (e.g. optical spectrometers; columns 0, 1, ...).
+
+        Override for other formats or for files that need decoding.
+        """
+        return load_shot_file(filename)
 
     def analyze_data(
         self,
@@ -154,3 +170,23 @@ class DiagnosticAnalyzer:
         line = lineout(aux, data)
         return {'kind': 'shot', 'scan': scan, 'shot': shot, 'results': scalars(results),
                 'images': [panel] if panel else [], 'line': line, 'wf': line}
+
+
+def load_shot_file(filename):
+    """The default ``DiagnosticAnalyzer.load_data``: a GEECS ``.png`` as a float
+    image, or a ``.txt`` table as a DataFrame (header detected); None if the
+    file is missing. Other extensions raise ``ValueError``."""
+    if not isinstance(filename, (str, os.PathLike)) or not os.path.exists(filename):
+        return None
+    filename = os.fspath(filename)
+    ext = os.path.splitext(filename)[1].lower()
+    if ext == '.png':
+        from PyGEECSPlotter.utils import ni_imread
+        return ni_imread.read_imaq_image(filename).astype(float)
+    if ext == '.txt':
+        with open(filename, errors='replace') as f:
+            first = f.readline()
+        if _NUMERIC_LINE.match(first.strip()):
+            return pd.read_csv(filename, sep=r'\s+', header=None)
+        return pd.read_csv(filename, sep='\t')
+    raise ValueError(f"No default loader for {ext!r} files ({filename}); override load_data.")
