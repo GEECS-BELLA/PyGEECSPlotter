@@ -1303,6 +1303,7 @@ class ScanDataAnalyzer:
                     analysis_label=analysis_label,
                     keep_unanalysed=keep_unanalysed,
                     provenance=analysis_provenance(analyzer, self, extra={'source': 'analyze_scan'}),
+                    summary_name=getattr(analyzer, 'summary_name', None),
                 )
 
         return add_columns_df
@@ -1363,6 +1364,7 @@ class ScanDataAnalyzer:
                                   target_filename=None,
                                   summary_label=None,
                                   provenance=None,
+                                  summary_name=None,
                                   ):
         """
         Write per-shot result columns into the sfile on disk, and the same
@@ -1375,6 +1377,8 @@ class ScanDataAnalyzer:
             (e.g. ``scans/ScanNNN/ScanDataScanNNN.txt``); same format.
         summary_label: label in the summary file name only (default:
             ``analysis_label``); left out when empty.
+        summary_name: names the summary / provenance files when there is no
+            ``diagnostic`` (e.g. ``'column_math'``).
         provenance: dict from ``utils.provenance.analysis_provenance``; written
             (with the columns and shot count added) as
             ``Scan003_<diagnostic>[_<label>]_provenance.json`` beside the
@@ -1409,13 +1413,14 @@ class ScanDataAnalyzer:
 
         analysis_dir = get_analysis_dir(self.top_dir, self.scan, make_dir=True)
         label = analysis_label if summary_label is None else summary_label
-        add_columns_path = os.path.join(analysis_dir, summary_filename(self.scan, diagnostic, label))
+        stem = diagnostic or summary_name
+        add_columns_path = os.path.join(analysis_dir, summary_filename(self.scan, stem, label))
         add_columns_df.to_csv(add_columns_path, index=False, sep='\t')
         if provenance is not None and target_filename is None:
             record = dict(provenance, shots=int(len(add_columns_df)), written_to=target,
                           columns=[c for c in add_columns_df.columns if c not in ('scan', 'Shotnumber')])
             write_controls_from_python(
-                os.path.join(analysis_dir, provenance_filename(self.scan, diagnostic, label)), record)
+                os.path.join(analysis_dir, provenance_filename(self.scan, stem, label)), record)
         print(f'Columns added to {target}')
 
     def mean_std_diagnostic(self, analyzer, bg=None, ddof=0, show_progress=False, rows=None):

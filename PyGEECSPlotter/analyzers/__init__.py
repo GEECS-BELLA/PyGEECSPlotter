@@ -5,6 +5,7 @@ Framework (generic, diagnostic-agnostic):
     DataReader                                    load only, no analysis
     ImageAnalyzer, ScaledImageAnalyzer            configurable 2D image pipeline
     ColumnMathAnalyzer                            new sfile columns from existing ones
+    ControlsAnalyzer                              columns from search / replace and column-math files
     ShotCompareReader                             several analyzers on the same shot
 
 Diagnostic-specific modules (import from their modules):
@@ -17,7 +18,7 @@ from PyGEECSPlotter.analyzers.diagnostic_analyzer import DiagnosticAnalyzer
 from PyGEECSPlotter.analyzers.multi_diagnostic_analyzer import MultiDiagnosticAnalyzer
 from PyGEECSPlotter.analyzers.data_reader import DataReader
 from PyGEECSPlotter.analyzers.image_analysis import ImageAnalyzer, ScaledImageAnalyzer
-from PyGEECSPlotter.analyzers.column_math_analysis import ColumnMathAnalyzer
+from PyGEECSPlotter.analyzers.column_math_analysis import ColumnMathAnalyzer, ControlsAnalyzer
 from PyGEECSPlotter.analyzers.shot_compare_analysis import ShotCompareReader
 
 __all__ = [
@@ -27,5 +28,6 @@ __all__ = [
     "ImageAnalyzer",
     "ScaledImageAnalyzer",
     "ColumnMathAnalyzer",
+    "ControlsAnalyzer",
     "ShotCompareReader",
 ]

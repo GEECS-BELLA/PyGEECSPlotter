@@ -108,6 +108,7 @@ class DataDirAnalyzer(ScanDataAnalyzer):
                                   target_filename=None,
                                   summary_label=None,
                                   provenance=None,
+                                  summary_name=None,
                                   ):
         """
         Write the results to ``scalar_analysis.txt`` (there is no sfile),

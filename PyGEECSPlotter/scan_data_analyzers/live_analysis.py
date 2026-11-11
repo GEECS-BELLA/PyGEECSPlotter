@@ -150,7 +150,8 @@ class LiveJob:
             scan.merge_data_frame_to_sfile(results, self.column_prefix, overwrite_columns=True,
                                            analysis_label=self.analysis_label,
                                            summary_label=self.summary_label,
-                                           provenance=self.provenance(scan))
+                                           provenance=self.provenance(scan),
+                                           summary_name=getattr(self.analyzer, 'summary_name', None))
         if self.update_scan_data_file:
             target = os.path.join(scan.top_dir, 'scans', f'Scan{int(scan.scan):03d}',
                                   f'ScanDataScan{int(scan.scan):03d}.txt')
