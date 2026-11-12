@@ -123,7 +123,7 @@ if MODE == 'scan':
 #   with a shared colour scale, to catch drift.
 # - **`DayScalars`** plots per-scan mean ± std of chosen columns.
 # - **`ScanSheet(columns=[...])`** keeps the day's scan sheet,
-#   `analysis/today/scan_sheet.txt` (tab-delimited, like an sfile). It has one row per
+#   `analysis/today/scan_sheet.csv` (`sep='\t'` for a tab-delimited .txt). It has one row per
 #   scan: date, scan, shots, scan parameter and range, scan info, tags, and
 #   `'<column> MEAN'` for each column (`stats=` adds STD, MEDIAN, ...).
 #   `make_scan_sheet(DATA_ROOT, '2026-11-03', '2026-11-04', columns=[...])` builds the

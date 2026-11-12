@@ -242,14 +242,17 @@ def scan_sheet_row(scan, columns=(), stats=('mean',), tags=None):
 class ScanSheet:
     """
     Scan sheet of the day: one row per scan (``scan_sheet_row``) in
-    ``analysis/today/<name>.txt``, tab-delimited with a header like an sfile;
-    re-running a scan replaces its row.
+    ``analysis/today/<name>.csv`` (comma-separated, header row; text with
+    commas is quoted); re-running a scan replaces its row.
 
     columns : list of str
         Columns summarised per scan, e.g. ``['Amplifier 3 [J]', 'HPDmodeMaxCounts']``;
         columns the scan's jobs have just added (column math, analyzers) work too.
     stats : any of 'mean', 'std', 'median', 'min', 'max'
         One ``'<column> <STAT>'`` column each (as the old scan-sheet notebook's ``MEAN``).
+    sep : str
+        ``','`` (default) writes ``<name>.csv``; ``'\\t'`` writes a tab-delimited
+        ``<name>.txt`` like an sfile. The file is read back with the same ``sep``.
     excel : bool
         Also write ``<name>.xlsx`` (skipped with a message if it can't be written,
         e.g. open in Excel).
@@ -259,27 +262,35 @@ class ScanSheet:
 
     include_aborted = True       # aborted scans get a row too (ScanWatcher)
 
-    def __init__(self, columns=(), stats=('mean',), name='scan_sheet', excel=False):
+    def __init__(self, columns=(), stats=('mean',), name='scan_sheet', sep=',', excel=False):
         unknown = [s for s in stats if s not in _STATS]
         if unknown:
             raise ValueError(f"stats must be among {list(_STATS)}, got {unknown}")
         self.columns = list(columns)
         self.stats = tuple(stats)
         self.name = name
+        self.sep = sep
         self.excel = excel
+
+    @property
+    def file_name(self):
+        return f"{self.name}{'.csv' if self.sep == ',' else '.txt'}"
 
     def update(self, scan, today_dir, tags=()):
         # every #tag typed in the scan info, not only the ones the config acts on
         row = scan_sheet_row(scan, self.columns, self.stats)
         os.makedirs(today_dir, exist_ok=True)
-        path = os.path.join(today_dir, f'{self.name}.txt')
-        table = pd.read_csv(path, sep='\t') if os.path.exists(path) else pd.DataFrame()
+        path = os.path.join(today_dir, self.file_name)
+        table = pd.read_csv(path, sep=self.sep) if os.path.exists(path) else pd.DataFrame()
+        if len(table) and 'scan' not in table.columns:
+            raise ValueError(f"{path} has no 'scan' column: not a scan sheet written with "
+                             f"sep={self.sep!r}. Move it aside or set sep to match.")
         if len(table):
             table = table[table['scan'] != row['scan']]
         table = pd.concat([table, pd.DataFrame([row])], ignore_index=True).sort_values('scan')
         # the row's columns first (in its order), then any older extra columns
         table = table[list(row) + [c for c in table.columns if c not in row]]
-        table.to_csv(path, sep='\t', index=False)
+        table.to_csv(path, sep=self.sep, index=False)
         if self.excel:
             try:
                 table.to_excel(path[:-4] + '.xlsx', index=False)
@@ -294,8 +305,7 @@ def make_scan_sheet(experiment_dir, start_date, end_date=None, columns=(), stats
     Scan sheet (DataFrame, one ``scan_sheet_row`` per sfile) for every day
     from ``start_date`` to ``end_date`` (dates or 'YYYY-MM-DD'; default one
     day), loading each scan with the given search / replace and column-math
-    controls. Save it with ``.to_csv(path, sep='\\t', index=False)`` or
-    ``.to_excel(path)``.
+    controls. Save it with ``.to_csv(path, index=False)`` or ``.to_excel(path)``.
     """
     from PyGEECSPlotter.scan_data_analyzers.scan_data_analysis import ScanDataAnalyzer
     from PyGEECSPlotter.utils.navigation_utils import get_top_dir, generate_sfilename_list_from_scans_dir

@@ -2,7 +2,7 @@
 
 ``DayImages`` shows one chosen shot of every scan with a shared colour scale,
 ``DayScalars`` per-scan mean ± std of some columns, ``ScanSheet`` the day's
-scan sheet (one row per scan, chosen columns' means; tab-delimited .txt).
+scan sheet (one row per scan, chosen columns' means; .csv, or tab-delimited .txt).
 ``make_scan_sheet`` builds the same sheet for a range of days offline. ScanWatcher runs them from a ``ScanClassifier``'s
 ``day`` list and writes them to ``analysis/today/``.
 """
