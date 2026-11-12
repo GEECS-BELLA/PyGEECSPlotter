@@ -198,33 +198,117 @@ class DayScalars:
         return path
 
 
+_STATS = {'mean': np.nanmean, 'std': np.nanstd, 'median': np.nanmedian,
+          'min': np.nanmin, 'max': np.nanmax}
+
+
+def scan_sheet_row(scan, columns=(), stats=('mean',), tags=None):
+    """
+    One scan-sheet row for ``scan`` (a loaded ScanDataAnalyzer), as a dict:
+    year, month, day, scan, time (sfile modified), ``# shots``,
+    ``scan_parameter`` and its min / max, ``scan_info_txt``, ``tags``, then
+    ``'<column> <STAT>'`` for each column and stat (NaN if the scan lacks the
+    column), then ``sfilename``. ``tags`` default to the scan info's #tags.
+    An aborted (empty) scan gives a row with ``# shots`` 0.
+    """
+    from PyGEECSPlotter.scan_data_analyzers.scan_classifier import scan_tags
+    data = scan.data if scan.data is not None else pd.DataFrame()
+    try:
+        info = scan.get_scan_info_text()
+    except Exception:
+        info = ''
+    if tags is None:
+        tags = scan_tags(info)
+    param = scan.scan_parameter
+    values = pd.to_numeric(data[param], errors='coerce') if param in data.columns else pd.Series(dtype=float)
+    try:
+        mtime = time.strftime('%H:%M', time.localtime(os.path.getmtime(scan.sfilename)))
+    except (OSError, TypeError):
+        mtime = ''
+    row = {'year': scan.year, 'month': scan.month, 'day': scan.day,
+           'scan': int(scan.scan) if scan.scan is not None else None, 'time': mtime,
+           '# shots': len(data), 'scan_parameter': param,
+           'scan_parameter min': values.min(), 'scan_parameter max': values.max(),
+           'scan_info_txt': info, 'tags': ' '.join('#' + t for t in tags)}
+    for column in columns:
+        v = pd.to_numeric(data[column], errors='coerce').to_numpy(float) \
+            if column in data.columns else np.array([])
+        for stat in stats:
+            row[f'{column} {stat.upper()}'] = _STATS[stat](v) if np.isfinite(v).any() else np.nan
+    row['sfilename'] = scan.sfilename
+    return row
+
+
 class ScanSheet:
     """
-    Placeholder scan sheet: one row per scan in ``analysis/today/scan_sheet.tsv``
-    (scan, time, shots, scan parameter and its range, tags, scan info).
-    To be replaced by the experiment's own scan-sheet format.
+    Scan sheet of the day: one row per scan (``scan_sheet_row``) in
+    ``analysis/today/<name>.txt``, tab-delimited with a header like an sfile;
+    re-running a scan replaces its row.
+
+    columns : list of str
+        Columns summarised per scan, e.g. ``['Amplifier 3 [J]', 'HPDmodeMaxCounts']``;
+        columns the scan's jobs have just added (column math, analyzers) work too.
+    stats : any of 'mean', 'std', 'median', 'min', 'max'
+        One ``'<column> <STAT>'`` column each (as the old scan-sheet notebook's ``MEAN``).
+    excel : bool
+        Also write ``<name>.xlsx`` (skipped with a message if it can't be written,
+        e.g. open in Excel).
+
+    For a range of days offline, see ``make_scan_sheet``.
     """
 
-    name = 'scan_sheet'
+    include_aborted = True       # aborted scans get a row too (ScanWatcher)
+
+    def __init__(self, columns=(), stats=('mean',), name='scan_sheet', excel=False):
+        unknown = [s for s in stats if s not in _STATS]
+        if unknown:
+            raise ValueError(f"stats must be among {list(_STATS)}, got {unknown}")
+        self.columns = list(columns)
+        self.stats = tuple(stats)
+        self.name = name
+        self.excel = excel
 
     def update(self, scan, today_dir, tags=()):
-        data = scan.data
-        param = scan.scan_parameter
-        values = pd.to_numeric(data[param], errors='coerce') if param in data.columns else pd.Series(dtype=float)
-        try:
-            info = scan.get_scan_info_text()
-        except Exception:
-            info = ''
-        row = {'scan': int(scan.scan),
-               'time': time.strftime('%H:%M', time.localtime(os.path.getmtime(scan.sfilename))),
-               'shots': len(data), 'scan parameter': param,
-               'min': values.min(), 'max': values.max(),
-               'tags': ' '.join('#' + t for t in tags), 'info': info}
+        # every #tag typed in the scan info, not only the ones the config acts on
+        row = scan_sheet_row(scan, self.columns, self.stats)
         os.makedirs(today_dir, exist_ok=True)
-        path = os.path.join(today_dir, 'scan_sheet.tsv')
+        path = os.path.join(today_dir, f'{self.name}.txt')
         table = pd.read_csv(path, sep='\t') if os.path.exists(path) else pd.DataFrame()
         if len(table):
             table = table[table['scan'] != row['scan']]
         table = pd.concat([table, pd.DataFrame([row])], ignore_index=True).sort_values('scan')
+        # the row's columns first (in its order), then any older extra columns
+        table = table[list(row) + [c for c in table.columns if c not in row]]
         table.to_csv(path, sep='\t', index=False)
+        if self.excel:
+            try:
+                table.to_excel(path[:-4] + '.xlsx', index=False)
+            except Exception as e:
+                print(f"{scan.scan_label}: {self.name}.xlsx not written ({type(e).__name__}: {e})")
         return path
+
+
+def make_scan_sheet(experiment_dir, start_date, end_date=None, columns=(), stats=('mean',),
+                    search_replace=None, column_math=None):
+    """
+    Scan sheet (DataFrame, one ``scan_sheet_row`` per sfile) for every day
+    from ``start_date`` to ``end_date`` (dates or 'YYYY-MM-DD'; default one
+    day), loading each scan with the given search / replace and column-math
+    controls. Save it with ``.to_csv(path, sep='\\t', index=False)`` or
+    ``.to_excel(path)``.
+    """
+    from PyGEECSPlotter.scan_data_analyzers.scan_data_analysis import ScanDataAnalyzer
+    from PyGEECSPlotter.utils.navigation_utils import get_top_dir, generate_sfilename_list_from_scans_dir
+    rows = []
+    for day in pd.date_range(start_date, end_date or start_date, freq='D'):
+        top_dir = get_top_dir(experiment_dir, day.year, day.month, day.day)
+        sfiles = generate_sfilename_list_from_scans_dir(top_dir)
+        for sfile in sorted(sfiles, key=lambda f: int(os.path.basename(f)[1:-4])):
+            try:
+                scan = ScanDataAnalyzer(sfilename=sfile)
+                scan.load_scan_data(search_replace_filename=search_replace,
+                                    column_math_filename=column_math)
+                rows.append(scan_sheet_row(scan, columns, stats))
+            except Exception as e:
+                print(f"{os.path.basename(sfile)} ({day.date()}): skipped ({type(e).__name__}: {e})")
+    return pd.DataFrame(rows)

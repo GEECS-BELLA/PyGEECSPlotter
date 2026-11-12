@@ -157,7 +157,7 @@ from PyGEECSPlotter.displayers.lineouts.optical_spectrum import (
 from PyGEECSPlotter.displayers.multi_scan_displayer import MultiScanDisplayer, display_scans
 from PyGEECSPlotter.displayers.hybrid.multi_scan_scalar_vs_parameter import MultiScanScalarVsParameter
 from PyGEECSPlotter.displayers.hybrid.multi_scan_lineout_mean import MultiScanLineoutMean
-from PyGEECSPlotter.displayers.day import DayImages, DayScalars, ScanSheet
+from PyGEECSPlotter.displayers.day import DayImages, DayScalars, ScanSheet, make_scan_sheet
 
 __all__ = [
     "ScanDisplayer",
@@ -196,4 +196,5 @@ __all__ = [
     "DayImages",
     "DayScalars",
     "ScanSheet",
+    "make_scan_sheet",
 ]

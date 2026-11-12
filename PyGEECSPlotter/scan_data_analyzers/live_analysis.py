@@ -393,6 +393,13 @@ class ScanWatcher:
             return None
         if s.aborted:
             self._log(f"{label}: no shots, skipped")
+            for tracker in self.classifier.day:          # e.g. a scan sheet row
+                if getattr(tracker, 'include_aborted', False):
+                    try:
+                        tracker.update(s, self.today_dir(top_dir), tags=[])
+                    except Exception:
+                        self._log(f"{label}: day tracker {tracker.name} failed")
+                        print(traceback.format_exc())
             return s
         jobs, tags = self.classifier.jobs_for(s)
         s.provenance_extra = {'tags': tags, **self.classifier.provenance()}

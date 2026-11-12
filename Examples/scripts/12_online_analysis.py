@@ -122,7 +122,12 @@ if MODE == 'scan':
 # - **`DayImages`** shows one shot per scan (first, max or median of a column)
 #   with a shared colour scale, to catch drift.
 # - **`DayScalars`** plots per-scan mean ± std of chosen columns.
-# - **`ScanSheet`** keeps a table of the day's scans.
+# - **`ScanSheet(columns=[...])`** keeps the day's scan sheet,
+#   `analysis/today/scan_sheet.txt` (tab-delimited, like an sfile). It has one row per
+#   scan: date, scan, shots, scan parameter and range, scan info, tags, and
+#   `'<column> MEAN'` for each column (`stats=` adds STD, MEDIAN, ...).
+#   `make_scan_sheet(DATA_ROOT, '2026-11-03', '2026-11-04', columns=[...])` builds the
+#   same sheet offline for a range of days.
 #
 # ## Provenance
 #
@@ -160,7 +165,7 @@ classifier = ScanClassifier(
     day=[
         DayImages(hpd, select='max', column='CAM-HPD-CCD max_counts'),
         DayScalars(['CAM-HPD-CCD x0', 'CAM-HPD-CCD y0', 'CAM-HPD-CCD max_counts'], name='HPD'),
-        ScanSheet(),
+        ScanSheet(columns=['Amplifier 3 [J]', 'CAM-HPD-CCD max_counts']),
     ],
 )
 
